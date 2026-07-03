@@ -15,12 +15,11 @@ EMBED_MODEL = "embo-01"
 _HEADERS = {"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json"}
 
 
-def chat(messages, max_tokens=8192, temperature=0.7) -> str:
-    """M3 是 reasoning 模型，思考也消耗 max_tokens，须给足额度。"""
-    resp = requests.post(CHAT_URL, headers=_HEADERS, timeout=300, json={
+def chat(messages, temperature=0.7) -> str:
+    """M3 是 reasoning 模型，思考可以很长，不设 max_tokens 限制。"""
+    resp = requests.post(CHAT_URL, headers=_HEADERS, timeout=600, json={
         "model": CHAT_MODEL,
         "messages": messages,
-        "max_tokens": max_tokens,
         "temperature": temperature,
     })
     resp.raise_for_status()
@@ -31,13 +30,24 @@ def chat(messages, max_tokens=8192, temperature=0.7) -> str:
     choice = data["choices"][0]
     content = choice["message"]["content"]
     if not content and choice.get("finish_reason") == "length":
-        raise RuntimeError("M3 输出被 max_tokens 截断（思考未结束），请调大 max_tokens")
+        raise RuntimeError("M3 输出被截断（思考未结束）")
     return content
 
 
-def chat_json(messages, max_tokens=8192):
-    """要求模型输出 JSON 并解析；容忍 markdown 代码块包裹。"""
-    text = chat(messages, max_tokens=max_tokens)
+def chat_json(messages):
+    """要求模型输出 JSON 并解析；容忍 markdown 代码块包裹；解析失败自动请模型修复一次。"""
+    text = chat(messages)
+    try:
+        return _parse_json(text)
+    except (ValueError, json.JSONDecodeError):
+        fixed = chat([
+            {"role": "system", "content": "你是 JSON 修复器。把用户给的内容修复为语法合法的 JSON（转义字符串内的引号、补齐分隔符），不改动数据内容，只输出 JSON 本身。"},
+            {"role": "user", "content": text},
+        ], temperature=0.1)
+        return _parse_json(fixed)
+
+
+def _parse_json(text: str):
     m = re.search(r"```(?:json)?\s*(.*?)```", text, re.S)
     if m:
         text = m.group(1)

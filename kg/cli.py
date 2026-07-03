@@ -54,15 +54,71 @@ def cmd_expand(args):
     else:
         targets = expand.pick_frontier(conn, k=args.count)
     for node in targets:
-        print(f"== 扩展「{node['name']}」==")
+        print(f"== 扩展「{node['name']}」（假设生成器）==")
         stats = expand.expand_node(conn, node, limit=args.limit, dry_run=args.dry_run)
-        if args.dry_run:
-            print(json.dumps(stats["details"], ensure_ascii=False, indent=2))
-        else:
-            for line in stats["details"]:
-                print("  " + line)
-            print(f"  新节点 {stats['proposed_nodes']}，合并别名 {stats['merged_aliases']}，"
-                  f"新边 {stats['proposed_edges']}（均为 proposed，待审核）")
+        for line in stats["details"]:
+            print("  " + line)
+        print(f"  假设 {stats['hypotheses']}，语料验证通过 {stats['verified']}，丢弃 {stats['dropped']}"
+              + ("（--dry-run，验证通过的未提取）" if args.dry_run else
+                 f"；提取新节点 {stats['proposed_nodes']}，合并别名 {stats['merged_aliases']}，"
+                 f"新边 {stats['proposed_edges']}（均为 proposed，待审核）"))
+
+
+def _print_ingest(stats, dry_run):
+    print(f"来源: {stats['page']}  ({stats['source']})")
+    if dry_run:
+        print(json.dumps(stats["details"], ensure_ascii=False, indent=2))
+        return
+    for line in stats["details"]:
+        print("  " + line)
+    print(f"  新节点 {stats['proposed_nodes']}，合并别名 {stats['merged_aliases']}，"
+          f"新边 {stats['proposed_edges']}，丢弃无据 related_to {stats['dropped_related']}，"
+          f"锚点新增 facets {stats['anchor_facets_added']}"
+          f"（节点与边均为 proposed，待审核）")
+
+
+def cmd_ingest(args):
+    from . import ingest
+    conn = db.connect()
+    if args.batch:
+        picks = ingest.pick_anchors(conn, k=args.batch)
+        if not picks:
+            sys.exit("没有可选锚点（语料库为空？先跑 kg corpus crawl）")
+        for p in picks:
+            print(f"== 锚点「{p['node']['name']}」（内链入度 {p['indegree']}，缺口分 {p['score']:.1f}）==")
+            stats = ingest.ingest_topic(conn, p["node"]["name"], limit=args.limit, dry_run=args.dry_run)
+            if stats.get("error"):
+                print("  " + stats["error"])
+                continue
+            _print_ingest(stats, args.dry_run)
+        return
+    if not args.name:
+        sys.exit("用法：kg ingest <锚点名> 或 kg ingest --batch N")
+    stats = ingest.ingest_topic(conn, args.name, limit=args.limit, dry_run=args.dry_run)
+    if stats.get("error"):
+        sys.exit(stats["error"])
+    _print_ingest(stats, args.dry_run)
+
+
+def cmd_corpus(args):
+    from . import corpus
+    conn = db.connect()
+    if args.action == "crawl":
+        for line in corpus.crawl(conn, limit=args.limit):
+            print(line)
+    elif args.action == "grow":
+        for line in corpus.grow(conn, limit=args.limit or 10):
+            print(line)
+    print(corpus.stats(conn))
+
+
+def cmd_mine(args):
+    from . import mine
+    conn = db.connect()
+    lines = mine.import_aliases(conn) if args.action == "aliases" else mine.category_edges(conn)
+    for line in lines:
+        print(line)
+    print(f"共 {len(lines)} 条" if lines else "无新发现")
 
 
 def _review_nodes(conn):
@@ -162,12 +218,28 @@ def main():
     s = sub.add_parser("embed", help="补齐缺失的 embedding")
     s.set_defaults(fn=cmd_embed)
 
-    s = sub.add_parser("expand", help="扩展 agent（LLM 提议，proposed 入库）")
+    s = sub.add_parser("expand", help="假设生成器（LLM 提缺口名字 -> 语料验证 -> 转有据提取）")
     s.add_argument("--node", help="指定节点名；缺省自动选前沿节点")
     s.add_argument("--count", type=int, default=1, help="自动选取的前沿节点数")
     s.add_argument("--limit", type=int, default=5, help="每个节点最多提议数")
-    s.add_argument("--dry-run", action="store_true", help="只打印提议，不入库")
+    s.add_argument("--dry-run", action="store_true", help="只做假设+语料验证，不提取入库")
     s.set_defaults(fn=cmd_expand)
+
+    s = sub.add_parser("ingest", help="从语料库围绕已有节点提取知识（有据可查，主通道）")
+    s.add_argument("name", nargs="?", help="锚点节点名（须已存在于图谱）")
+    s.add_argument("--batch", type=int, help="缺口驱动自动选 N 个锚点批量提取")
+    s.add_argument("--limit", type=int, default=6, help="每个锚点最多提取的概念数")
+    s.add_argument("--dry-run", action="store_true", help="只打印提取结果，不入库")
+    s.set_defaults(fn=cmd_ingest)
+
+    s = sub.add_parser("corpus", help="领域语料库：crawl 抓生效节点页面 / grow 沿内链扩展 / stats")
+    s.add_argument("action", choices=["crawl", "grow", "stats"])
+    s.add_argument("--limit", type=int, help="本次最多抓取页数（grow 默认 10）")
+    s.set_defaults(fn=cmd_corpus)
+
+    s = sub.add_parser("mine", help="结构挖掘（零 LLM）：aliases 重定向→别名 / categories 分类→候选边")
+    s.add_argument("action", choices=["aliases", "categories"])
+    s.set_defaults(fn=cmd_mine)
 
     s = sub.add_parser("review", help="逐条审核 proposed 节点与边")
     s.set_defaults(fn=cmd_review)

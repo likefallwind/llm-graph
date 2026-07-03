@@ -1,5 +1,5 @@
-"""去重流水线：名称/别名精确匹配 -> embedding 相似度 -> LLM 裁决。"""
-from . import db, llm
+"""去重流水线：名称/别名精确匹配 -> 维基重定向 -> embedding 相似度 -> LLM 裁决。"""
+from . import corpus, db, llm
 
 SIM_THRESHOLD = 0.90
 
@@ -12,6 +12,13 @@ def find_duplicate(conn, name: str, definition: str, embedding=None):
     hit = db.find_by_name_or_alias(conn, name)
     if hit:
         return hit, "exact"
+
+    # 维基重定向：name 重定向到某页面，而该页面已对应一个节点 -> 同一概念
+    page = corpus.find_page(conn, name, with_text=False)
+    if page:
+        node = corpus.node_for_page(conn, page)
+        if node:
+            return node, "redirect"
 
     if embedding is None:
         embedding = llm.embed([f"{name}：{definition}"], kind="query")[0]
@@ -40,7 +47,7 @@ def _llm_same_concept(name: str, definition: str, existing: dict) -> bool:
             f"词条B：{existing['name']}（{existing['definition']}）"
             f"，别名：{', '.join(existing['aliases']) or '无'}\n\n"
             '输出：{"same": true/false, "reason": "一句话理由"}')},
-    ], max_tokens=4096)
+    ])
     return bool(answer.get("same"))
 
 

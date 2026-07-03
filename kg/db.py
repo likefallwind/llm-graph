@@ -7,6 +7,8 @@ import time
 DB_PATH = os.environ.get("KG_DB", os.path.join(os.path.dirname(__file__), "..", "data", "kg.db"))
 
 EDGE_TYPES = ("is_a", "part_of", "prerequisite_of", "related_to")
+# related_to 只允许这三种教学上有价值的情形，泛泛的"同领域相关"不许连边
+RELATED_KINDS = ("同题替代", "演化启发", "教学对比")
 NODE_STATUS = ("seed", "proposed", "approved", "rejected")
 EDGE_STATUS = ("seed", "proposed", "approved", "rejected")
 
@@ -36,6 +38,32 @@ CREATE TABLE IF NOT EXISTS edges (
 );
 CREATE INDEX IF NOT EXISTS idx_edges_src ON edges(src);
 CREATE INDEX IF NOT EXISTS idx_edges_dst ON edges(dst);
+CREATE TABLE IF NOT EXISTS corpus (
+    id          INTEGER PRIMARY KEY,
+    lang        TEXT NOT NULL,
+    page_id     INTEGER NOT NULL,
+    title       TEXT NOT NULL,
+    revision_id INTEGER NOT NULL,
+    text        TEXT NOT NULL,
+    redirects   TEXT NOT NULL DEFAULT '[]',
+    categories  TEXT NOT NULL DEFAULT '[]',
+    links       TEXT NOT NULL DEFAULT '[]',
+    fetched_at  REAL NOT NULL,
+    UNIQUE(lang, page_id),
+    UNIQUE(lang, title)
+);
+CREATE TABLE IF NOT EXISTS node_page (
+    node_id INTEGER PRIMARY KEY REFERENCES nodes(id),
+    lang    TEXT NOT NULL,
+    page_id INTEGER NOT NULL
+);
+CREATE TABLE IF NOT EXISTS ingest_log (
+    id         INTEGER PRIMARY KEY,
+    anchor     TEXT NOT NULL,
+    source     TEXT NOT NULL,
+    created_at REAL NOT NULL,
+    UNIQUE(anchor, source)
+);
 """
 
 
