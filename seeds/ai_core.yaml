@@ -1,0 +1,583 @@
+# AI 领域种子知识图谱
+# 依据 d2l.ai 目录、CS229、CS231n 课程大纲人工整理
+# 边格式: [src, type, dst] 或 [src, type, dst, confidence]
+source: "seed:d2l.ai+CS229+CS231n"
+
+nodes:
+  # ── 根 ──
+  - name: 人工智能
+    aliases: [AI, artificial intelligence]
+    definition: 让机器表现出感知、推理、学习与决策等智能行为的学科。
+
+  # ── 数学基础 ──
+  - name: 线性代数
+    aliases: [linear algebra]
+    definition: 研究向量、矩阵及线性变换的数学分支，是机器学习的基本语言。
+    facets: [矩阵乘法, 逆矩阵, 秩, 范数]
+  - name: 向量
+    aliases: [vector]
+    definition: 具有大小和方向的量，机器学习中用于表示样本特征。
+    facets: [点积, 向量范数]
+  - name: 矩阵
+    aliases: [matrix]
+    definition: 按行列排布的数表，表示线性变换或数据集合。
+    facets: [转置, 矩阵求逆]
+  - name: 特征值与特征向量
+    aliases: [eigenvalue, eigenvector, 特征分解]
+    definition: 线性变换下方向不变的向量及其伸缩系数，刻画矩阵的内在结构。
+  - name: 奇异值分解
+    aliases: [SVD, singular value decomposition]
+    definition: 把任意矩阵分解为旋转-缩放-旋转三部分的通用矩阵分解。
+  - name: 微积分
+    aliases: [calculus]
+    definition: 研究函数变化率与累积量的数学分支，支撑模型优化。
+  - name: 导数
+    aliases: [derivative]
+    definition: 函数在一点的瞬时变化率。
+  - name: 偏导数
+    aliases: [partial derivative]
+    definition: 多元函数沿单个坐标方向的变化率。
+  - name: 梯度
+    aliases: [gradient]
+    definition: 由各偏导数组成的向量，指向函数上升最快的方向。
+  - name: 链式法则
+    aliases: [chain rule]
+    definition: 复合函数求导法则，是反向传播的数学基础。
+  - name: 概率论
+    aliases: [probability theory]
+    definition: 研究随机现象规律的数学分支，为模型不确定性建模提供工具。
+  - name: 随机变量
+    aliases: [random variable]
+    definition: 取值由随机试验结果决定的变量。
+  - name: 概率分布
+    aliases: [probability distribution]
+    definition: 描述随机变量各取值可能性的函数。
+    facets: [离散分布, 连续分布, 伯努利分布]
+  - name: 条件概率
+    aliases: [conditional probability]
+    definition: 在已知某事件发生的条件下另一事件发生的概率。
+  - name: 贝叶斯定理
+    aliases: [Bayes theorem, 贝叶斯公式]
+    definition: 用先验概率和似然计算后验概率的公式。
+  - name: 期望与方差
+    aliases: [expectation, variance]
+    definition: 刻画随机变量平均水平与离散程度的两个基本数字特征。
+  - name: 高斯分布
+    aliases: [正态分布, normal distribution, Gaussian distribution]
+    definition: 钟形的连续概率分布，由均值和方差完全确定。
+  - name: 最大似然估计
+    aliases: [MLE, maximum likelihood estimation]
+    definition: 选择使观测数据出现概率最大的参数作为估计值的方法。
+  - name: 信息论
+    aliases: [information theory]
+    definition: 用数学量化信息、不确定性与压缩极限的理论。
+  - name: 熵
+    aliases: [entropy, 信息熵]
+    definition: 随机变量不确定性的度量。
+  - name: 交叉熵
+    aliases: [cross entropy]
+    definition: 用一个分布编码另一分布所需的平均信息量，常用作分类损失。
+  - name: KL散度
+    aliases: [KL divergence, 相对熵]
+    definition: 衡量两个概率分布差异的非对称度量。
+  - name: 最优化
+    aliases: [optimization, 数学优化]
+    definition: 在约束下寻找目标函数最优值的数学方法。
+  - name: 凸优化
+    aliases: [convex optimization]
+    definition: 目标与可行域均为凸的优化问题，局部最优即全局最优。
+
+  # ── 编程基础 ──
+  - name: Python
+    definition: AI 领域最常用的编程语言。
+  - name: NumPy
+    definition: Python 的多维数组与数值计算库。
+    facets: [广播机制, 向量化运算]
+
+  # ── 机器学习基础 ──
+  - name: 机器学习
+    aliases: [machine learning, ML]
+    definition: 让计算机从数据中自动学习规律并做预测或决策的方法学。
+  - name: 监督学习
+    aliases: [supervised learning]
+    definition: 从带标签的样本中学习输入到输出映射的学习范式。
+  - name: 无监督学习
+    aliases: [unsupervised learning]
+    definition: 从无标签数据中发现结构与模式的学习范式。
+  - name: 线性回归
+    aliases: [linear regression]
+    definition: 用线性函数拟合输入与连续输出关系的模型。
+    facets: [最小二乘法, 正规方程]
+  - name: 逻辑回归
+    aliases: [logistic regression]
+    definition: 用 sigmoid 将线性输出映射为概率的分类模型。
+  - name: 损失函数
+    aliases: [loss function, 目标函数, 代价函数]
+    definition: 衡量模型预测与真实值差距的函数，训练即最小化它。
+    facets: [均方误差, 交叉熵损失, hinge损失]
+  - name: 梯度下降
+    aliases: [gradient descent]
+    definition: 沿负梯度方向迭代更新参数以最小化损失的优化算法。
+    facets: [学习率, 批量大小]
+  - name: 随机梯度下降
+    aliases: [SGD, stochastic gradient descent]
+    definition: 每次用小批量样本估计梯度的梯度下降变体。
+    facets: [动量法, 学习率衰减]
+  - name: Adam优化器
+    aliases: [Adam]
+    definition: 结合动量与自适应学习率的常用优化算法。
+  - name: 过拟合
+    aliases: [overfitting]
+    definition: 模型过度拟合训练数据、泛化能力差的现象。
+    facets: [欠拟合, 泛化误差]
+  - name: 正则化
+    aliases: [regularization]
+    definition: 通过约束模型复杂度来抑制过拟合的一类技术。
+    facets: [L1正则, L2正则, 权重衰减, 早停]
+  - name: 偏差-方差权衡
+    aliases: [bias-variance tradeoff]
+    definition: 模型误差在系统性偏差与对数据敏感度之间的取舍关系。
+  - name: 交叉验证
+    aliases: [cross validation]
+    definition: 将数据多次划分训练/验证以稳健评估模型的方法。
+    facets: [K折交叉验证]
+  - name: 评估指标
+    aliases: [evaluation metrics]
+    definition: 量化模型表现的指标体系。
+    facets: [准确率, 精确率, 召回率, F1分数, AUC]
+  - name: 特征工程
+    aliases: [feature engineering]
+    definition: 从原始数据构造对模型有用的特征的过程。
+    facets: [归一化, 独热编码, 缺失值处理]
+  - name: 决策树
+    aliases: [decision tree]
+    definition: 用一系列特征判断构成树状结构进行预测的模型。
+    facets: [信息增益, 基尼系数, 剪枝]
+  - name: 集成学习
+    aliases: [ensemble learning]
+    definition: 组合多个弱模型以获得更强预测能力的方法。
+    facets: [Bagging, Boosting, Stacking]
+  - name: 随机森林
+    aliases: [random forest]
+    definition: 用随机采样训练多棵决策树并投票的集成模型。
+  - name: 梯度提升树
+    aliases: [GBDT, gradient boosting, XGBoost]
+    definition: 逐棵拟合残差梯度的提升式树集成模型。
+  - name: 支持向量机
+    aliases: [SVM, support vector machine]
+    definition: 寻找最大间隔分类超平面的模型。
+    facets: [间隔最大化, 软间隔, 支持向量]
+  - name: 核方法
+    aliases: [kernel method, 核技巧]
+    definition: 通过核函数在高维特征空间中隐式计算内积的技术。
+    facets: [RBF核, 多项式核]
+  - name: K近邻
+    aliases: [KNN, k-nearest neighbors]
+    definition: 用最近的 K 个样本投票或平均做预测的惰性学习方法。
+  - name: 朴素贝叶斯
+    aliases: [naive Bayes]
+    definition: 假设特征条件独立的贝叶斯分类器。
+  - name: 聚类
+    aliases: [clustering]
+    definition: 把相似样本自动分组的无监督任务。
+  - name: K均值聚类
+    aliases: [k-means]
+    definition: 迭代地把样本分给最近质心并更新质心的聚类算法。
+  - name: 降维
+    aliases: [dimensionality reduction]
+    definition: 把高维数据映射到低维同时保留主要信息的技术。
+  - name: 主成分分析
+    aliases: [PCA, principal component analysis]
+    definition: 沿方差最大方向做线性投影的经典降维方法。
+  - name: EM算法
+    aliases: [expectation maximization, 期望最大化]
+    definition: 交替执行期望步与最大化步来估计含隐变量模型参数的算法。
+  - name: 高斯混合模型
+    aliases: [GMM, Gaussian mixture model]
+    definition: 用多个高斯分布加权叠加建模数据的概率聚类模型。
+
+  # ── 深度学习 ──
+  - name: 深度学习
+    aliases: [deep learning, DL]
+    definition: 以多层神经网络为核心、自动学习层次化表示的机器学习分支。
+  - name: 神经元
+    aliases: [neuron, 人工神经元]
+    definition: 对输入加权求和再经激活函数输出的基本计算单元。
+    facets: [权重, 偏置]
+  - name: 感知机
+    aliases: [perceptron]
+    definition: 单个神经元构成的最简单线性分类器。
+  - name: 激活函数
+    aliases: [activation function]
+    definition: 给神经网络引入非线性的逐元素函数。
+    facets: [Sigmoid, Tanh, ReLU, GELU]
+  - name: Softmax
+    aliases: [softmax函数]
+    definition: 把实数向量归一化为概率分布的函数。
+    facets: [温度参数]
+  - name: 多层感知机
+    aliases: [MLP, multilayer perceptron, 全连接网络]
+    definition: 由多个全连接层堆叠而成的前馈神经网络。
+    facets: [隐藏层, 万能近似定理]
+  - name: 神经网络
+    aliases: [neural network, 人工神经网络]
+    definition: 由大量神经元分层连接构成、可端到端训练的一类模型。
+  - name: 前向传播
+    aliases: [forward propagation]
+    definition: 输入沿网络逐层计算得到输出的过程。
+  - name: 反向传播
+    aliases: [backpropagation, BP算法]
+    definition: 利用链式法则沿计算图反向高效计算所有参数梯度的算法。
+  - name: 计算图
+    aliases: [computational graph]
+    definition: 把运算表示为节点与依赖边的有向图，是自动微分的基础。
+    facets: [自动微分]
+  - name: 神经网络训练技巧
+    aliases: [training techniques]
+    definition: 使深层网络能稳定收敛并泛化的一组工程技术。
+  - name: 权重初始化
+    aliases: [weight initialization]
+    definition: 训练前给参数赋合适初值以避免梯度消失或爆炸。
+    facets: [Xavier初始化, He初始化]
+  - name: 批归一化
+    aliases: [batch normalization, BN]
+    definition: 对每层输入按小批量做标准化以加速与稳定训练。
+    facets: [LayerNorm]
+  - name: Dropout
+    definition: 训练时随机丢弃部分神经元以抑制过拟合的正则化技术。
+  - name: 残差连接
+    aliases: [residual connection, skip connection, 跳跃连接]
+    definition: 把层输入直接加到输出上的捷径结构，使深层网络可训练。
+  - name: 卷积
+    aliases: [convolution]
+    definition: 用滑动核在输入上提取局部特征的运算。
+    facets: [卷积核, 步幅, 填充, 感受野]
+  - name: 池化
+    aliases: [pooling]
+    definition: 对局部区域取最大或平均以下采样的运算。
+  - name: 卷积神经网络
+    aliases: [CNN, convolutional neural network]
+    definition: 以卷积层为核心、擅长处理网格状数据（如图像）的神经网络。
+  - name: ResNet
+    aliases: [残差网络, residual network]
+    definition: 引入残差连接使百层以上网络可训练的经典 CNN 架构。
+  - name: 循环神经网络
+    aliases: [RNN, recurrent neural network]
+    definition: 带循环隐藏状态、按时间步处理序列的神经网络。
+    facets: [隐藏状态, 梯度消失问题, 时序反向传播]
+  - name: LSTM
+    aliases: [长短期记忆网络, long short-term memory]
+    definition: 用门控机制缓解长程依赖问题的循环神经网络。
+    facets: [遗忘门, 输入门, 输出门, 细胞状态]
+  - name: 门控循环单元
+    aliases: [GRU, gated recurrent unit]
+    definition: 简化门控设计的 LSTM 轻量变体。
+  - name: 序列到序列模型
+    aliases: [seq2seq, encoder-decoder]
+    definition: 用编码器压缩输入序列、解码器生成输出序列的框架。
+    facets: [编码器, 解码器, 束搜索]
+  - name: 注意力机制
+    aliases: [attention mechanism]
+    definition: 按相关性对输入加权聚合、让模型聚焦重要部分的机制。
+    facets: [查询-键-值, 注意力权重]
+  - name: 自注意力
+    aliases: [self-attention]
+    definition: 序列内部元素相互计算注意力以捕获全局依赖的机制。
+    facets: [多头注意力, 缩放点积注意力]
+  - name: Transformer
+    definition: 完全基于自注意力、并行处理序列的架构，是现代大模型的基础。
+    facets: [前馈子层, 残差与层归一化, 掩码机制]
+  - name: 位置编码
+    aliases: [positional encoding]
+    definition: 向无序的自注意力注入序列位置信息的技术。
+    facets: [正弦位置编码, RoPE]
+  - name: 词嵌入
+    aliases: [word embedding, 词向量]
+    definition: 把词映射为低维稠密向量、使语义相近的词彼此接近的表示方法。
+  - name: Word2Vec
+    definition: 用上下文预测目标（或反之）学习词向量的经典方法。
+    facets: [Skip-gram, CBOW, 负采样]
+  - name: 语言模型
+    aliases: [language model, LM]
+    definition: 为文本序列建模概率、可逐词预测下一个词的模型。
+    facets: [困惑度, n-gram, 分词]
+  - name: 预训练与微调
+    aliases: [pretrain-finetune, 预训练]
+    definition: 先在大规模数据上通用预训练、再在下游任务上微调的范式。
+    facets: [自监督学习, LoRA]
+  - name: BERT
+    definition: 用掩码语言建模做双向预训练的 Transformer 编码器模型。
+  - name: GPT
+    aliases: [generative pretrained transformer]
+    definition: 自回归式预训练的 Transformer 解码器系列模型。
+  - name: 大语言模型
+    aliases: [LLM, large language model]
+    definition: 参数与数据规模巨大、具备通用语言能力的语言模型。
+    facets: [缩放定律, 上下文学习, 思维链]
+  - name: RLHF
+    aliases: [基于人类反馈的强化学习, reinforcement learning from human feedback]
+    definition: 用人类偏好训练奖励模型再强化学习对齐语言模型的方法。
+    facets: [奖励模型, DPO]
+  - name: 生成模型
+    aliases: [generative model]
+    definition: 学习数据分布并能采样生成新样本的模型。
+  - name: 自编码器
+    aliases: [autoencoder, AE]
+    definition: 通过压缩再重建输入来学习低维表示的神经网络。
+    facets: [瓶颈层, 重建损失]
+  - name: 变分自编码器
+    aliases: [VAE, variational autoencoder]
+    definition: 把隐变量建成概率分布、可采样生成的自编码器。
+    facets: [重参数化技巧, ELBO]
+  - name: 生成对抗网络
+    aliases: [GAN, generative adversarial network]
+    definition: 生成器与判别器对抗训练的生成模型。
+    facets: [生成器, 判别器, 模式坍塌]
+  - name: 扩散模型
+    aliases: [diffusion model]
+    definition: 学习逐步去噪、把噪声还原为数据的生成模型。
+    facets: [前向加噪, 去噪过程, DDPM]
+  - name: 迁移学习
+    aliases: [transfer learning]
+    definition: 把在源任务学到的知识迁移到相关目标任务的方法。
+  - name: 数据增强
+    aliases: [data augmentation]
+    definition: 对训练样本施加保持标签的变换以扩充数据的技术。
+    facets: [随机裁剪, 翻转, Mixup]
+
+  # ── 计算机视觉 / NLP ──
+  - name: 计算机视觉
+    aliases: [computer vision, CV]
+    definition: 让机器理解图像与视频内容的领域。
+  - name: 图像分类
+    aliases: [image classification]
+    definition: 判断整张图像所属类别的任务。
+  - name: 目标检测
+    aliases: [object detection]
+    definition: 定位图像中物体位置并识别类别的任务。
+    facets: [边界框, NMS, IoU]
+  - name: 语义分割
+    aliases: [semantic segmentation]
+    definition: 为图像每个像素预测类别标签的任务。
+  - name: 自然语言处理
+    aliases: [NLP, natural language processing]
+    definition: 让机器理解和生成人类语言的领域。
+
+  # ── 强化学习 ──
+  - name: 强化学习
+    aliases: [reinforcement learning, RL]
+    definition: 智能体通过与环境交互、依据奖励信号学习策略的范式。
+    facets: [探索与利用, 奖励, 智能体与环境]
+  - name: 马尔可夫决策过程
+    aliases: [MDP, Markov decision process]
+    definition: 用状态、动作、转移概率与奖励形式化决策问题的框架。
+    facets: [状态转移, 折扣因子, 价值函数, 贝尔曼方程]
+  - name: Q学习
+    aliases: [Q-learning]
+    definition: 学习状态-动作价值函数的无模型强化学习算法。
+  - name: 深度Q网络
+    aliases: [DQN, deep Q-network]
+    definition: 用神经网络近似 Q 函数的深度强化学习算法。
+    facets: [经验回放, 目标网络]
+  - name: 策略梯度
+    aliases: [policy gradient]
+    definition: 直接对策略参数做梯度上升以最大化期望回报的方法。
+  - name: 近端策略优化
+    aliases: [PPO, proximal policy optimization]
+    definition: 用裁剪目标限制策略更新幅度的稳定策略梯度算法。
+
+edges:
+  # ── 领域层级 (part_of / is_a) ──
+  - [机器学习, part_of, 人工智能]
+  - [计算机视觉, part_of, 人工智能]
+  - [自然语言处理, part_of, 人工智能]
+  - [深度学习, part_of, 机器学习]
+  - [强化学习, part_of, 机器学习]
+  - [监督学习, part_of, 机器学习]
+  - [无监督学习, part_of, 机器学习]
+  - [集成学习, part_of, 机器学习]
+
+  # ── 数学内部结构 ──
+  - [向量, part_of, 线性代数]
+  - [矩阵, part_of, 线性代数]
+  - [特征值与特征向量, part_of, 线性代数]
+  - [奇异值分解, part_of, 线性代数]
+  - [导数, part_of, 微积分]
+  - [偏导数, part_of, 微积分]
+  - [梯度, part_of, 微积分]
+  - [链式法则, part_of, 微积分]
+  - [随机变量, part_of, 概率论]
+  - [概率分布, part_of, 概率论]
+  - [条件概率, part_of, 概率论]
+  - [贝叶斯定理, part_of, 概率论]
+  - [期望与方差, part_of, 概率论]
+  - [高斯分布, is_a, 概率分布]
+  - [熵, part_of, 信息论]
+  - [交叉熵, part_of, 信息论]
+  - [KL散度, part_of, 信息论]
+  - [凸优化, is_a, 最优化]
+
+  # ── 经典机器学习模型分类 ──
+  - [线性回归, is_a, 监督学习]
+  - [逻辑回归, is_a, 监督学习]
+  - [决策树, is_a, 监督学习]
+  - [支持向量机, is_a, 监督学习]
+  - [K近邻, is_a, 监督学习]
+  - [朴素贝叶斯, is_a, 监督学习]
+  - [随机森林, is_a, 集成学习]
+  - [梯度提升树, is_a, 集成学习]
+  - [聚类, is_a, 无监督学习]
+  - [降维, is_a, 无监督学习]
+  - [K均值聚类, is_a, 聚类]
+  - [高斯混合模型, is_a, 聚类]
+  - [主成分分析, is_a, 降维]
+  - [梯度下降, is_a, 最优化]
+  - [随机梯度下降, is_a, 梯度下降]
+  - [Adam优化器, is_a, 梯度下降]
+
+  # ── 神经网络结构 ──
+  - [神经元, part_of, 神经网络]
+  - [激活函数, part_of, 神经网络]
+  - [感知机, is_a, 神经网络]
+  - [多层感知机, is_a, 神经网络]
+  - [卷积神经网络, is_a, 神经网络]
+  - [循环神经网络, is_a, 神经网络]
+  - [Transformer, is_a, 神经网络]
+  - [自编码器, is_a, 神经网络]
+  - [Softmax, is_a, 激活函数]
+  - [卷积, part_of, 卷积神经网络]
+  - [池化, part_of, 卷积神经网络]
+  - [ResNet, is_a, 卷积神经网络]
+  - [残差连接, part_of, ResNet]
+  - [LSTM, is_a, 循环神经网络]
+  - [门控循环单元, is_a, 循环神经网络]
+  - [自注意力, is_a, 注意力机制]
+  - [自注意力, part_of, Transformer]
+  - [位置编码, part_of, Transformer]
+  - [神经网络训练技巧, part_of, 深度学习]
+  - [权重初始化, part_of, 神经网络训练技巧]
+  - [批归一化, part_of, 神经网络训练技巧]
+  - [Dropout, part_of, 神经网络训练技巧]
+  - [Dropout, is_a, 正则化]
+  - [Word2Vec, is_a, 词嵌入]
+  - [大语言模型, is_a, 语言模型]
+  - [BERT, is_a, 语言模型]
+  - [GPT, is_a, 大语言模型]
+  - [变分自编码器, is_a, 自编码器]
+  - [变分自编码器, is_a, 生成模型]
+  - [生成对抗网络, is_a, 生成模型]
+  - [扩散模型, is_a, 生成模型]
+  - [词嵌入, part_of, 自然语言处理]
+  - [语言模型, part_of, 自然语言处理]
+  - [图像分类, part_of, 计算机视觉]
+  - [目标检测, part_of, 计算机视觉]
+  - [语义分割, part_of, 计算机视觉]
+  - [马尔可夫决策过程, part_of, 强化学习]
+  - [Q学习, part_of, 强化学习]
+  - [策略梯度, part_of, 强化学习]
+  - [深度Q网络, is_a, Q学习]
+  - [近端策略优化, is_a, 策略梯度]
+
+  # ── 先修链：数学 ──
+  - [向量, prerequisite_of, 矩阵]
+  - [矩阵, prerequisite_of, 特征值与特征向量]
+  - [特征值与特征向量, prerequisite_of, 奇异值分解]
+  - [特征值与特征向量, prerequisite_of, 主成分分析]
+  - [导数, prerequisite_of, 偏导数]
+  - [偏导数, prerequisite_of, 梯度]
+  - [导数, prerequisite_of, 链式法则]
+  - [随机变量, prerequisite_of, 概率分布]
+  - [概率分布, prerequisite_of, 期望与方差]
+  - [概率分布, prerequisite_of, 高斯分布]
+  - [概率分布, prerequisite_of, 最大似然估计]
+  - [条件概率, prerequisite_of, 贝叶斯定理]
+  - [概率分布, prerequisite_of, 熵]
+  - [熵, prerequisite_of, 交叉熵]
+  - [熵, prerequisite_of, KL散度]
+
+  # ── 先修链：经典机器学习 ──
+  - [梯度, prerequisite_of, 梯度下降]
+  - [损失函数, prerequisite_of, 梯度下降]
+  - [梯度下降, prerequisite_of, 随机梯度下降]
+  - [随机梯度下降, prerequisite_of, Adam优化器]
+  - [线性回归, prerequisite_of, 逻辑回归]
+  - [最大似然估计, prerequisite_of, 逻辑回归]
+  - [交叉熵, prerequisite_of, 损失函数]
+  - [贝叶斯定理, prerequisite_of, 朴素贝叶斯]
+  - [高斯分布, prerequisite_of, 高斯混合模型]
+  - [最大似然估计, prerequisite_of, EM算法]
+  - [EM算法, prerequisite_of, 高斯混合模型]
+  - [K均值聚类, prerequisite_of, 高斯混合模型]
+  - [决策树, prerequisite_of, 随机森林]
+  - [决策树, prerequisite_of, 梯度提升树]
+  - [支持向量机, prerequisite_of, 核方法]
+  - [凸优化, prerequisite_of, 支持向量机, 0.8]
+  - [过拟合, prerequisite_of, 正则化]
+  - [过拟合, prerequisite_of, 交叉验证]
+  - [过拟合, prerequisite_of, 偏差-方差权衡]
+  - [Python, prerequisite_of, NumPy]
+
+  # ── 先修链：深度学习 ──
+  - [神经元, prerequisite_of, 感知机]
+  - [神经元, prerequisite_of, 神经网络]
+  - [感知机, prerequisite_of, 多层感知机]
+  - [激活函数, prerequisite_of, 多层感知机]
+  - [线性回归, prerequisite_of, 神经网络, 0.8]
+  - [前向传播, prerequisite_of, 反向传播]
+  - [链式法则, prerequisite_of, 反向传播]
+  - [计算图, prerequisite_of, 反向传播]
+  - [梯度下降, prerequisite_of, 反向传播]
+  - [反向传播, prerequisite_of, 深度学习]
+  - [神经网络, prerequisite_of, 深度学习]
+  - [卷积, prerequisite_of, 卷积神经网络]
+  - [池化, prerequisite_of, 卷积神经网络]
+  - [多层感知机, prerequisite_of, 卷积神经网络]
+  - [卷积神经网络, prerequisite_of, ResNet]
+  - [残差连接, prerequisite_of, ResNet]
+  - [多层感知机, prerequisite_of, 循环神经网络]
+  - [循环神经网络, prerequisite_of, LSTM]
+  - [LSTM, prerequisite_of, 门控循环单元]
+  - [循环神经网络, prerequisite_of, 序列到序列模型]
+  - [序列到序列模型, prerequisite_of, 注意力机制]
+  - [Softmax, prerequisite_of, 注意力机制]
+  - [注意力机制, prerequisite_of, 自注意力]
+  - [自注意力, prerequisite_of, Transformer]
+  - [位置编码, prerequisite_of, Transformer]
+  - [词嵌入, prerequisite_of, Word2Vec]
+  - [词嵌入, prerequisite_of, Transformer, 0.8]
+  - [语言模型, prerequisite_of, GPT]
+  - [Transformer, prerequisite_of, BERT]
+  - [Transformer, prerequisite_of, GPT]
+  - [迁移学习, prerequisite_of, 预训练与微调]
+  - [预训练与微调, prerequisite_of, BERT]
+  - [预训练与微调, prerequisite_of, 大语言模型]
+  - [Transformer, prerequisite_of, 大语言模型]
+  - [大语言模型, prerequisite_of, RLHF]
+  - [强化学习, prerequisite_of, RLHF]
+  - [近端策略优化, prerequisite_of, RLHF]
+  - [自编码器, prerequisite_of, 变分自编码器]
+  - [KL散度, prerequisite_of, 变分自编码器]
+  - [高斯分布, prerequisite_of, 扩散模型]
+  - [神经网络, prerequisite_of, 生成对抗网络]
+
+  # ── 先修链：CV / RL ──
+  - [卷积神经网络, prerequisite_of, 图像分类]
+  - [图像分类, prerequisite_of, 目标检测]
+  - [卷积神经网络, prerequisite_of, 语义分割]
+  - [条件概率, prerequisite_of, 马尔可夫决策过程]
+  - [马尔可夫决策过程, prerequisite_of, Q学习]
+  - [马尔可夫决策过程, prerequisite_of, 策略梯度]
+  - [Q学习, prerequisite_of, 深度Q网络]
+  - [神经网络, prerequisite_of, 深度Q网络]
+  - [策略梯度, prerequisite_of, 近端策略优化]
+
+  # ── 弱关联 ──
+  - [偏差-方差权衡, related_to, 正则化]
+  - [数据增强, related_to, 正则化]
+  - [数据增强, related_to, 图像分类]
+  - [批归一化, related_to, 特征工程]
+  - [变分自编码器, related_to, 扩散模型]
+  - [奇异值分解, related_to, 降维]
+  - [评估指标, related_to, 交叉验证]
+  - [特征工程, related_to, 机器学习]
+  - [NumPy, related_to, 线性代数]
