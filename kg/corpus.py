@@ -10,17 +10,25 @@ from collections import Counter
 
 from . import db, wiki
 
-MATCH_THRESHOLD = 0.55  # 查询词与页面标题/重定向的最低相似度，防搜索引擎乱配
+MATCH_THRESHOLD = 0.75  # 查询词与页面标题/重定向的最低相似度，防搜索引擎乱配（0.7 拦不住「深度Q网络」vs「深度神经网络」=0.727）
+SUBSTRING_MIN_RATIO = 0.6  # 子串命中还需短串占长串的最低长度比，防「目标检测」命中「维奥拉-琼斯目标检测框架」
+DISAMBIG_MARKERS = ("disambiguation pages", "消歧义")  # 分类含这些标记 = 消歧义页，不能当概念来源
 
 
 def _similar(a: str, b: str) -> float:
     a, b = a.lower().replace(" ", ""), b.lower().replace(" ", "")
     if not a or not b:
         return 0.0
-    if a in b or b in a:
+    short, long_ = (a, b) if len(a) <= len(b) else (b, a)
+    if short in long_ and len(short) / len(long_) >= SUBSTRING_MIN_RATIO:
         return 1.0
     return difflib.SequenceMatcher(None, a, b).ratio()
 
+
+
+def _is_disambiguation(page: dict) -> bool:
+    """消歧义页只是同名词条列表，字符串相似度拦不住（如「Pooling」精确重定向到 en:Pool）。"""
+    return any(m in c.lower() for c in page["categories"] for m in DISAMBIG_MARKERS)
 
 
 def _row_to_page(row, with_text=True) -> dict:
@@ -126,7 +134,7 @@ def fetch_and_store(conn, term: str):
         fresh = page is None
         if fresh:
             page = wiki.fetch_page(title, lang)
-        if not page or len(page["text"]) < wiki.MIN_USEFUL_CHARS:
+        if not page or len(page["text"]) < wiki.MIN_USEFUL_CHARS or _is_disambiguation(page):
             continue
         if max(_similar(term, t) for t in [page["title"]] + page["redirects"]) < MATCH_THRESHOLD:
             continue  # 搜到的页面和查询词对不上，宁可不要
@@ -191,11 +199,11 @@ def grow(conn, limit=10) -> list[str]:
             break
         page = wiki.fetch_page(title, lang)
         fetched += 1
-        if page and len(page["text"]) >= wiki.MIN_USEFUL_CHARS:
+        if page and len(page["text"]) >= wiki.MIN_USEFUL_CHARS and not _is_disambiguation(page):
             save_page(conn, page)
             lines.append(f"✓ {title}（被 {c} 页链接）-> {source_of(page)}")
         else:
-            lines.append(f"✗ {title} 无有效正文，跳过")
+            lines.append(f"✗ {title} 无有效正文或为消歧义页，跳过")
     return lines
 
 

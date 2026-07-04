@@ -4,7 +4,8 @@ import time
 import requests
 
 API = {"zh": "https://zh.wikipedia.org/w/api.php",
-       "en": "https://en.wikipedia.org/w/api.php"}
+       "en": "https://en.wikipedia.org/w/api.php",
+       "wd": "https://www.wikidata.org/w/api.php"}
 HEADERS = {"User-Agent": "llm-graph-kg/0.1 (personal knowledge graph project)"}
 
 MIN_USEFUL_CHARS = 300    # 正文短于此长度视为无效来源
@@ -38,6 +39,39 @@ def search(term: str, lang: str) -> str | None:
                        "srlimit": 3, "format": "json", "utf8": 1})
     hits = data.get("query", {}).get("search", [])
     return hits[0]["title"] if hits else None
+
+
+def page_qids(lang: str, page_ids: list[int]) -> dict:
+    """批量查页面对应的 Wikidata QID。返回 {page_id: qid 或 ''}（'' = 无对应项）。"""
+    out = {}
+    for i in range(0, len(page_ids), 50):
+        batch = page_ids[i:i + 50]
+        data = _get(lang, {"action": "query", "prop": "pageprops", "ppprop": "wikibase_item",
+                           "pageids": "|".join(map(str, batch)), "format": "json", "utf8": 1})
+        for pid, p in data.get("query", {}).get("pages", {}).items():
+            out[int(pid)] = p.get("pageprops", {}).get("wikibase_item", "")
+    return out
+
+
+def wikidata_claims(qids: list[str], props: list[str]) -> dict:
+    """批量取 Wikidata 实体在指定属性上的目标 QID。返回 {qid: {prop: [目标qid]}}。"""
+    out = {}
+    for i in range(0, len(qids), 50):
+        batch = qids[i:i + 50]
+        data = _get("wd", {"action": "wbgetentities", "ids": "|".join(batch),
+                           "props": "claims", "format": "json"})
+        for qid, ent in data.get("entities", {}).items():
+            claims = {}
+            for prop in props:
+                targets = []
+                for c in ent.get("claims", {}).get(prop, []):
+                    val = c.get("mainsnak", {}).get("datavalue", {}).get("value")
+                    if isinstance(val, dict) and val.get("id"):
+                        targets.append(val["id"])
+                if targets:
+                    claims[prop] = targets
+            out[qid] = claims
+    return out
 
 
 def fetch_page(title: str, lang: str) -> dict | None:

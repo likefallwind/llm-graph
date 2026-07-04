@@ -64,6 +64,37 @@ CREATE TABLE IF NOT EXISTS ingest_log (
     created_at REAL NOT NULL,
     UNIQUE(anchor, source)
 );
+CREATE TABLE IF NOT EXISTS review_log (
+    id         INTEGER PRIMARY KEY,
+    item_type  TEXT NOT NULL,             -- node / edge
+    item_id    INTEGER NOT NULL,
+    action     TEXT NOT NULL,             -- approve/reject/merge/flip/retype/demote/audit_*
+    detail     TEXT NOT NULL DEFAULT '',
+    source     TEXT NOT NULL DEFAULT '',  -- 条目的 source，按通道统计 precision 用
+    decided_by TEXT NOT NULL DEFAULT 'human',  -- human / auto
+    created_at REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS review_signals (
+    item_type   TEXT NOT NULL,
+    item_id     INTEGER NOT NULL,
+    signals     TEXT NOT NULL DEFAULT '{}',  -- 结构佐证（互链/RefD/Wikidata），零 LLM
+    llm_verdict TEXT,                        -- LLM 复核结论
+    llm_reason  TEXT,
+    updated_at  REAL NOT NULL,
+    PRIMARY KEY (item_type, item_id)
+);
+CREATE TABLE IF NOT EXISTS page_qid (
+    lang       TEXT NOT NULL,
+    page_id    INTEGER NOT NULL,
+    qid        TEXT NOT NULL DEFAULT '',  -- '' = 查过但页面无 Wikidata 项
+    fetched_at REAL NOT NULL,
+    PRIMARY KEY (lang, page_id)
+);
+CREATE TABLE IF NOT EXISTS wikidata_claims (
+    qid        TEXT PRIMARY KEY,
+    claims     TEXT NOT NULL DEFAULT '{}',  -- {属性: [目标QID]}，只存我们关心的属性
+    fetched_at REAL NOT NULL
+);
 """
 
 
@@ -159,6 +190,41 @@ def list_edges(conn, status=None, type_=None):
 
 def visible_statuses():
     return ("seed", "approved")
+
+
+def log_review(conn, item_type: str, item_id: int, action: str,
+               detail="", source="", decided_by="human"):
+    """裁决留痕：这是日后校准 AI 审核（按通道统计 precision）的标注数据，每次裁决都要记。"""
+    conn.execute(
+        "INSERT INTO review_log(item_type, item_id, action, detail, source, decided_by, created_at)"
+        " VALUES (?,?,?,?,?,?,?)",
+        (item_type, item_id, action, detail, source, decided_by, time.time()))
+
+
+def get_signals(conn, item_type: str, item_id: int) -> dict | None:
+    row = conn.execute("SELECT * FROM review_signals WHERE item_type=? AND item_id=?",
+                       (item_type, item_id)).fetchone()
+    if not row:
+        return None
+    d = dict(row)
+    d["signals"] = json.loads(d["signals"])
+    return d
+
+
+def save_signals(conn, item_type: str, item_id: int, signals: dict = None,
+                 llm_verdict: str = None, llm_reason: str = None):
+    """写入/更新佐证信号；signals 与 llm_* 可分别更新，互不覆盖。"""
+    row = get_signals(conn, item_type, item_id)
+    merged = (row or {}).get("signals", {})
+    if signals is not None:
+        merged.update(signals)
+    conn.execute(
+        "INSERT OR REPLACE INTO review_signals(item_type, item_id, signals, llm_verdict, llm_reason, updated_at)"
+        " VALUES (?,?,?,?,?,?)",
+        (item_type, item_id, json.dumps(merged, ensure_ascii=False),
+         llm_verdict if llm_verdict is not None else (row or {}).get("llm_verdict"),
+         llm_reason if llm_reason is not None else (row or {}).get("llm_reason"),
+         time.time()))
 
 
 def approved_edges(conn, type_=None):

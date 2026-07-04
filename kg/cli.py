@@ -22,6 +22,17 @@ def cmd_stats(args):
     print(f"节点 {len(nodes)}：{by(nodes, 'status')}")
     print(f"边   {len(edges)}：{by(edges, 'status')}")
     print(f"边类型：{by(edges, 'type')}")
+    # 裁决日志按通道汇总：这是日后校准自动放行阈值的数据
+    rows = conn.execute(
+        "SELECT CASE WHEN source LIKE 'mine:%' THEN source"
+        "            WHEN source LIKE 'wikidata%' THEN 'wikidata'"
+        "            WHEN source LIKE 'wiki:%' THEN 'ingest/expand' ELSE source END AS channel,"
+        "       decided_by, action, COUNT(*) c FROM review_log"
+        " GROUP BY channel, decided_by, action ORDER BY channel").fetchall()
+    if rows:
+        print("裁决日志：")
+        for r in rows:
+            print(f"  {r['channel'] or '(空)'} [{r['decided_by']}] {r['action']}: {r['c']}")
 
 
 def cmd_check(args):
@@ -73,6 +84,7 @@ def _print_ingest(stats, dry_run):
         print("  " + line)
     print(f"  新节点 {stats['proposed_nodes']}，合并别名 {stats['merged_aliases']}，"
           f"新边 {stats['proposed_edges']}，丢弃无据 related_to {stats['dropped_related']}，"
+          f"丢弃伪证据 {stats['dropped_no_evidence']}，"
           f"锚点新增 facets {stats['anchor_facets_added']}"
           f"（节点与边均为 proposed，待审核）")
 
@@ -113,12 +125,41 @@ def cmd_corpus(args):
 
 
 def cmd_mine(args):
-    from . import mine
+    from . import mine, wikidata
     conn = db.connect()
-    lines = mine.import_aliases(conn) if args.action == "aliases" else mine.category_edges(conn)
+    if args.action == "aliases":
+        lines = mine.import_aliases(conn)
+    elif args.action == "categories":
+        lines = mine.category_edges(conn)
+    else:
+        lines = wikidata.mine_edges(conn)
     for line in lines:
         print(line)
     print(f"共 {len(lines)} 条" if lines else "无新发现")
+
+
+def _signal_line(conn, item_type, item_id) -> str:
+    """review_signals 里若有佐证（kg verify 产出），拼一行展示。"""
+    sig = db.get_signals(conn, item_type, item_id)
+    if not sig:
+        return ""
+    parts = []
+    s = sig["signals"]
+    if item_type == "edge":
+        if "link_src_dst" in s:
+            arrow = {(True, True): "互链", (True, False): "仅 src→dst",
+                     (False, True): "仅 dst→src", (False, False): "无互链"}
+            parts.append("语料链接: " + arrow[(bool(s["link_src_dst"]), bool(s["link_dst_src"]))])
+        if s.get("refd"):
+            parts.append(f"RefD 先修信号: {'支持' if s['refd'] > 0 else '方向可疑'}")
+        if s.get("wikidata"):
+            parts.append(f"Wikidata: {s['wikidata']}")
+    if item_type == "node" and "has_page" in s:
+        parts.append("有语料页" + ("（名字精确命中标题/重定向）" if s.get("exact_title") else "")
+                     if s["has_page"] else "无语料页")
+    if sig.get("llm_verdict"):
+        parts.append(f"LLM 复核: {sig['llm_verdict']}（{sig.get('llm_reason') or ''}）")
+    return "；".join(parts)
 
 
 def _review_nodes(conn):
@@ -134,18 +175,23 @@ def _review_nodes(conn):
         if n["facets"]:
             print(f"  facets: {', '.join(n['facets'])}")
         print(f"  来源: {n['source']}")
+        hint = _signal_line(conn, "node", n["id"])
+        if hint:
+            print(f"  佐证: {hint}")
         if rel:
             print("  关联的待审核边:")
             print("\n".join(rel))
-        ans = input("  [a]批准 [r]拒绝 [m]合并到已有节点 [s]跳过 [q]退出 > ").strip().lower()
+        ans = input("  [a]批准 [r]拒绝 [m]合并到已有节点 [d]降级为已有节点的facet [s]跳过 [q]退出 > ").strip().lower()
         if ans == "q":
             return False
         if ans == "a":
             db.update_node(conn, n["id"], status="approved")
+            db.log_review(conn, "node", n["id"], "approve", source=n["source"])
         elif ans == "r":
             db.update_node(conn, n["id"], status="rejected")
             conn.execute("UPDATE edges SET status='rejected' WHERE (src=? OR dst=?) AND status='proposed'",
                          (n["id"], n["id"]))
+            db.log_review(conn, "node", n["id"], "reject", source=n["source"])
         elif ans == "m":
             target_name = input("  合并到（节点名）> ").strip()
             target = db.find_by_name_or_alias(conn, target_name)
@@ -157,6 +203,22 @@ def _review_nodes(conn):
             conn.execute("UPDATE edges SET src=? WHERE src=?", (target["id"], n["id"]))
             conn.execute("UPDATE edges SET dst=? WHERE dst=?", (target["id"], n["id"]))
             db.update_node(conn, n["id"], status="rejected")
+            db.log_review(conn, "node", n["id"], "merge",
+                          detail=f"-> {target['name']}", source=n["source"])
+        elif ans == "d":
+            target_name = input("  作为哪个节点的 facet（节点名）> ").strip()
+            target = db.find_by_name_or_alias(conn, target_name)
+            if not target or target["id"] == n["id"]:
+                print("  目标节点无效，跳过")
+                continue
+            if n["name"] not in target["facets"]:
+                db.update_node(conn, target["id"], facets=target["facets"] + [n["name"]])
+            db.update_node(conn, n["id"], status="rejected")
+            conn.execute("UPDATE edges SET status='rejected' WHERE (src=? OR dst=?) AND status='proposed'",
+                         (n["id"], n["id"]))
+            db.log_review(conn, "node", n["id"], "demote",
+                          detail=f"facet of {target['name']}", source=n["source"])
+            print(f"  已降级为「{target['name']}」的 facet")
         conn.commit()
     return True
 
@@ -172,20 +234,116 @@ def _review_edges(conn):
         print(f"\n[{e['id']}] {names[e['src']]} -{e['type']}-> {names[e['dst']]}"
               f"  (confidence={e['confidence']})")
         print(f"  理由: {e['rationale']}")
-        ans = input("  [a]批准 [r]拒绝 [s]跳过 [q]退出 > ").strip().lower()
+        hint = _signal_line(conn, "edge", e["id"])
+        if hint:
+            print(f"  佐证: {hint}")
+        ans = input("  [a]批准 [r]拒绝 [f]方向反了(翻转并批准) [t]改类型并批准 [s]跳过 [q]退出 > ").strip().lower()
         if ans == "q":
             return False
         if ans == "a":
             conn.execute("UPDATE edges SET status='approved' WHERE id=?", (e["id"],))
+            db.log_review(conn, "edge", e["id"], "approve", source=e["source"])
         elif ans == "r":
             conn.execute("UPDATE edges SET status='rejected' WHERE id=?", (e["id"],))
+            db.log_review(conn, "edge", e["id"], "reject", source=e["source"])
+        elif ans == "f":
+            dup = conn.execute("SELECT id FROM edges WHERE src=? AND dst=? AND type=?",
+                               (e["dst"], e["src"], e["type"])).fetchone()
+            if dup:
+                print(f"  反向边已存在（id={dup['id']}），本条按拒绝处理")
+                conn.execute("UPDATE edges SET status='rejected' WHERE id=?", (e["id"],))
+                db.log_review(conn, "edge", e["id"], "reject",
+                              detail=f"方向反且反向边已存在 id={dup['id']}", source=e["source"])
+            else:
+                conn.execute("UPDATE edges SET src=?, dst=?, status='approved',"
+                             " rationale=? WHERE id=?",
+                             (e["dst"], e["src"], f"[人工翻转] {e['rationale']}", e["id"]))
+                db.log_review(conn, "edge", e["id"], "flip", source=e["source"])
+                print(f"  已翻转: {names[e['dst']]} -{e['type']}-> {names[e['src']]}")
+        elif ans == "t":
+            new_type = input(f"  新类型（{'/'.join(db.EDGE_TYPES)}）> ").strip()
+            if new_type not in db.EDGE_TYPES or new_type == e["type"]:
+                print("  类型无效，跳过")
+                continue
+            rationale = e["rationale"]
+            if new_type == "related_to":
+                kind = input(f"  kind（{'/'.join(db.RELATED_KINDS)}）> ").strip()
+                if kind not in db.RELATED_KINDS:
+                    print("  kind 无效，跳过")
+                    continue
+                rationale = f"[{kind}] {rationale}"
+            dup = conn.execute("SELECT id FROM edges WHERE src=? AND dst=? AND type=? AND id!=?",
+                               (e["src"], e["dst"], new_type, e["id"])).fetchone()
+            if dup:
+                print(f"  同型边已存在（id={dup['id']}），本条按拒绝处理")
+                conn.execute("UPDATE edges SET status='rejected' WHERE id=?", (e["id"],))
+                db.log_review(conn, "edge", e["id"], "reject",
+                              detail=f"改型后与 id={dup['id']} 重复", source=e["source"])
+            else:
+                conn.execute("UPDATE edges SET type=?, status='approved',"
+                             " rationale=? WHERE id=?",
+                             (new_type, f"[人工改型 {e['type']}->{new_type}] {rationale}", e["id"]))
+                db.log_review(conn, "edge", e["id"], "retype",
+                              detail=f"{e['type']}->{new_type}", source=e["source"])
         conn.commit()
     return True
 
 
+def _review_audit(conn, k):
+    """抽检自动放行的条目：AI 为主审后，人工的角色从守门员变成抽检员。"""
+    import random
+    rows = conn.execute(
+        "SELECT * FROM review_log WHERE decided_by='auto' AND action='approve'"
+        " AND NOT EXISTS (SELECT 1 FROM review_log h WHERE h.item_type=review_log.item_type"
+        "   AND h.item_id=review_log.item_id AND h.action LIKE 'audit_%')").fetchall()
+    if not rows:
+        print("没有可抽检的自动放行条目")
+        return
+    names = {n["id"]: n["name"] for n in db.list_nodes(conn)}
+    sample = random.sample(rows, min(k, len(rows)))
+    print(f"=== 抽检 {len(sample)}/{len(rows)} 条自动放行 ===")
+    for r in sample:
+        if r["item_type"] == "edge":
+            e = conn.execute("SELECT * FROM edges WHERE id=?", (r["item_id"],)).fetchone()
+            if not e or e["status"] != "approved":
+                continue
+            print(f"\n[edge {e['id']}] {names[e['src']]} -{e['type']}-> {names[e['dst']]}")
+            print(f"  理由: {e['rationale']}")
+        else:
+            n = db.get_node(conn, r["item_id"])
+            if not n or n["status"] != "approved":
+                continue
+            print(f"\n[node {n['id']}] {n['name']}: {n['definition']}")
+        ans = input("  [y]无误 [r]误放行，改为拒绝 [s]跳过 [q]退出 > ").strip().lower()
+        if ans == "q":
+            break
+        if ans == "y":
+            db.log_review(conn, r["item_type"], r["item_id"], "audit_confirm", source=r["source"])
+        elif ans == "r":
+            table = "edges" if r["item_type"] == "edge" else "nodes"
+            conn.execute(f"UPDATE {table} SET status='rejected' WHERE id=?", (r["item_id"],))
+            db.log_review(conn, r["item_type"], r["item_id"], "audit_reject", source=r["source"])
+        conn.commit()
+
+
+def cmd_verify(args):
+    from . import verify
+    conn = db.connect()
+    for line in verify.structural_signals(conn):
+        print(line)
+    if not args.no_llm:
+        for line in verify.llm_review(conn, limit=args.limit, redo=args.redo):
+            print("  " + line)
+    if args.apply:
+        for line in verify.apply_auto(conn):
+            print(line)
+
+
 def cmd_review(args):
     conn = db.connect()
-    if _review_nodes(conn):
+    if args.audit:
+        _review_audit(conn, args.audit)
+    elif _review_nodes(conn):
         _review_edges(conn)
     print("\n审核结束，运行一致性守卫：")
     print(guards.run_all(conn))
@@ -237,12 +395,22 @@ def main():
     s.add_argument("--limit", type=int, help="本次最多抓取页数（grow 默认 10）")
     s.set_defaults(fn=cmd_corpus)
 
-    s = sub.add_parser("mine", help="结构挖掘（零 LLM）：aliases 重定向→别名 / categories 分类→候选边")
-    s.add_argument("action", choices=["aliases", "categories"])
+    s = sub.add_parser("mine", help="结构挖掘（零 LLM）：aliases 重定向→别名 / categories 分类→候选边"
+                                    " / wikidata QID关系→候选边+同概念仲裁")
+    s.add_argument("action", choices=["aliases", "categories", "wikidata"])
     s.set_defaults(fn=cmd_mine)
 
-    s = sub.add_parser("review", help="逐条审核 proposed 节点与边")
+    s = sub.add_parser("review", help="逐条审核 proposed 节点与边（--audit N 抽检自动放行的条目）")
+    s.add_argument("--audit", type=int, help="抽检 N 条自动放行的条目")
     s.set_defaults(fn=cmd_review)
+
+    s = sub.add_parser("verify", help="复核 proposed 条目：结构佐证（零 LLM）+ LLM 判断题复核；"
+                                      "--apply 双重一致自动裁决")
+    s.add_argument("--limit", type=int, default=10, help="本次 LLM 复核条数上限")
+    s.add_argument("--no-llm", action="store_true", help="只算结构佐证")
+    s.add_argument("--redo", action="store_true", help="重跑已有 LLM 结论的条目")
+    s.add_argument("--apply", action="store_true", help="LLM 与结构佐证一致的边自动批准/拒绝")
+    s.set_defaults(fn=cmd_verify)
 
     args = p.parse_args()
     args.fn(args)

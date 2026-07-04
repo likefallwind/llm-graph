@@ -56,7 +56,7 @@ def expand_node(conn, node: dict, limit=5, dry_run=False) -> dict:
     gaps = result.get("gaps", [])
     stats = {"hypotheses": len(gaps), "verified": 0, "dropped": 0,
              "proposed_nodes": 0, "merged_aliases": 0, "proposed_edges": 0,
-             "dropped_related": 0, "details": []}
+             "dropped_related": 0, "dropped_no_evidence": 0, "details": []}
 
     for g in gaps:
         name = g.get("name", "").strip()
@@ -88,7 +88,8 @@ def expand_node(conn, node: dict, limit=5, dry_run=False) -> dict:
         new_node = db.find_by_name_or_alias(conn, name)
         if new_node:
             corpus.map_node(conn, new_node["id"], page)
-        for key in ("proposed_nodes", "merged_aliases", "proposed_edges", "dropped_related"):
+        for key in ("proposed_nodes", "merged_aliases", "proposed_edges",
+                    "dropped_related", "dropped_no_evidence"):
             stats[key] += sub[key]
         stats["details"] += ["  " + line for line in sub["details"]]
     return stats

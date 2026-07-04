@@ -69,6 +69,25 @@ TOPIC_FOCUS = ("「{topic}」是一个候选新概念（图谱中尚不存在）
 
 INFERRED_MAX_CONFIDENCE = 0.6
 
+_ELLIPSIS = ("…", "...", "。。。")
+
+
+def _norm(s: str) -> str:
+    return "".join(s.split()).lower()
+
+
+def evidence_in_text(evidence: str, text: str) -> bool:
+    """evidence 必须真的出自正文（防 LLM 编造"原文"）：
+    规范化（去空白、小写）后做子串校验；摘录可含省略号截断，按省略号切段逐段校验。"""
+    if not evidence or not evidence.strip():
+        return False
+    norm_text = _norm(text)
+    parts = [evidence]
+    for e in _ELLIPSIS:
+        parts = [q for p in parts for q in p.split(e)]
+    parts = [_norm(p) for p in parts if _norm(p)]
+    return bool(parts) and all(p in norm_text for p in parts)
+
 
 def ingest_topic(conn, term: str, limit=6, dry_run=False) -> dict:
     """锚点模式：围绕图谱已有节点，从语料库（缺页自动抓取）提取邻居知识。"""
@@ -105,7 +124,8 @@ def _extract(conn, page, focus, anchor=None, hint="", dry_run=False) -> dict:
     source = corpus.source_of(page)
     stats = {"page": corpus.url_of(page), "source": source,
              "proposed_nodes": 0, "merged_aliases": 0, "proposed_edges": 0,
-             "anchor_facets_added": 0, "dropped_related": 0, "details": []}
+             "anchor_facets_added": 0, "dropped_related": 0,
+             "dropped_no_evidence": 0, "details": []}
     if dry_run:
         stats["details"] = result
         return stats
@@ -123,6 +143,10 @@ def _extract(conn, page, focus, anchor=None, hint="", dry_run=False) -> dict:
     for c in result.get("concepts", []):
         name, definition = c.get("name", "").strip(), c.get("definition", "")
         if not name:
+            continue
+        if not evidence_in_text(c.get("evidence", ""), page["text"]):
+            stats["dropped_no_evidence"] += 1
+            stats["details"].append(f"丢弃「{name}」：evidence 不是正文原文（{c.get('evidence', '')[:40]}）")
             continue
         existing, how = dedup.find_duplicate(conn, name, definition)
         if existing:
@@ -146,6 +170,9 @@ def _extract(conn, page, focus, anchor=None, hint="", dry_run=False) -> dict:
             other = db.find_by_name_or_alias(conn, e.get("other", ""))
             other_id = other["id"] if other else name_to_id.get(e.get("other", "").strip())
             if other_id is None or other_id == new_id or e.get("type") not in db.EDGE_TYPES:
+                continue
+            if not evidence_in_text(e.get("evidence", ""), page["text"]):
+                stats["dropped_no_evidence"] += 1
                 continue
             rationale = e.get("evidence", "")
             confidence = float(e.get("confidence", 0.5))
