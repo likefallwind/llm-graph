@@ -6,14 +6,16 @@
 - LLM 判断题复核：与提取不同的视角——只给材料（evidence、来源节选、双方定义），
   只回答是/否，禁止用模型记忆。复核时 LLM 也不是知识源，语料才是。
 
---apply 自动裁决规则（保守，只动两端已生效的边，节点一律留人工）：
-- 批准：LLM 判「支持」且方向无疑 + 至少一项结构佐证 + 先修方向信号不反对
-- 拒绝：LLM 判「不支持」且无任何结构佐证
+--apply 自动裁决规则（保守，两个独立信源一致才动）：
+- 节点只自动批准：LLM 判「独立概念」+ 名字精确命中语料页标题/重定向；
+  拒绝与降级 facet 一律留人工（降级要人选归属概念）。先裁节点再裁边。
+- 边批准：LLM 判「支持」且方向无疑 + 至少一项结构佐证 + 先修方向信号不反对
+- 边拒绝：LLM 判「不支持」且无任何结构佐证
 其余留人工。自动裁决记 review_log(decided_by='auto')，用 kg review --audit 抽检。
 """
 import re
 
-from . import corpus, db, llm, wikidata
+from . import corpus, db, docs, llm, wikidata
 
 EDGE_TYPE_SEMANTICS = {
     "is_a": "src 是 dst 的一种",
@@ -70,12 +72,27 @@ def _links_to(links_lower: set, other_node: dict, other_page: dict | None) -> bo
     return bool(links_lower & targets)
 
 
+def _toc_vote(pa, pb):
+    """教材目录序信号（仅先修边）：所有共同书里 src 首现章节序 < dst -> +1（支持方向），
+    反之 -1；多书矛盾或同节 -> 0（宁可无信号不可假信号）；无共同书 -> None（不写键）。"""
+    if not pa or not pb:
+        return None
+    votes = set()
+    for book in pa.keys() & pb.keys():
+        d = pb[book] - pa[book]
+        votes.add(0 if d == 0 else (1 if d > 0 else -1))
+    if not votes:
+        return None
+    return 1 if votes == {1} else (-1 if votes == {-1} else 0)
+
+
 def structural_signals(conn) -> list[str]:
     """给所有 proposed 边/节点算结构佐证（零 LLM），写入 review_signals。返回日志行。"""
     lines = []
     index = corpus.title_index(conn)
     nodes = {n["id"]: n for n in db.list_nodes(conn)}
     nq = wikidata.node_qids(conn)
+    toc_pos = docs.concept_positions(conn)  # {node_id: {book: 首现章节序}}，无文档语料时为空
     page_cache, links_cache = {}, {}
 
     def page_of(nid):
@@ -105,6 +122,11 @@ def structural_signals(conn) -> list[str]:
             rels = wikidata.relation_between(conn, qa, qb)
             sig["wikidata"] = "，".join(r.replace("a→b", "src→dst").replace("b→a", "dst→src")
                                         for r in rels) or None
+        if e["type"] == "prerequisite_of":
+            # 不依赖维基页面：纯教材来源的边也要有信号可写
+            toc = _toc_vote(toc_pos.get(e["src"]), toc_pos.get(e["dst"]))
+            if toc is not None:
+                sig["toc"] = toc
         if sig:
             db.save_signals(conn, "edge", e["id"], signals=sig)
             n_edges += 1
@@ -129,19 +151,29 @@ def _strip_prefixes(rationale: str) -> str:
 
 
 def _source_excerpt(conn, source: str, evidence: str) -> str | None:
-    """按 source（wiki:lang:title@rev）取来源页，截 evidence 附近的上下文。"""
+    """按 source 取来源正文（wiki:lang:title@rev 或 doc:book:sec@hash），
+    截 evidence 附近的上下文。"""
+    text, note = None, ""
     m = re.match(r"wiki:(zh|en):(.+)@\d+$", source)
-    if not m:
+    if m:
+        page = corpus.get_page(conn, m.group(1), m.group(2))
+        if page:
+            text = page["text"]
+    else:
+        d = docs.parse_source(source)
+        if d:
+            sec = docs.get_section(conn, d[0], d[1])
+            if sec and sec["text"]:
+                text = sec["text"]
+                if sec["content_hash"] != d[2]:
+                    note = "（注：该节文本在提取后已更新，节选取自当前版本）\n"
+    if text is None:
         return None
-    page = corpus.get_page(conn, m.group(1), m.group(2))
-    if not page:
-        return None
-    text = page["text"]
     probe = _strip_prefixes(evidence).strip()
     pos = text.find(probe[:20]) if probe else -1
     if pos < 0:
-        return text[:EXCERPT_CHARS * 2]
-    return text[max(0, pos - EXCERPT_CHARS): pos + len(probe) + EXCERPT_CHARS]
+        return note + text[:EXCERPT_CHARS * 2]
+    return note + text[max(0, pos - EXCERPT_CHARS): pos + len(probe) + EXCERPT_CHARS]
 
 
 def _node_head(conn, node: dict, index, chars=400) -> str:
@@ -149,8 +181,19 @@ def _node_head(conn, node: dict, index, chars=400) -> str:
     return page["text"][:chars] if page else "（无语料页）"
 
 
+def _judge_batch(prompts: list[str]) -> list:
+    """并行调 M3 判断题（llm.pmap，全局并发上限内）；单项失败返回异常对象不杀整批。"""
+    def call(p):
+        try:
+            return llm.chat_json([{"role": "user", "content": p}])
+        except (RuntimeError, ValueError) as exc:
+            return exc
+    return llm.pmap(call, prompts)
+
+
 def llm_review(conn, limit=10, redo=False) -> list[str]:
-    """LLM 判断题复核，节点优先（节点裁决影响边），结果写 review_signals。"""
+    """LLM 判断题复核，节点优先（节点裁决影响边），结果写 review_signals。
+    prompt 准备（读库）与结果落库串行，LLM 调用批量并行。"""
     lines = []
     index = corpus.title_index(conn)
     nodes = {n["id"]: n for n in db.list_nodes(conn)}
@@ -161,8 +204,9 @@ def llm_review(conn, limit=10, redo=False) -> list[str]:
         sig = db.get_signals(conn, item_type, item_id)
         return bool(sig and sig.get("llm_verdict"))
 
+    node_batch = []  # (节点, prompt)
     for n in db.list_nodes(conn, status="proposed"):
-        if done >= limit:
+        if len(node_batch) >= limit:
             break
         if not redo and judged("node", n["id"]):
             continue
@@ -171,25 +215,26 @@ def llm_review(conn, limit=10, redo=False) -> list[str]:
                             if n["id"] in (e["src"], e["dst"])} - {n["name"]})
         excerpt = _source_excerpt(conn, n["source"], n["definition"]) \
             or _node_head(conn, n, index, EXCERPT_CHARS * 2)
-        try:
-            ans = llm.chat_json([{"role": "user", "content": NODE_JUDGE_PROMPT.format(
-                name=n["name"], definition=n["definition"], excerpt=excerpt,
-                neighbors="、".join(neighbors) or "无")}])
-        except (RuntimeError, ValueError) as exc:
-            lines.append(f"节点「{n['name']}」复核失败（{exc}），跳过")
+        node_batch.append((n, NODE_JUDGE_PROMPT.format(
+            name=n["name"], definition=n["definition"], excerpt=excerpt,
+            neighbors="、".join(neighbors) or "无")))
+    for (n, _), ans in zip(node_batch, _judge_batch([p for _, p in node_batch])):
+        if isinstance(ans, Exception):
+            lines.append(f"节点「{n['name']}」复核失败（{ans}），跳过")
             continue
         verdict = str(ans.get("verdict", "证据不足"))
         if verdict == "应为facet" and ans.get("facet_of"):
             verdict = f"应为facet→{ans['facet_of']}"
         db.save_signals(conn, "node", n["id"], llm_verdict=verdict,
                         llm_reason=str(ans.get("reason", ""))[:120])
-        conn.commit()  # 逐条落库：批次中途失败不丢已复核的
         lines.append(f"节点「{n['name']}」: {verdict}（{ans.get('reason', '')}）")
         done += 1
+    conn.commit()
 
     visible = set(db.visible_statuses())
+    edge_batch = []  # (边, prompt)
     for e in db.list_edges(conn, status="proposed"):
-        if done >= limit:
+        if len(node_batch) + len(edge_batch) >= limit:
             break
         if nodes[e["src"]]["status"] not in visible or nodes[e["dst"]]["status"] not in visible:
             continue  # 端点未生效的边等节点裁决后再复核
@@ -200,32 +245,48 @@ def llm_review(conn, limit=10, redo=False) -> list[str]:
             excerpt = (f"（该边来自结构挖掘，无正文证据，以下是两端概念的来源页开头）\n"
                        f"《{names[e['src']]}》: {_node_head(conn, nodes[e['src']], index)}\n"
                        f"《{names[e['dst']]}》: {_node_head(conn, nodes[e['dst']], index)}")
-        try:
-            ans = llm.chat_json([{"role": "user", "content": EDGE_JUDGE_PROMPT.format(
-                src=names[e["src"]], dst=names[e["dst"]], type=e["type"],
-                semantics=EDGE_TYPE_SEMANTICS[e["type"]],
-                src_def=nodes[e["src"]]["definition"] or "（无）",
-                dst_def=nodes[e["dst"]]["definition"] or "（无）",
-                rationale=e["rationale"] or "（无）", excerpt=excerpt)}])
-        except (RuntimeError, ValueError) as exc:
-            lines.append(f"边 {e['id']} 复核失败（{exc}），跳过")
+        edge_batch.append((e, EDGE_JUDGE_PROMPT.format(
+            src=names[e["src"]], dst=names[e["dst"]], type=e["type"],
+            semantics=EDGE_TYPE_SEMANTICS[e["type"]],
+            src_def=nodes[e["src"]]["definition"] or "（无）",
+            dst_def=nodes[e["dst"]]["definition"] or "（无）",
+            rationale=e["rationale"] or "（无）", excerpt=excerpt)))
+    for (e, _), ans in zip(edge_batch, _judge_batch([p for _, p in edge_batch])):
+        if isinstance(ans, Exception):
+            lines.append(f"边 {e['id']} 复核失败（{ans}），跳过")
             continue
         verdict = str(ans.get("verdict", "证据不足"))
         if not ans.get("direction_ok", True):
             verdict += "(方向存疑)"
         db.save_signals(conn, "edge", e["id"], llm_verdict=verdict,
                         llm_reason=str(ans.get("reason", ""))[:120])
-        conn.commit()
         lines.append(f"边 {names[e['src']]} -{e['type']}-> {names[e['dst']]}: "
                      f"{verdict}（{ans.get('reason', '')}）")
         done += 1
+    conn.commit()
     lines.append(f"LLM 复核 {done} 条")
     return lines
 
 
 def apply_auto(conn) -> list[str]:
-    """双重一致自动裁决（仅边）：结构佐证与 LLM 复核这两个独立信源意见一致才动。"""
+    """双重一致自动裁决：结构佐证与 LLM 复核这两个独立信源意见一致才动。
+
+    先裁节点（只批准不拒绝），节点生效后其关联边才能进入边裁决；
+    刚生效节点的边通常还没有 LLM 复核结论，下一轮 verify 会补上。"""
     lines = []
+    n_node = 0
+    for n in db.list_nodes(conn, status="proposed"):
+        sig = db.get_signals(conn, "node", n["id"])
+        if not sig or sig.get("llm_verdict") != "独立概念":
+            continue
+        s = sig["signals"]
+        if s.get("has_page") and s.get("exact_title"):
+            db.update_node(conn, n["id"], status="approved")
+            db.log_review(conn, "node", n["id"], "approve",
+                          detail=sig.get("llm_reason") or "", source=n["source"], decided_by="auto")
+            n_node += 1
+            lines.append(f"自动批准节点: {n['name']}")
+
     nodes = {n["id"]: n for n in db.list_nodes(conn)}
     names = {i: n["name"] for i, n in nodes.items()}
     visible = set(db.visible_statuses())
@@ -237,9 +298,11 @@ def apply_auto(conn) -> list[str]:
         if not sig or not sig.get("llm_verdict"):
             continue
         s = sig["signals"]
-        supported = bool(s.get("wikidata") or s.get("link_src_dst") or s.get("link_dst_src"))
+        supported = bool(s.get("wikidata") or s.get("link_src_dst") or s.get("link_dst_src")
+                         or s.get("toc", 0) > 0)
         refd_against = e["type"] == "prerequisite_of" and s.get("refd", 0) < 0
-        if sig["llm_verdict"] == "支持" and supported and not refd_against:
+        toc_against = e["type"] == "prerequisite_of" and s.get("toc", 0) < 0
+        if sig["llm_verdict"] == "支持" and supported and not refd_against and not toc_against:
             conn.execute("UPDATE edges SET status='approved' WHERE id=?", (e["id"],))
             db.log_review(conn, "edge", e["id"], "approve",
                           detail=sig.get("llm_reason") or "", source=e["source"], decided_by="auto")
@@ -253,5 +316,6 @@ def apply_auto(conn) -> list[str]:
             lines.append(f"自动拒绝: {names[e['src']]} -{e['type']}-> {names[e['dst']]}"
                          f"（{sig.get('llm_reason') or ''}）")
     conn.commit()
-    lines.append(f"自动裁决：批准 {n_approve}，拒绝 {n_reject}（其余留人工；记得 kg review --audit 抽检）")
+    lines.append(f"自动裁决：节点批准 {n_node}，边批准 {n_approve}，边拒绝 {n_reject}"
+                 f"（其余留人工；记得 kg review --audit 抽检）")
     return lines

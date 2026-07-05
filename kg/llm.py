@@ -1,8 +1,16 @@
-"""MiniMax API 客户端：M3 对话 + embo-01 embedding。"""
+"""MiniMax API 客户端：M3 对话 + embo-01 embedding。
+
+全局并发上限 MAX_CONCURRENCY（默认 6，KG_LLM_CONCURRENCY 可覆盖）：
+所有 chat/embed 请求过同一个信号量，无论多少调用方开线程都不会超。
+并行入口是 pmap()——verify 复核批、翻译分块、ingest 分块都走它。
+"""
 import json
 import math
 import os
 import re
+import threading
+import time
+from concurrent.futures import ThreadPoolExecutor
 
 import requests
 
@@ -10,19 +18,47 @@ API_KEY = os.environ.get("MINIMAX_API_KEY", "")
 CHAT_URL = "https://api.minimaxi.com/v1/text/chatcompletion_v2"
 EMBED_URL = "https://api.minimaxi.com/v1/embeddings"
 CHAT_MODEL = "MiniMax-M3"
+# 翻译专用模型（英文语料→中文入库），同 endpoint 同鉴权；提取/复核仍用 M3
+TRANSLATE_MODEL = os.environ.get("KG_TRANSLATE_MODEL", "minimax-m2.7")
 EMBED_MODEL = "embo-01"
+
+MAX_CONCURRENCY = int(os.environ.get("KG_LLM_CONCURRENCY", "6"))
+_SEM = threading.BoundedSemaphore(MAX_CONCURRENCY)
 
 _HEADERS = {"Authorization": f"Bearer {API_KEY}", "Content-Type": "application/json"}
 
 
-def chat(messages, temperature=0.7) -> str:
+def pmap(fn, items: list) -> list:
+    """对 items 并发执行 fn，保持顺序返回；单项即原地执行。
+    并发额度由 _SEM 全局保证，线程数只是上限。fn 内不得触碰 sqlite 连接。"""
+    if len(items) <= 1:
+        return [fn(x) for x in items]
+    with ThreadPoolExecutor(max_workers=MAX_CONCURRENCY) as ex:
+        return list(ex.map(fn, items))
+
+
+def _post(url, body):
+    """带全局并发闸门的请求；429/5xx 指数退避重试（并发后限流概率上升）。"""
+    for attempt in range(4):
+        with _SEM:
+            resp = requests.post(url, headers=_HEADERS, timeout=600, json=body)
+        if resp.status_code == 429 or resp.status_code >= 500:
+            if attempt < 3:
+                time.sleep(5 * 2 ** attempt)
+                continue
+        resp.raise_for_status()
+        return resp
+    resp.raise_for_status()
+    return resp
+
+
+def chat(messages, temperature=0.7, model=None) -> str:
     """M3 是 reasoning 模型，思考可以很长，不设 max_tokens 限制。"""
-    resp = requests.post(CHAT_URL, headers=_HEADERS, timeout=600, json={
-        "model": CHAT_MODEL,
+    resp = _post(CHAT_URL, {
+        "model": model or CHAT_MODEL,
         "messages": messages,
         "temperature": temperature,
     })
-    resp.raise_for_status()
     data = resp.json()
     base = data.get("base_resp", {})
     if base.get("status_code", 0) != 0:
@@ -86,9 +122,7 @@ def embed(texts, kind="db"):
     vectors = []
     for i in range(0, len(texts), 32):
         batch = texts[i:i + 32]
-        resp = requests.post(EMBED_URL, headers=_HEADERS, timeout=120, json={
-            "model": EMBED_MODEL, "texts": batch, "type": kind})
-        resp.raise_for_status()
+        resp = _post(EMBED_URL, {"model": EMBED_MODEL, "texts": batch, "type": kind})
         data = resp.json()
         base = data.get("base_resp", {})
         if base.get("status_code", 0) != 0:

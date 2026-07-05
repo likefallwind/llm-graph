@@ -5,11 +5,13 @@
 - 主题模式（ingest_hypothesis）：expand 假设生成器验证通过的候选新概念，
   从它自己的页面提取该概念本身及其与已有节点的有据边。
 """
+import math
+import re
 import time
 
-from . import corpus, db, dedup, llm, wiki
+from . import corpus, db, dedup, docs, llm
 
-EXTRACT_PROMPT = """你在为一个 AI 领域的教学知识图谱从权威来源提取知识。下面是维基百科页面《{title}》的正文节选。
+EXTRACT_PROMPT = """你在为一个 AI 领域的教学知识图谱从权威来源提取知识。下面是{origin}的正文节选。
 
 严格规则：
 1. 只提取正文中**明确讨论**的概念和关系，禁止依赖你自己的记忆补充正文没有的内容。
@@ -69,6 +71,12 @@ TOPIC_FOCUS = ("「{topic}」是一个候选新概念（图谱中尚不存在）
 
 INFERRED_MAX_CONFIDENCE = 0.6
 
+CHUNK_CHARS = 6000  # 单块送 LLM 的正文上限（分块取代旧的整页截断）
+MAX_BLOCKS = 3      # 每页最多提取的块数（成本保险丝）
+SKIP_SECTIONS = {"参考文献", "参考资料", "外部链接", "参见", "延伸阅读", "注释", "脚注",
+                 "references", "external links", "see also", "further reading",
+                 "notes", "bibliography", "sources"}
+
 _ELLIPSIS = ("…", "...", "。。。")
 
 
@@ -103,36 +111,121 @@ def ingest_topic(conn, term: str, limit=6, dry_run=False) -> dict:
                 break
     if not page:
         return {"error": f"语料库和 Wikipedia 上都找不到「{anchor['name']}」的有效页面"}
-    focus = ANCHOR_FOCUS.format(anchor=anchor["name"], limit=limit)
+    focus_fn = lambda k: ANCHOR_FOCUS.format(anchor=anchor["name"], limit=k)
     hint = f"正文中提到的、应补充为「{anchor['name']}」facets 的细节侧面，可为空"
-    return _extract(conn, page, focus, anchor=anchor, hint=hint, dry_run=dry_run)
+    return _extract(conn, page, focus_fn, limit, anchor=anchor, hint=hint, dry_run=dry_run)
 
 
 def ingest_hypothesis(conn, topic: str, page: dict, extra=1, dry_run=False) -> dict:
     """主题模式：候选新概念的来源页 -> 提取该概念及其与已有节点的边。"""
-    focus = TOPIC_FOCUS.format(topic=topic, extra=extra)
-    return _extract(conn, page, focus, anchor=None, hint="输出空数组", dry_run=dry_run)
+    focus_fn = lambda k: TOPIC_FOCUS.format(topic=topic, extra=extra)  # extra 本身很小，不平摊
+    return _extract(conn, page, focus_fn, extra + 1, anchor=None,
+                    hint="输出空数组", dry_run=dry_run)
 
 
-def _extract(conn, page, focus, anchor=None, hint="", dry_run=False) -> dict:
+def ingest_topic_doc(conn, term: str, book=None, limit=6, dry_run=False) -> dict:
+    """锚点模式（教材通道）：从文档语料的对应章节提取，约束与 wiki 通道完全一致。
+    英文源在此处触发 lazy 翻译；evidence 对翻译后的中文正文校验。"""
+    anchor = db.find_by_name_or_alias(conn, term)
+    if not anchor:
+        raise KeyError(f"锚点节点不存在: {term}（新知识需要挂靠已有骨架）")
+    sec = docs.section_for_node(conn, anchor, book)
+    if not sec:
+        return {"error": f"文档语料里找不到「{anchor['name']}」的章节"
+                         f"（book={book or '全部'}；先 kg docs fetch）"}
+    sec = docs.ensure_text(conn, sec)
+    cfg_title = docs.load_book(sec["book"])["title"]
+    page = {"title": sec["title"], "text": sec["text"]}
+    focus_fn = lambda k: ANCHOR_FOCUS.format(anchor=anchor["name"], limit=k)
+    hint = f"正文中提到的、应补充为「{anchor['name']}」facets 的细节侧面，可为空"
+    return _extract(conn, page, focus_fn, limit, anchor=anchor, hint=hint, dry_run=dry_run,
+                    source=docs.source_of(sec), url=docs.url_of(sec),
+                    origin=f"教材《{cfg_title}》第 {sec['sec_id']} 节「{sec['title']}」")
+
+
+def split_blocks(text: str) -> list[str]:
+    """把正文切成 ≤CHUNK_CHARS 的块：优先按维基 extract 的 == 节标题 == 切节
+    （跳过参考文献类节），超长节按空行段落再切，相邻小块贪心合并。
+    无节标题的文本（教材节）退化为纯段落聚合。"""
+    parts = re.split(r"(?m)^\s*(={2,}\s*.+?\s*={2,})\s*$", text)
+    units = []
+    lead = parts[0].strip()
+    if lead:
+        units.append(lead)
+    for i in range(1, len(parts), 2):
+        header = parts[i].strip("= \t")
+        body = parts[i + 1].strip() if i + 1 < len(parts) else ""
+        if header.lower() in SKIP_SECTIONS or not body:
+            continue
+        units.append(f"{header}\n{body}")
+    blocks, cur = [], ""
+    for unit in units:
+        for piece in (docs.split_chunks(unit, CHUNK_CHARS) if len(unit) > CHUNK_CHARS
+                      else [unit]):
+            if cur and len(cur) + len(piece) + 1 > CHUNK_CHARS:
+                blocks.append(cur)
+                cur = piece
+            else:
+                cur = f"{cur}\n{piece}" if cur else piece
+    if cur:
+        blocks.append(cur)
+    return blocks
+
+
+def pick_blocks(blocks: list[str], focus_names: list[str]) -> list[str]:
+    """选送 LLM 的块：首块（导言）必选，其余按焦点名出现密度取满 MAX_BLOCKS，保持原文顺序。"""
+    if len(blocks) <= MAX_BLOCKS:
+        return blocks
+    keys = [_norm(n) for n in focus_names if n]
+    scored = sorted(range(1, len(blocks)),
+                    key=lambda i: (-sum(_norm(blocks[i]).count(k) for k in keys), i))
+    chosen = sorted([0] + scored[:MAX_BLOCKS - 1])
+    return [blocks[i] for i in chosen]
+
+
+def _extract(conn, page, focus_fn, cap, anchor=None, hint="", dry_run=False,
+             source=None, url=None, origin=None) -> dict:
+    """从一个来源页/教材节提取。wiki 通道用默认 source/url/origin，doc 通道显式传入。
+
+    cap 是**每页**的概念产出预算：平摊到各块（focus_fn(每块配额) 生成焦点指令），
+    合并后超出预算的截断丢弃——分块不放大"宁缺毋滥"的总闸门。"""
+    source = source or corpus.source_of(page)
+    url = url or corpus.url_of(page)
+    origin = origin or f"维基百科页面《{page['title']}》"
     all_names = [n["name"] for n in db.list_nodes(conn) if n["status"] != "rejected"]
-    result = llm.chat_json([{"role": "user", "content": EXTRACT_PROMPT.format(
-        title=page["title"], focus=focus, anchor_facets_hint=hint,
-        all_names="、".join(all_names),
-        text=page["text"][:wiki.MAX_TEXT_CHARS])}])
+    focus_names = ([anchor["name"]] + anchor["aliases"]) if anchor else [page["title"]]
+    blocks = pick_blocks(split_blocks(page["text"]), focus_names)
+    focus = focus_fn(max(1, math.ceil(cap / len(blocks))))
 
-    source = corpus.source_of(page)
-    stats = {"page": corpus.url_of(page), "source": source,
+    stats = {"page": url, "source": source, "blocks": len(blocks),
              "proposed_nodes": 0, "merged_aliases": 0, "proposed_edges": 0,
              "anchor_facets_added": 0, "dropped_related": 0,
              "dropped_no_evidence": 0, "details": []}
+
+    # 全部 LLM 调用先完成（块间并行，fn 内不碰 conn）再入库：中途失败不留半页产物
+    prompts = [EXTRACT_PROMPT.format(origin=origin, focus=focus, anchor_facets_hint=hint,
+                                     all_names="、".join(all_names), text=block)
+               for block in blocks]
+    raw_results = llm.pmap(
+        lambda p: llm.chat_json([{"role": "user", "content": p}]), prompts)
+    concepts, anchor_facets, seen = [], [], set()
+    for result in raw_results:
+        anchor_facets += result.get("anchor_facets", [])
+        for c in result.get("concepts", []):
+            nm = c.get("name", "").strip()
+            if nm and nm.lower() not in seen:  # 同一概念在多块出现只取首次
+                seen.add(nm.lower())
+                concepts.append(c)
     if dry_run:
-        stats["details"] = result
+        stats["details"] = raw_results if len(raw_results) > 1 else raw_results[0]
         return stats
+    if len(concepts) > cap:
+        stats["details"].append(f"超出每页预算 {cap}，丢弃后 {len(concepts) - cap} 个概念")
+        concepts = concepts[:cap]
 
     # 锚点 facets 补充（直接生效：有正文依据且不改拓扑）；长句不是 facet，过滤掉
     if anchor:
-        new_facets = [f for f in result.get("anchor_facets", [])
+        new_facets = [f for f in dict.fromkeys(anchor_facets)
                       if f and len(f) <= 16 and f not in anchor["facets"]]
         if new_facets:
             db.update_node(conn, anchor["id"], facets=anchor["facets"] + new_facets)
@@ -140,7 +233,7 @@ def _extract(conn, page, focus, anchor=None, hint="", dry_run=False) -> dict:
             stats["details"].append(f"锚点「{anchor['name']}」补充 facets: {', '.join(new_facets)}")
 
     name_to_id = {}
-    for c in result.get("concepts", []):
+    for c in concepts:
         name, definition = c.get("name", "").strip(), c.get("definition", "")
         if not name:
             continue
@@ -162,7 +255,7 @@ def _extract(conn, page, focus, anchor=None, hint="", dry_run=False) -> dict:
         stats["proposed_nodes"] += 1
         stats["details"].append(f"新提议节点「{name}」  证据: {c.get('evidence', '')[:60]}")
 
-    for c in result.get("concepts", []):
+    for c in concepts:
         new_id = name_to_id.get(c.get("name", "").strip())
         if new_id is None:
             continue

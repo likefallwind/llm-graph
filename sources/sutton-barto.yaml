@@ -1,0 +1,21 @@
+book: sutton-barto
+title: 强化学习导论（Sutton & Barto 第二版）
+lang: en
+type: pdf
+pdf_url: http://incompleteideas.net/book/RLbook2020.pdf
+# 定位串为 PDF 页码范围（书页+22 = PDF 页）；只收核心概念章 1-13，
+# 略过 Psychology / Neuroscience / Applications / Frontiers
+sections:
+  - [1, "1", "Introduction", "pages:23-46"]
+  - [2, "2", "Multi-armed Bandits", "pages:47-68"]
+  - [3, "3", "Finite Markov Decision Processes", "pages:69-94"]
+  - [4, "4", "Dynamic Programming", "pages:95-112"]
+  - [5, "5", "Monte Carlo Methods", "pages:113-140"]
+  - [6, "6", "Temporal-Difference Learning", "pages:141-162"]
+  - [7, "7", "n-step Bootstrapping", "pages:163-180"]
+  - [8, "8", "Planning and Learning with Tabular Methods", "pages:181-218"]
+  - [9, "9", "On-policy Prediction with Approximation", "pages:219-264"]
+  - [10, "10", "On-policy Control with Approximation", "pages:265-278"]
+  - [11, "11", "Off-policy Methods with Approximation", "pages:279-308"]
+  - [12, "12", "Eligibility Traces", "pages:309-342"]
+  - [13, "13", "Policy Gradient Methods", "pages:343-362"]

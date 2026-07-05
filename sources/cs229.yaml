@@ -1,0 +1,24 @@
+book: cs229
+title: CS229 机器学习课程讲义
+lang: en
+type: pdf
+pdf_url: https://cs229.stanford.edu/main_notes.pdf
+# 定位串为 PDF 页码范围（pages:起-止，按章切；章起始页由 pdftotext 扫描确定）
+sections:
+  - [1, "1", "Linear Regression", "pages:9-20"]
+  - [2, "2", "Classification and Logistic Regression", "pages:21-29"]
+  - [3, "3", "Generalized Linear Models", "pages:30-34"]
+  - [4, "4", "Generative Learning Algorithms", "pages:35-48"]
+  - [5, "5", "Kernel Methods", "pages:49-59"]
+  - [6, "6", "Support Vector Machines", "pages:60-79"]
+  - [7, "7", "Deep Learning", "pages:81-112"]
+  - [8, "8", "Generalization", "pages:114-135"]
+  - [9, "9", "Regularization and Model Selection", "pages:136-144"]
+  - [10, "10", "Clustering and the K-means Algorithm", "pages:146-148"]
+  - [11, "11", "EM Algorithms", "pages:149-165"]
+  - [12, "12", "Principal Components Analysis", "pages:166-171"]
+  - [13, "13", "Independent Components Analysis", "pages:172-177"]
+  - [14, "14", "Self-supervised Learning and Foundation Models", "pages:178-186"]
+  - [15, "15", "Reinforcement Learning and Control", "pages:188-204"]
+  - [16, "16", "LQR, DDP and LQG", "pages:205-218"]
+  - [17, "17", "Policy Gradient (REINFORCE)", "pages:219-228"]

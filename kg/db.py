@@ -95,6 +95,21 @@ CREATE TABLE IF NOT EXISTS wikidata_claims (
     claims     TEXT NOT NULL DEFAULT '{}',  -- {属性: [目标QID]}，只存我们关心的属性
     fetched_at REAL NOT NULL
 );
+CREATE TABLE IF NOT EXISTS doc_sections (
+    id            INTEGER PRIMARY KEY,
+    book          TEXT NOT NULL,             -- 源 slug（[a-z0-9-]，source 解析依赖）
+    ord           INTEGER NOT NULL,          -- 全书章节序，toc 先修信号的来源
+    sec_id        TEXT NOT NULL,             -- 章节号，如 "3.1"
+    title         TEXT NOT NULL,
+    url           TEXT NOT NULL DEFAULT '',
+    orig_lang     TEXT NOT NULL,             -- zh / en
+    orig_text     TEXT NOT NULL DEFAULT '',  -- 原文快照（溯源；zh 源与 text 相同）
+    text          TEXT NOT NULL DEFAULT '',  -- 中文正文（en 源为翻译；'' = 未翻译）
+    content_hash  TEXT NOT NULL DEFAULT '',  -- text 的 sha256 前 12 位，source 的 @ 版本号
+    fetched_at    REAL,
+    translated_at REAL,
+    UNIQUE(book, sec_id)
+);
 """
 
 
@@ -169,7 +184,15 @@ def update_node(conn, node_id: int, **fields):
 
 def add_edge(conn, src: int, dst: int, type_: str, confidence=1.0,
              rationale="", source="", status="proposed") -> int:
+    """同向重复靠 UNIQUE(src,dst,type) 的 INSERT OR IGNORE；related_to 语义对称，
+    反向已存在（未拒绝）也视为重复。两种情形都返回 0，调用方按 falsy 判断跳过。"""
     assert type_ in EDGE_TYPES, f"未知边类型: {type_}"
+    if type_ == "related_to":
+        dup = conn.execute(
+            "SELECT id FROM edges WHERE src=? AND dst=? AND type='related_to'"
+            " AND status != 'rejected'", (dst, src)).fetchone()
+        if dup:
+            return 0
     cur = conn.execute(
         "INSERT OR IGNORE INTO edges(src, dst, type, confidence, rationale, source, status, created_at)"
         " VALUES (?,?,?,?,?,?,?,?)",

@@ -1,0 +1,16 @@
+book: cs231n
+title: CS231n 卷积神经网络与视觉识别课程讲义
+lang: en
+type: html
+sections:
+  - [1, "1", "Image Classification (kNN)", "https://cs231n.github.io/classification/"]
+  - [2, "2", "Linear Classification (SVM, Softmax)", "https://cs231n.github.io/linear-classify/"]
+  - [3, "3", "Optimization (SGD)", "https://cs231n.github.io/optimization-1/"]
+  - [4, "4", "Backpropagation", "https://cs231n.github.io/optimization-2/"]
+  - [5, "5", "Neural Networks 1: Architecture", "https://cs231n.github.io/neural-networks-1/"]
+  - [6, "6", "Neural Networks 2: Data and Loss", "https://cs231n.github.io/neural-networks-2/"]
+  - [7, "7", "Neural Networks 3: Learning and Evaluation", "https://cs231n.github.io/neural-networks-3/"]
+  - [8, "8", "Convolutional Networks", "https://cs231n.github.io/convolutional-networks/"]
+  - [9, "9", "Understanding and Visualizing CNNs", "https://cs231n.github.io/understanding-cnn/"]
+  - [10, "10", "Transfer Learning and Fine-tuning", "https://cs231n.github.io/transfer-learning/"]
+  - [11, "11", "Recurrent Neural Networks", "https://cs231n.github.io/rnn/"]

@@ -51,7 +51,8 @@ edges:  id, src, dst, type(is_a|part_of|prerequisite_of|related_to),
 - [x] ③ 审核 CLI + 一致性守卫，进入日常"每天进化一点"运转
 - [x] ④ Wikipedia 来源提取（ingest）：有据可查的自进化主通道
 - [x] ⑤ 语料库化改造（2026-07-03，见 algorithm.md）：corpus 层（定向爬取+revision 快照）→ 结构挖掘（重定向/分类/链接密度）→ 批量 ingest + 缺口驱动选点 → expand 改假设生成器 → 先修推断级标记
-- [ ] ⑥（以后）学习者掌握度层 + 教学 prompt 接口
+- [x] ⑥ 高质量教材语料 + 调研结论落地（2026-07-05，见 algorithm.md §4.1/§6.5/§7）：docs 教材通道（d2l-zh / cs231n / cs229 / sutton-barto；英文源 minimax-m2.7 翻译即快照）→ toc 目录序先修佐证信号 → ingest 分块提取（去掉 7000 字截断）→ 守卫扩展（is_a/part_of 环、先修传递冗余、related_to 反向拦截）→ calibrate 校准命令
+- [ ] ⑦（以后）学习者掌握度层 + 教学 prompt 接口；教材锚点缺口驱动选点（--batch × --doc）
 
 ## 参考
 

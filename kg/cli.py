@@ -26,6 +26,8 @@ def cmd_stats(args):
     rows = conn.execute(
         "SELECT CASE WHEN source LIKE 'mine:%' THEN source"
         "            WHEN source LIKE 'wikidata%' THEN 'wikidata'"
+        "            WHEN source LIKE 'doc:%' THEN 'doc:' || substr(source, 5,"
+        "                 instr(substr(source, 5), ':') - 1)"
         "            WHEN source LIKE 'wiki:%' THEN 'ingest/expand' ELSE source END AS channel,"
         "       decided_by, action, COUNT(*) c FROM review_log"
         " GROUP BY channel, decided_by, action ORDER BY channel").fetchall()
@@ -37,6 +39,11 @@ def cmd_stats(args):
 
 def cmd_check(args):
     print(guards.run_all(db.connect()))
+
+
+def cmd_calibrate(args):
+    from . import calibrate
+    print(calibrate.report(db.connect()))
 
 
 def cmd_viz(args):
@@ -76,7 +83,7 @@ def cmd_expand(args):
 
 
 def _print_ingest(stats, dry_run):
-    print(f"来源: {stats['page']}  ({stats['source']})")
+    print(f"来源: {stats['page']}  ({stats['source']}，提取 {stats.get('blocks', 1)} 块)")
     if dry_run:
         print(json.dumps(stats["details"], ensure_ascii=False, indent=2))
         return
@@ -92,6 +99,8 @@ def _print_ingest(stats, dry_run):
 def cmd_ingest(args):
     from . import ingest
     conn = db.connect()
+    if args.batch and args.doc is not None:
+        sys.exit("--batch 暂不支持与 --doc 组合（教材锚点的缺口驱动选点待做）")
     if args.batch:
         picks = ingest.pick_anchors(conn, k=args.batch)
         if not picks:
@@ -106,7 +115,11 @@ def cmd_ingest(args):
         return
     if not args.name:
         sys.exit("用法：kg ingest <锚点名> 或 kg ingest --batch N")
-    stats = ingest.ingest_topic(conn, args.name, limit=args.limit, dry_run=args.dry_run)
+    if args.doc is not None:
+        stats = ingest.ingest_topic_doc(conn, args.name, book=args.doc or None,
+                                        limit=args.limit, dry_run=args.dry_run)
+    else:
+        stats = ingest.ingest_topic(conn, args.name, limit=args.limit, dry_run=args.dry_run)
     if stats.get("error"):
         sys.exit(stats["error"])
     _print_ingest(stats, args.dry_run)
@@ -122,6 +135,27 @@ def cmd_corpus(args):
         for line in corpus.grow(conn, limit=args.limit or 10):
             print(line)
     print(corpus.stats(conn))
+
+
+def cmd_docs(args):
+    from . import docs
+    conn = db.connect()
+    if args.action == "add":
+        if not args.target:
+            sys.exit("用法：kg docs add sources/<book>.yaml")
+        info = docs.register(conn, docs.load_config(args.target))
+        print(f"已登记 {info['book']}：章节 {info['sections']}（本次新增 {info['added']}）")
+    elif args.action == "fetch":
+        if not args.target:
+            sys.exit("用法：kg docs fetch <book>")
+        for line in docs.fetch(conn, args.target, limit=args.limit, sec_id=args.sec):
+            print(line)
+    elif args.action == "translate":
+        if not args.target:
+            sys.exit("用法：kg docs translate <book>")
+        for line in docs.translate(conn, args.target, limit=args.limit, sec_id=args.sec):
+            print(line)
+    print(docs.stats(conn))
 
 
 def cmd_mine(args):
@@ -152,6 +186,8 @@ def _signal_line(conn, item_type, item_id) -> str:
             parts.append("语料链接: " + arrow[(bool(s["link_src_dst"]), bool(s["link_dst_src"]))])
         if s.get("refd"):
             parts.append(f"RefD 先修信号: {'支持' if s['refd'] > 0 else '方向可疑'}")
+        if s.get("toc"):
+            parts.append(f"教材目录序: {'支持' if s['toc'] > 0 else '方向可疑'}")
         if s.get("wikidata"):
             parts.append(f"Wikidata: {s['wikidata']}")
     if item_type == "node" and "has_page" in s:
@@ -162,15 +198,54 @@ def _signal_line(conn, item_type, item_id) -> str:
     return "；".join(parts)
 
 
+def _triage(conn, item_type, item) -> tuple[int, str]:
+    """按复核信号给待审条目分层，人工时间优先花在信号冲突上。
+    0=信号冲突/需人裁决（最该看） 1=证据不足/未复核 2=信号弱一致（大概率没问题）。"""
+    sig = db.get_signals(conn, item_type, item["id"])
+    if not sig or not sig.get("llm_verdict"):
+        return 1, "未复核"
+    v, s = sig["llm_verdict"], sig["signals"]
+    if item_type == "node":
+        if v.startswith("应为facet"):
+            return 0, v  # 降级需要人选归属概念
+        if v == "独立概念":
+            if s.get("has_page") and s.get("exact_title"):
+                return 2, "信号弱一致"  # 没被 --apply 放行说明还没跑，或刚复核完
+            return 0, "LLM 判独立概念但名字未命中语料页"
+        return 1, "证据不足"
+    supported = bool(s.get("wikidata") or s.get("link_src_dst") or s.get("link_dst_src")
+                     or s.get("toc", 0) > 0)
+    against = item["type"] == "prerequisite_of" and (s.get("refd", 0) < 0 or s.get("toc", 0) < 0)
+    if "方向存疑" in v or (v.startswith("支持") and against) \
+            or (v.startswith("不支持") and supported):
+        return 0, "信号冲突"
+    if v.startswith("证据不足"):
+        return 1, "证据不足"
+    return 2, "信号弱一致"
+
+
+_TIER_NAMES = {0: "信号冲突", 1: "证据不足/未复核", 2: "信号弱一致"}
+
+
+def _tier_summary(tiers) -> str:
+    counts = {}
+    for t, _ in tiers.values():
+        counts[t] = counts.get(t, 0) + 1
+    return "，".join(f"{_TIER_NAMES[t]} {counts[t]}" for t in sorted(counts)) or "空"
+
+
 def _review_nodes(conn):
     names = {n["id"]: n["name"] for n in db.list_nodes(conn)}
     pending = db.list_nodes(conn, status="proposed")
-    print(f"\n=== 待审核节点 {len(pending)} 个 ===")
+    tiers = {n["id"]: _triage(conn, "node", n) for n in pending}
+    pending.sort(key=lambda n: (tiers[n["id"]][0], n["id"]))
+    print(f"\n=== 待审核节点 {len(pending)} 个（{_tier_summary(tiers)}）===")
     for n in pending:
         rel = [f"  {names[e['src']]} -{e['type']}-> {names[e['dst']]} ({e['rationale']})"
                for e in db.list_edges(conn, status="proposed")
                if n["id"] in (e["src"], e["dst"])]
-        print(f"\n[{n['id']}] {n['name']}  ({', '.join(n['aliases']) or '无别名'})")
+        print(f"\n[{n['id']}] {n['name']}  ({', '.join(n['aliases']) or '无别名'})"
+              f"  〔{tiers[n['id']][1]}〕")
         print(f"  定义: {n['definition']}")
         if n["facets"]:
             print(f"  facets: {', '.join(n['facets'])}")
@@ -229,10 +304,12 @@ def _review_edges(conn):
     pending = [e for e in db.list_edges(conn, status="proposed")
                if status_of.get(e["src"]) in db.visible_statuses()
                and status_of.get(e["dst"]) in db.visible_statuses()]
-    print(f"\n=== 待审核边 {len(pending)} 条（两端节点均已生效）===")
+    tiers = {e["id"]: _triage(conn, "edge", e) for e in pending}
+    pending.sort(key=lambda e: (tiers[e["id"]][0], e["id"]))
+    print(f"\n=== 待审核边 {len(pending)} 条（两端节点均已生效；{_tier_summary(tiers)}）===")
     for e in pending:
         print(f"\n[{e['id']}] {names[e['src']]} -{e['type']}-> {names[e['dst']]}"
-              f"  (confidence={e['confidence']})")
+              f"  (confidence={e['confidence']})  〔{tiers[e['id']][1]}〕")
         print(f"  理由: {e['rationale']}")
         hint = _signal_line(conn, "edge", e["id"])
         if hint:
@@ -364,6 +441,10 @@ def main():
     s = sub.add_parser("check", help="一致性守卫")
     s.set_defaults(fn=cmd_check)
 
+    s = sub.add_parser("calibrate", help="校准统计：人工裁决 precision（通道×类型×佐证组合）"
+                                         "+ 自动放行抽检推翻率")
+    s.set_defaults(fn=cmd_calibrate)
+
     s = sub.add_parser("viz", help="生成可视化 HTML")
     s.add_argument("--out", default="out/graph.html")
     s.add_argument("--approved-only", action="store_true")
@@ -388,12 +469,21 @@ def main():
     s.add_argument("--batch", type=int, help="缺口驱动自动选 N 个锚点批量提取")
     s.add_argument("--limit", type=int, default=6, help="每个锚点最多提取的概念数")
     s.add_argument("--dry-run", action="store_true", help="只打印提取结果，不入库")
+    s.add_argument("--doc", nargs="?", const="", metavar="BOOK",
+                   help="从文档语料（教材）提取；可指定 book slug，缺省在所有书里找章节")
     s.set_defaults(fn=cmd_ingest)
 
     s = sub.add_parser("corpus", help="领域语料库：crawl 抓生效节点页面 / grow 沿内链扩展 / stats")
     s.add_argument("action", choices=["crawl", "grow", "stats"])
     s.add_argument("--limit", type=int, help="本次最多抓取页数（grow 默认 10）")
     s.set_defaults(fn=cmd_corpus)
+
+    s = sub.add_parser("docs", help="文档语料通道：add 登记源配置 / fetch 抓章节 / translate 翻译英文源 / stats")
+    s.add_argument("action", choices=["add", "fetch", "translate", "stats"])
+    s.add_argument("target", nargs="?", help="add: 配置文件路径；fetch/translate: book slug")
+    s.add_argument("--limit", type=int, help="本次最多处理的章节数")
+    s.add_argument("--sec", help="只处理指定章节号（fetch 时强制重抓）")
+    s.set_defaults(fn=cmd_docs)
 
     s = sub.add_parser("mine", help="结构挖掘（零 LLM）：aliases 重定向→别名 / categories 分类→候选边"
                                     " / wikidata QID关系→候选边+同概念仲裁")
@@ -409,7 +499,8 @@ def main():
     s.add_argument("--limit", type=int, default=10, help="本次 LLM 复核条数上限")
     s.add_argument("--no-llm", action="store_true", help="只算结构佐证")
     s.add_argument("--redo", action="store_true", help="重跑已有 LLM 结论的条目")
-    s.add_argument("--apply", action="store_true", help="LLM 与结构佐证一致的边自动批准/拒绝")
+    s.add_argument("--apply", action="store_true",
+                   help="双重一致自动裁决：边批准/拒绝；节点仅批准（独立概念+名字精确命中语料页）")
     s.set_defaults(fn=cmd_verify)
 
     args = p.parse_args()
