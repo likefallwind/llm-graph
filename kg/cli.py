@@ -93,7 +93,8 @@ def _print_ingest(stats, dry_run):
           f"降级 facet {stats.get('demoted_facets', 0)}，"
           f"新边 {stats['proposed_edges']}，丢弃无据 related_to {stats['dropped_related']}，"
           f"丢弃伪证据 {stats['dropped_no_evidence']}（重引挽回 {stats.get('requoted', 0)}），"
-          f"锚点新增 facets {stats['anchor_facets_added']}"
+          f"锚点新增 facets {stats['anchor_facets_added']}，"
+          f"误区 {stats.get('misconceptions', 0)}"
           f"（节点与边均为 proposed，待审核）")
 
 
@@ -288,6 +289,19 @@ def _review_nodes(conn):
         if ans == "a":
             db.update_node(conn, n["id"], status="approved")
             db.log_review(conn, "node", n["id"], "approve", source=n["source"])
+            conn.commit()
+            # 节点生效后其关联边立即具备裁决条件，就地顺带裁决——
+            # 上下文还在审核者脑子里，不必等到边审核阶段重新建立
+            status_of = {x["id"]: x["status"] for x in db.list_nodes(conn)}
+            related = [e for e in db.list_edges(conn, status="proposed")
+                       if n["id"] in (e["src"], e["dst"])
+                       and status_of[e["src"]] in db.visible_statuses()
+                       and status_of[e["dst"]] in db.visible_statuses()]
+            if related:
+                print(f"  已批准；就地裁决其 {len(related)} 条关联边（另一端已生效）:")
+                for e in related:
+                    if not _adjudicate_edge(conn, e, names):
+                        return False
         elif ans == "r":
             db.update_node(conn, n["id"], status="rejected")
             conn.execute("UPDATE edges SET status='rejected' WHERE (src=? OR dst=?) AND status='proposed'",
@@ -324,6 +338,67 @@ def _review_nodes(conn):
     return True
 
 
+def _adjudicate_edge(conn, e, names) -> bool:
+    """单条边的交互裁决（review 边主循环与节点批准后的就地裁决共用）。返回 False=退出。"""
+    tier = _triage(conn, "edge", e)
+    print(f"\n[{e['id']}] {names[e['src']]} -{e['type']}-> {names[e['dst']]}"
+          f"  (confidence={e['confidence']})  〔{tier[1]}〕")
+    print(f"  理由: {e['rationale']}")
+    hint = _signal_line(conn, "edge", e["id"])
+    if hint:
+        print(f"  佐证: {hint}")
+    ans = input("  [a]批准 [r]拒绝 [f]方向反了(翻转并批准) [t]改类型并批准 [s]跳过 [q]退出 > ").strip().lower()
+    if ans == "q":
+        return False
+    if ans == "a":
+        conn.execute("UPDATE edges SET status='approved' WHERE id=?", (e["id"],))
+        db.log_review(conn, "edge", e["id"], "approve", source=e["source"])
+    elif ans == "r":
+        conn.execute("UPDATE edges SET status='rejected' WHERE id=?", (e["id"],))
+        db.log_review(conn, "edge", e["id"], "reject", source=e["source"])
+    elif ans == "f":
+        dup = conn.execute("SELECT id FROM edges WHERE src=? AND dst=? AND type=?",
+                           (e["dst"], e["src"], e["type"])).fetchone()
+        if dup:
+            print(f"  反向边已存在（id={dup['id']}），本条按拒绝处理")
+            conn.execute("UPDATE edges SET status='rejected' WHERE id=?", (e["id"],))
+            db.log_review(conn, "edge", e["id"], "reject",
+                          detail=f"方向反且反向边已存在 id={dup['id']}", source=e["source"])
+        else:
+            conn.execute("UPDATE edges SET src=?, dst=?, status='approved',"
+                         " rationale=? WHERE id=?",
+                         (e["dst"], e["src"], f"[人工翻转] {e['rationale']}", e["id"]))
+            db.log_review(conn, "edge", e["id"], "flip", source=e["source"])
+            print(f"  已翻转: {names[e['dst']]} -{e['type']}-> {names[e['src']]}")
+    elif ans == "t":
+        new_type = input(f"  新类型（{'/'.join(db.EDGE_TYPES)}）> ").strip()
+        if new_type not in db.EDGE_TYPES or new_type == e["type"]:
+            print("  类型无效，跳过")
+            return True
+        rationale = e["rationale"]
+        if new_type == "related_to":
+            kind = input(f"  kind（{'/'.join(db.RELATED_KINDS)}）> ").strip()
+            if kind not in db.RELATED_KINDS:
+                print("  kind 无效，跳过")
+                return True
+            rationale = f"[{kind}] {rationale}"
+        dup = conn.execute("SELECT id FROM edges WHERE src=? AND dst=? AND type=? AND id!=?",
+                           (e["src"], e["dst"], new_type, e["id"])).fetchone()
+        if dup:
+            print(f"  同型边已存在（id={dup['id']}），本条按拒绝处理")
+            conn.execute("UPDATE edges SET status='rejected' WHERE id=?", (e["id"],))
+            db.log_review(conn, "edge", e["id"], "reject",
+                          detail=f"改型后与 id={dup['id']} 重复", source=e["source"])
+        else:
+            conn.execute("UPDATE edges SET type=?, status='approved',"
+                         " rationale=? WHERE id=?",
+                         (new_type, f"[人工改型 {e['type']}->{new_type}] {rationale}", e["id"]))
+            db.log_review(conn, "edge", e["id"], "retype",
+                          detail=f"{e['type']}->{new_type}", source=e["source"])
+    conn.commit()
+    return True
+
+
 def _review_edges(conn):
     names = {n["id"]: n["name"] for n in db.list_nodes(conn)}
     status_of = {n["id"]: n["status"] for n in db.list_nodes(conn)}
@@ -334,61 +409,8 @@ def _review_edges(conn):
     pending.sort(key=lambda e: (tiers[e["id"]][0], e["id"]))
     print(f"\n=== 待审核边 {len(pending)} 条（两端节点均已生效；{_tier_summary(tiers)}）===")
     for e in pending:
-        print(f"\n[{e['id']}] {names[e['src']]} -{e['type']}-> {names[e['dst']]}"
-              f"  (confidence={e['confidence']})  〔{tiers[e['id']][1]}〕")
-        print(f"  理由: {e['rationale']}")
-        hint = _signal_line(conn, "edge", e["id"])
-        if hint:
-            print(f"  佐证: {hint}")
-        ans = input("  [a]批准 [r]拒绝 [f]方向反了(翻转并批准) [t]改类型并批准 [s]跳过 [q]退出 > ").strip().lower()
-        if ans == "q":
+        if not _adjudicate_edge(conn, e, names):
             return False
-        if ans == "a":
-            conn.execute("UPDATE edges SET status='approved' WHERE id=?", (e["id"],))
-            db.log_review(conn, "edge", e["id"], "approve", source=e["source"])
-        elif ans == "r":
-            conn.execute("UPDATE edges SET status='rejected' WHERE id=?", (e["id"],))
-            db.log_review(conn, "edge", e["id"], "reject", source=e["source"])
-        elif ans == "f":
-            dup = conn.execute("SELECT id FROM edges WHERE src=? AND dst=? AND type=?",
-                               (e["dst"], e["src"], e["type"])).fetchone()
-            if dup:
-                print(f"  反向边已存在（id={dup['id']}），本条按拒绝处理")
-                conn.execute("UPDATE edges SET status='rejected' WHERE id=?", (e["id"],))
-                db.log_review(conn, "edge", e["id"], "reject",
-                              detail=f"方向反且反向边已存在 id={dup['id']}", source=e["source"])
-            else:
-                conn.execute("UPDATE edges SET src=?, dst=?, status='approved',"
-                             " rationale=? WHERE id=?",
-                             (e["dst"], e["src"], f"[人工翻转] {e['rationale']}", e["id"]))
-                db.log_review(conn, "edge", e["id"], "flip", source=e["source"])
-                print(f"  已翻转: {names[e['dst']]} -{e['type']}-> {names[e['src']]}")
-        elif ans == "t":
-            new_type = input(f"  新类型（{'/'.join(db.EDGE_TYPES)}）> ").strip()
-            if new_type not in db.EDGE_TYPES or new_type == e["type"]:
-                print("  类型无效，跳过")
-                continue
-            rationale = e["rationale"]
-            if new_type == "related_to":
-                kind = input(f"  kind（{'/'.join(db.RELATED_KINDS)}）> ").strip()
-                if kind not in db.RELATED_KINDS:
-                    print("  kind 无效，跳过")
-                    continue
-                rationale = f"[{kind}] {rationale}"
-            dup = conn.execute("SELECT id FROM edges WHERE src=? AND dst=? AND type=? AND id!=?",
-                               (e["src"], e["dst"], new_type, e["id"])).fetchone()
-            if dup:
-                print(f"  同型边已存在（id={dup['id']}），本条按拒绝处理")
-                conn.execute("UPDATE edges SET status='rejected' WHERE id=?", (e["id"],))
-                db.log_review(conn, "edge", e["id"], "reject",
-                              detail=f"改型后与 id={dup['id']} 重复", source=e["source"])
-            else:
-                conn.execute("UPDATE edges SET type=?, status='approved',"
-                             " rationale=? WHERE id=?",
-                             (new_type, f"[人工改型 {e['type']}->{new_type}] {rationale}", e["id"]))
-                db.log_review(conn, "edge", e["id"], "retype",
-                              detail=f"{e['type']}->{new_type}", source=e["source"])
-        conn.commit()
     return True
 
 
@@ -438,8 +460,10 @@ def cmd_verify(args):
         for line in verify.llm_review(conn, limit=args.limit, redo=args.redo):
             print("  " + line)
     if args.apply:
-        for line in verify.apply_auto(conn):
+        for line in verify.apply_auto(conn, dry_run=args.dry_run):
             print(line)
+    elif args.dry_run:
+        print("--dry-run 需要与 --apply 连用（影子裁决）")
 
 
 def cmd_rollback(args):
@@ -497,7 +521,7 @@ def main():
     s.add_argument("--approved-only", action="store_true")
     s.set_defaults(fn=cmd_viz)
 
-    s = sub.add_parser("export", help="导出节点邻域 JSON（教学接口）")
+    s = sub.add_parser("export", help="导出节点邻域 JSON（教学接口：定义/facets/误区/先修链/讲解资源）")
     s.add_argument("name")
     s.set_defaults(fn=cmd_export)
 
@@ -550,6 +574,9 @@ def main():
     s.add_argument("--apply", action="store_true",
                    help="双重一致自动裁决（带批次号可回滚）：边批准/拒绝（无环类型先查环）；"
                         "节点仅批准（独立概念+名字命中语料页+与图谱邻居有重叠）")
+    s.add_argument("--dry-run", action="store_true",
+                   help="与 --apply 连用：影子裁决（burn-in 校准），只记 auto_would 不改状态，"
+                        "人工审完后 kg calibrate 看一致率")
     s.set_defaults(fn=cmd_verify)
 
     s = sub.add_parser("rollback", help="整批撤销一次 verify --apply 自动裁决"

@@ -9,6 +9,9 @@ DB_PATH = os.environ.get("KG_DB", os.path.join(os.path.dirname(__file__), "..", 
 EDGE_TYPES = ("is_a", "part_of", "prerequisite_of", "related_to")
 # related_to 只允许这三种教学上有价值的情形，泛泛的"同领域相关"不许连边
 RELATED_KINDS = ("同题替代", "演化启发", "教学对比")
+# 误区（Misconception）作为带前缀的特殊 facet 存储（如「误区:更深的网络一定更好」），
+# 走 ingest 全部约束（有据提取、evidence 校验）；学习者层落地后再考虑升独立类型
+MISCONCEPTION_PREFIX = "误区:"
 NODE_STATUS = ("seed", "proposed", "approved", "rejected")
 EDGE_STATUS = ("seed", "proposed", "approved", "rejected")
 

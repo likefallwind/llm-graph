@@ -310,16 +310,22 @@ def llm_review(conn, limit=10, redo=False) -> list[str]:
     return lines
 
 
-def apply_auto(conn) -> list[str]:
+def apply_auto(conn, dry_run=False) -> list[str]:
     """双重一致自动裁决：结构佐证与 LLM 复核这两个独立信源意见一致才动。
 
     先裁节点（只批准不拒绝），节点生效后其关联边才能进入边裁决；
     刚生效节点的边通常还没有 LLM 复核结论，下一轮 verify 会补上。
     三道新闸：low 级语料不自动裁决；节点另需 neighbor_overlap（UMAP 补丁）；
-    无环类型边先模拟加边查环。整次运行共用一个 batch_id，可 kg rollback。"""
+    无环类型边先模拟加边查环。整次运行共用一个 batch_id，可 kg rollback。
+
+    dry_run=影子模式（burn-in 校准实验用）：跑同样的裁决逻辑但不改状态、不写 review_log，
+    只把「本会怎么裁」写进 review_signals（auto_would 键）；之后条目照常走人工审核，
+    kg calibrate 对比影子结论与人工金标裁决的一致率，够高才放开真 --apply。"""
     batch = "auto-" + time.strftime("%Y%m%d-%H%M%S")
+    tag = "影子批准" if dry_run else "自动批准"
     lines = []
     n_node = 0
+    shadow_nodes = set()  # 影子模式下"视同已批准"的节点，边裁决的可见性据此模拟
     for n in db.list_nodes(conn, status="proposed"):
         sig = db.get_signals(conn, "node", n["id"])
         if not sig or sig.get("llm_verdict") != "独立概念":
@@ -332,16 +338,23 @@ def apply_auto(conn) -> list[str]:
                 lines.append(f"留人工: 节点「{n['name']}」名字命中语料页"
                              f"但页面与图谱邻居无重叠（疑似撞名）")
                 continue
-            db.update_node(conn, n["id"], status="approved")
-            db.log_review(conn, "node", n["id"], "approve",
-                          detail=sig.get("llm_reason") or "", source=n["source"],
-                          decided_by="auto", batch_id=batch)
+            if dry_run:
+                db.save_signals(conn, "node", n["id"], signals={"auto_would": "approve"})
+                shadow_nodes.add(n["id"])
+            else:
+                db.update_node(conn, n["id"], status="approved")
+                db.log_review(conn, "node", n["id"], "approve",
+                              detail=sig.get("llm_reason") or "", source=n["source"],
+                              decided_by="auto", batch_id=batch)
             n_node += 1
-            lines.append(f"自动批准节点: {n['name']}")
+            lines.append(f"{tag}节点: {n['name']}")
 
     nodes = {n["id"]: n for n in db.list_nodes(conn)}
     names = {i: n["name"] for i, n in nodes.items()}
     visible = set(db.visible_statuses())
+
+    def is_visible(nid):
+        return nodes[nid]["status"] in visible or nid in shadow_nodes
     # 守卫前移：无环类型的生效邻接表，批一条更新一条，放行不可能引入环
     adj = {t: defaultdict(set) for t in guards.ACYCLIC_TYPES}
     for t in guards.ACYCLIC_TYPES:
@@ -362,7 +375,7 @@ def apply_auto(conn) -> list[str]:
 
     n_approve = n_reject = 0
     for e in db.list_edges(conn, status="proposed"):
-        if nodes[e["src"]]["status"] not in visible or nodes[e["dst"]]["status"] not in visible:
+        if not is_visible(e["src"]) or not is_visible(e["dst"]):
             continue
         sig = db.get_signals(conn, "edge", e["id"])
         if not sig or not sig.get("llm_verdict"):
@@ -378,25 +391,36 @@ def apply_auto(conn) -> list[str]:
             if e["type"] in adj and would_cycle(e["type"], e["src"], e["dst"]):
                 lines.append(f"留人工（批准会成环）: {names[e['src']]} -{e['type']}-> {names[e['dst']]}")
                 continue
-            conn.execute("UPDATE edges SET status='approved' WHERE id=?", (e["id"],))
-            db.log_review(conn, "edge", e["id"], "approve",
-                          detail=sig.get("llm_reason") or "", source=e["source"],
-                          decided_by="auto", batch_id=batch)
-            if e["type"] in adj:
+            if dry_run:
+                db.save_signals(conn, "edge", e["id"], signals={"auto_would": "approve"})
+            else:
+                conn.execute("UPDATE edges SET status='approved' WHERE id=?", (e["id"],))
+                db.log_review(conn, "edge", e["id"], "approve",
+                              detail=sig.get("llm_reason") or "", source=e["source"],
+                              decided_by="auto", batch_id=batch)
+            if e["type"] in adj:  # 影子模式同样更新，环闸的模拟才与真跑一致
                 adj[e["type"]][e["src"]].add(e["dst"])
             n_approve += 1
-            lines.append(f"自动批准: {names[e['src']]} -{e['type']}-> {names[e['dst']]}")
+            lines.append(f"{tag}: {names[e['src']]} -{e['type']}-> {names[e['dst']]}")
         elif sig["llm_verdict"].startswith("不支持") and not supported:
-            conn.execute("UPDATE edges SET status='rejected' WHERE id=?", (e["id"],))
-            db.log_review(conn, "edge", e["id"], "reject",
-                          detail=sig.get("llm_reason") or "", source=e["source"],
-                          decided_by="auto", batch_id=batch)
+            if dry_run:
+                db.save_signals(conn, "edge", e["id"], signals={"auto_would": "reject"})
+            else:
+                conn.execute("UPDATE edges SET status='rejected' WHERE id=?", (e["id"],))
+                db.log_review(conn, "edge", e["id"], "reject",
+                              detail=sig.get("llm_reason") or "", source=e["source"],
+                              decided_by="auto", batch_id=batch)
             n_reject += 1
-            lines.append(f"自动拒绝: {names[e['src']]} -{e['type']}-> {names[e['dst']]}"
+            lines.append(f"{'影子拒绝' if dry_run else '自动拒绝'}: "
+                         f"{names[e['src']]} -{e['type']}-> {names[e['dst']]}"
                          f"（{sig.get('llm_reason') or ''}）")
     conn.commit()
-    lines.append(f"自动裁决批次 {batch}：节点批准 {n_node}，边批准 {n_approve}，边拒绝 {n_reject}"
-                 f"（其余留人工；kg review --audit 抽检，误放行 kg rollback {batch}）")
+    if dry_run:
+        lines.append(f"影子裁决（未改任何状态）：节点批准 {n_node}，边批准 {n_approve}，"
+                     f"边拒绝 {n_reject}；结论已记 auto_would，人工审完后 kg calibrate 看一致率")
+    else:
+        lines.append(f"自动裁决批次 {batch}：节点批准 {n_node}，边批准 {n_approve}，边拒绝 {n_reject}"
+                     f"（其余留人工；kg review --audit 抽检，误放行 kg rollback {batch}）")
     return lines
 
 

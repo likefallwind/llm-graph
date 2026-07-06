@@ -54,8 +54,8 @@ edges:  id, src, dst, type(is_a|part_of|prerequisite_of|related_to),
 - [x] ⑤ 语料库化改造（2026-07-03，见 algorithm.md）：corpus 层（定向爬取+revision 快照）→ 结构挖掘（重定向/分类/链接密度）→ 批量 ingest + 缺口驱动选点 → expand 改假设生成器 → 先修推断级标记
 - [x] ⑥ 高质量教材语料 + 调研结论落地（2026-07-05，见 algorithm.md §4.1/§6.5/§7）：docs 教材通道（d2l-zh / cs231n / cs229 / sutton-barto；英文源 minimax-m2.7 翻译即快照）→ toc 目录序先修佐证信号 → ingest 分块提取（去掉 7000 字截断）→ 守卫扩展（is_a/part_of 环、先修传递冗余、related_to 反向拦截）→ calibrate 校准命令
 - [x] ⑦ 质量硬化 + 语料分级（2026-07-06，见 algorithm.md §4.2/§6.5/§6.7、docs/tech-plan.html）：语料三级 high/mid/low（quality.py，教材批量优先 `--batch × --doc`，low 不参与自动裁决）→ 自动裁决批次化（batch_id + `kg rollback` 整批撤销）→ 邻居重叠守卫（UMAP 撞名补丁）→ 自动批准边前环检测（守卫前移）→ evidence 重引重试 → 去重三元裁决（same/facet/different）
-- [ ] ⑧ 教学接口增强：neighborhood 输出附讲解资源（教材章节/维基页）；误区（Misconception）作特殊 facet 提取；review 节点批准后就地裁决关联边；burn-in 校准实验
-- [ ] ⑨ 学习者掌握度层 + 教学 prompt 接口（设计原则：共享图+学生 overlay、状态节点、只追加证据、行为信号不让 LLM 猜）
+- [x] ⑧ 教学接口增强（2026-07-06，见 algorithm.md §3/§6.5/§6.6/§7.1/§9）：neighborhood 输出附讲解资源（教材章节+维基页，零 LLM，顺序即推荐优先级）→ 误区（Misconception）作 `误区:` 前缀特殊 facet 提取（走 ingest 全部约束，导出时拆独立字段）→ review 节点批准后就地裁决关联边 → burn-in 影子模式（`verify --apply --dry-run` 只记 auto_would 不改状态）+ calibrate 影子 vs 人工一致率表（实验本身随金标裁决积累进行）
+- [ ] ⑨ 学习者掌握度层 + 教学 prompt 接口（设计原则：共享图+学生 overlay、状态节点、只追加证据、行为信号不让 LLM 猜；误区届时升级为可挂诊断证据的独立类型）
 
 ## 参考
 
