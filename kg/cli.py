@@ -90,8 +90,9 @@ def _print_ingest(stats, dry_run):
     for line in stats["details"]:
         print("  " + line)
     print(f"  新节点 {stats['proposed_nodes']}，合并别名 {stats['merged_aliases']}，"
+          f"降级 facet {stats.get('demoted_facets', 0)}，"
           f"新边 {stats['proposed_edges']}，丢弃无据 related_to {stats['dropped_related']}，"
-          f"丢弃伪证据 {stats['dropped_no_evidence']}，"
+          f"丢弃伪证据 {stats['dropped_no_evidence']}（重引挽回 {stats.get('requoted', 0)}），"
           f"锚点新增 facets {stats['anchor_facets_added']}"
           f"（节点与边均为 proposed，待审核）")
 
@@ -100,7 +101,22 @@ def cmd_ingest(args):
     from . import ingest
     conn = db.connect()
     if args.batch and args.doc is not None:
-        sys.exit("--batch 暂不支持与 --doc 组合（教材锚点的缺口驱动选点待做）")
+        # 教材是 high 级语料（教学性关系密度最高），批量提取优先走这里
+        picks = ingest.pick_anchors_doc(conn, k=args.batch, book=args.doc or None)
+        if not picks:
+            sys.exit("没有可选教材锚点（先 kg docs fetch，或匹配到的章节版本都已提取过）")
+        for p in picks:
+            sec = p["section"]
+            print(f"== 教材锚点「{p['node']['name']}」（{sec['book']} §{sec['sec_id']}"
+                  f"「{sec['title']}」，{'标题命中' if p['how'] == 'title' else '正文命中'}，"
+                  f"缺口分 {p['score']:.2f}）==")
+            stats = ingest.ingest_topic_doc(conn, p["node"]["name"], book=sec["book"],
+                                            limit=args.limit, dry_run=args.dry_run)
+            if stats.get("error"):
+                print("  " + stats["error"])
+                continue
+            _print_ingest(stats, args.dry_run)
+        return
     if args.batch:
         picks = ingest.pick_anchors(conn, k=args.batch)
         if not picks:
@@ -191,8 +207,16 @@ def _signal_line(conn, item_type, item_id) -> str:
         if s.get("wikidata"):
             parts.append(f"Wikidata: {s['wikidata']}")
     if item_type == "node" and "has_page" in s:
-        parts.append("有语料页" + ("（名字精确命中标题/重定向）" if s.get("exact_title") else "")
-                     if s["has_page"] else "无语料页")
+        if s["has_page"]:
+            hint = "有语料页"
+            if s.get("exact_title"):
+                hint += "（名字精确命中标题/重定向）"
+            if "neighbor_overlap" in s:
+                hint += "（与图谱邻居" + ("有重叠" if s["neighbor_overlap"]
+                                          else "无重叠，疑似撞名") + "）"
+            parts.append(hint)
+        else:
+            parts.append("无语料页")
     if sig.get("llm_verdict"):
         parts.append(f"LLM 复核: {sig['llm_verdict']}（{sig.get('llm_reason') or ''}）")
     return "；".join(parts)
@@ -210,6 +234,8 @@ def _triage(conn, item_type, item) -> tuple[int, str]:
             return 0, v  # 降级需要人选归属概念
         if v == "独立概念":
             if s.get("has_page") and s.get("exact_title"):
+                if s.get("neighbor_overlap") is False:
+                    return 0, "名字命中语料页但页面与图谱邻居无重叠（疑似撞名）"
                 return 2, "信号弱一致"  # 没被 --apply 放行说明还没跑，或刚复核完
             return 0, "LLM 判独立概念但名字未命中语料页"
         return 1, "证据不足"
@@ -416,6 +442,27 @@ def cmd_verify(args):
             print(line)
 
 
+def cmd_rollback(args):
+    from . import verify
+    conn = db.connect()
+    if not args.batch_id:
+        batches = verify.list_batches(conn)
+        if not batches:
+            print("没有自动裁决批次记录")
+            return
+        print("自动裁决批次（新在前）：")
+        import datetime
+        for b in batches:
+            t = datetime.datetime.fromtimestamp(b["t"]).strftime("%Y-%m-%d %H:%M")
+            print(f"  {b['batch_id']}  [{t}]  批准 {b['approves']}，拒绝 {b['rejects']}")
+        print("用法：kg rollback <batch_id> 整批退回 proposed 重新人工审")
+        return
+    for line in verify.rollback_batch(conn, args.batch_id):
+        print(line)
+    print("\n回滚后运行一致性守卫：")
+    print(guards.run_all(conn))
+
+
 def cmd_review(args):
     conn = db.connect()
     if args.audit:
@@ -470,7 +517,8 @@ def main():
     s.add_argument("--limit", type=int, default=6, help="每个锚点最多提取的概念数")
     s.add_argument("--dry-run", action="store_true", help="只打印提取结果，不入库")
     s.add_argument("--doc", nargs="?", const="", metavar="BOOK",
-                   help="从文档语料（教材）提取；可指定 book slug，缺省在所有书里找章节")
+                   help="从文档语料（教材/教案，high 级语料）提取；可指定 book slug，"
+                        "缺省在所有书里找章节；与 --batch 组合为教材缺口驱动批量")
     s.set_defaults(fn=cmd_ingest)
 
     s = sub.add_parser("corpus", help="领域语料库：crawl 抓生效节点页面 / grow 沿内链扩展 / stats")
@@ -500,8 +548,14 @@ def main():
     s.add_argument("--no-llm", action="store_true", help="只算结构佐证")
     s.add_argument("--redo", action="store_true", help="重跑已有 LLM 结论的条目")
     s.add_argument("--apply", action="store_true",
-                   help="双重一致自动裁决：边批准/拒绝；节点仅批准（独立概念+名字精确命中语料页）")
+                   help="双重一致自动裁决（带批次号可回滚）：边批准/拒绝（无环类型先查环）；"
+                        "节点仅批准（独立概念+名字命中语料页+与图谱邻居有重叠）")
     s.set_defaults(fn=cmd_verify)
+
+    s = sub.add_parser("rollback", help="整批撤销一次 verify --apply 自动裁决"
+                                        "（不带参数列出批次；条目退回 proposed 重新人工审）")
+    s.add_argument("batch_id", nargs="?", help="批次号（verify --apply 输出里的 auto-...）")
+    s.set_defaults(fn=cmd_rollback)
 
     args = p.parse_args()
     args.fn(args)

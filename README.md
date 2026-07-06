@@ -42,11 +42,12 @@ python -m kg mine aliases
 python -m kg mine categories
 python -m kg mine wikidata
 
-# 3. 提取（主通道）：缺口驱动自动选锚点批量提取，或指定锚点
-python -m kg ingest --batch 3
+# 3. 提取（主通道）：语料分级 教材(high) > 维基(mid)，批量优先走教材
+python -m kg ingest --batch 3 --doc        # 教材缺口驱动批量（high 级语料，优先）
+python -m kg ingest --batch 3              # 维基缺口驱动批量（mid 级，覆盖面兜底）
 python -m kg ingest 卷积神经网络            # 指定锚点
 python -m kg ingest 卷积神经网络 --dry-run  # 只看结果不入库
-python -m kg ingest 线性回归 --doc d2l-zh   # 教材通道：从教材章节提取
+python -m kg ingest 线性回归 --doc d2l-zh   # 教材通道指定锚点+书
 
 # 4. 假设生成器（辅助）：LLM 提缺口名字 -> 语料验证 -> 有据提取
 python -m kg expand
@@ -57,6 +58,7 @@ python -m kg verify --limit 20 --apply
 # 6. 人工审核剩余队列：按信号分层排序（冲突项在前），逐条裁决
 python -m kg review
 python -m kg review --audit 5   # 抽检自动放行的条目（跑过 --apply 后定期做）
+python -m kg rollback           # 抽检发现坏批次时：列出批次，kg rollback <batch_id> 整批撤销
 
 # 7. 守卫 + 校准 + 看图
 python -m kg check
@@ -71,9 +73,11 @@ python -m kg viz    # 生成 out/graph.html，浏览器打开
 - 英文教材翻译入库即快照（evidence 对中文译文校验）；PDF 源需要 `pdftotext`（`sudo apt install poppler-utils`）。
 - 一次 M3 提取要 1~3 分钟（reasoning 模型思考久），批量时耐心等。
 - viz 图里虚线黄色的是 proposed 待审核内容，实线是已生效的。
-- `verify --apply` 的自动裁决很保守：边要 LLM 复核与结构佐证双重一致；节点只自动批准
-  （LLM 判「独立概念」且名字精确命中语料页），拒绝/降级 facet 一律留人工。
-  自动放行后用 `review --audit N` 抽检兜底。
+- `verify --apply` 的自动裁决很保守：边要 LLM 复核与结构佐证双重一致（无环类型还要
+  模拟加边不成环）；节点只自动批准（LLM 判「独立概念」+ 名字精确命中语料页 +
+  语料页与图谱邻居有重叠），拒绝/降级 facet 一律留人工；low 级语料一律不自动裁决。
+  每次运行一个批次号：自动放行后用 `review --audit N` 抽检兜底，
+  发现坏批次 `kg rollback <batch_id>` 整批撤销。
 
 ## 全部命令
 
@@ -103,7 +107,8 @@ python -m kg mine categories           # 分类 → part_of 候选边
 python -m kg mine wikidata             # Wikidata QID 关系 → 候选边 + 同 QID 疑似同概念仲裁
 
 # 提取与扩展（LLM）
-python -m kg ingest --batch 3          # 缺口驱动自动选锚点批量提取（主通道）
+python -m kg ingest --batch 3 --doc    # 教材缺口驱动批量提取（high 级语料，优先；--doc 可带 book）
+python -m kg ingest --batch 3          # 维基缺口驱动批量提取（mid 级，覆盖面兜底）
 python -m kg ingest <锚点名>           # 指定锚点（--limit 每锚点概念数上限，--dry-run 不入库）
 python -m kg ingest <锚点名> --doc [BOOK]  # 教材通道（缺省在所有书里找锚点章节）
 python -m kg expand                    # 假设生成器（--node 指定节点，--count 前沿节点数，
@@ -115,6 +120,7 @@ python -m kg verify --limit 20         # 结构佐证 + LLM 判断题复核（--
 python -m kg review                    # 人工审核队列：节点 a批准/r拒绝/m合并/d降级facet/s跳过/q退出，
                                        #   边 a/r/f翻转方向/t改类型/s/q
 python -m kg review --audit 5          # 抽检 N 条自动放行的条目
+python -m kg rollback [batch_id]       # 整批撤销一次自动裁决（不带参数列出批次）
 python -m kg calibrate                 # 裁决 precision（通道×类型×佐证组合）+ 抽检推翻率
 ```
 

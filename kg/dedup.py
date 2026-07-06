@@ -33,22 +33,36 @@ def find_duplicate(conn, name: str, definition: str, embedding=None):
     candidates.sort(key=lambda x: -x[0])
 
     for sim, n in candidates[:3]:
-        if _llm_same_concept(name, definition, n):
+        rel = _llm_relation(name, definition, n)
+        if rel == "same":
             return n, f"embedding({sim:.2f})+llm"
+        if rel == "facet" and len(name) <= 16:
+            # 相似但粒度不同：不是同一概念也不能挂别名，应降级为已有节点的 facet
+            return n, f"facet:embedding({sim:.2f})+llm"
 
     return None, embedding
 
 
-def _llm_same_concept(name: str, definition: str, existing: dict) -> bool:
+def _llm_relation(name: str, definition: str, existing: dict) -> str:
+    """三元实体消解：same（同一概念）/ facet（A 是 B 的内部细节）/ different。
+    embedding 高相似≠同一概念——粒度不同的近邻（如「温度参数」vs「softmax」）
+    合并为别名是错的，应降级为 facet。"""
     answer = llm.chat_json([
-        {"role": "system", "content": "你是知识图谱的实体消解助手。判断两个词条是否指同一个概念（同义词、译名、缩写都算同一概念）。只输出 JSON。"},
+        {"role": "system", "content": (
+            "你是知识图谱的实体消解助手。判断词条A相对词条B的关系，只输出 JSON。\n"
+            "- same：同一个概念（同义词、译名、缩写都算）\n"
+            "- facet：A 不是独立概念，而是 B 的内部细节（步骤/参数/公式/组成侧面，"
+            "教科书不会为 A 单独设章节）\n"
+            "- different：两个不同的独立概念（相似但层次不同也算 different，"
+            "如「神经元」与「神经网络」）")},
         {"role": "user", "content": (
             f"词条A：{name}（{definition}）\n"
             f"词条B：{existing['name']}（{existing['definition']}）"
             f"，别名：{', '.join(existing['aliases']) or '无'}\n\n"
-            '输出：{"same": true/false, "reason": "一句话理由"}')},
+            '输出：{"relation": "same|facet|different", "reason": "一句话理由"}')},
     ])
-    return bool(answer.get("same"))
+    rel = str(answer.get("relation", "different")).strip().lower()
+    return rel if rel in ("same", "facet", "different") else "different"
 
 
 def merge_as_alias(conn, existing: dict, alias: str):

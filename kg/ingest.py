@@ -69,6 +69,20 @@ TOPIC_FOCUS = ("「{topic}」是一个候选新概念（图谱中尚不存在）
                "并给出它与图谱已有节点之间有据可查的边；"
                "若正文还明确讨论其他重要概念，可再提取至多 {extra} 个。")
 
+REQUOTE_PROMPT = """你此前从下面的正文中提取了一个断言，但给出的 evidence 与正文原文不符（可能被改写过）。
+请重新从正文中**逐字摘录**一句能支持该断言的原文（≤60字，可用省略号截断中间部分）；
+若正文中找不到能支持它的原句，输出空字符串。
+
+断言：{claim}
+此前给出的 evidence（与原文不符）：{bad}
+
+正文：
+---
+{text}
+---
+
+输出 JSON：{{"evidence": "逐字摘录或空字符串"}}"""
+
 INFERRED_MAX_CONFIDENCE = 0.6
 
 CHUNK_CHARS = 6000  # 单块送 LLM 的正文上限（分块取代旧的整页截断）
@@ -183,6 +197,38 @@ def pick_blocks(blocks: list[str], focus_names: list[str]) -> list[str]:
     return [blocks[i] for i in chosen]
 
 
+def _requote_failed(page, blocks, concepts, stats):
+    """evidence 子串校验失败的条目丢弃前给一次「逐字重引」机会（Self-Refine 轻量版）：
+    概念/边往往是对的，只是引文被改写。重引后仍须通过同一校验，不变式不破坏。
+    只重试一轮，不做多轮修正循环。"""
+    corpus_text = "\n".join(blocks)  # LLM 实际看到的正文（是整页的子串）
+    retries = []
+    for c in concepts:
+        if c.get("name") and not evidence_in_text(c.get("evidence", ""), page["text"]):
+            retries.append((c, f"概念「{c['name']}」：{c.get('definition', '')}"))
+        for e in c.get("edges", []):
+            if not evidence_in_text(e.get("evidence", ""), page["text"]):
+                retries.append((e, f"「{c.get('name', '')}」-{e.get('type', '?')}->"
+                                   f"「{e.get('other', '')}」"))
+    if not retries:
+        return
+
+    def call(prompt):
+        try:
+            return llm.chat_json([{"role": "user", "content": prompt}])
+        except (RuntimeError, ValueError):
+            return {}
+
+    prompts = [REQUOTE_PROMPT.format(claim=claim, bad=item.get("evidence", ""),
+                                     text=corpus_text) for item, claim in retries]
+    for (item, claim), ans in zip(retries, llm.pmap(call, prompts)):
+        ev = str(ans.get("evidence") or "").strip()
+        if ev and evidence_in_text(ev, page["text"]):
+            item["evidence"] = ev
+            stats["requoted"] += 1
+            stats["details"].append(f"重引成功: {claim[:40]}")
+
+
 def _extract(conn, page, focus_fn, cap, anchor=None, hint="", dry_run=False,
              source=None, url=None, origin=None) -> dict:
     """从一个来源页/教材节提取。wiki 通道用默认 source/url/origin，doc 通道显式传入。
@@ -198,9 +244,9 @@ def _extract(conn, page, focus_fn, cap, anchor=None, hint="", dry_run=False,
     focus = focus_fn(max(1, math.ceil(cap / len(blocks))))
 
     stats = {"page": url, "source": source, "blocks": len(blocks),
-             "proposed_nodes": 0, "merged_aliases": 0, "proposed_edges": 0,
-             "anchor_facets_added": 0, "dropped_related": 0,
-             "dropped_no_evidence": 0, "details": []}
+             "proposed_nodes": 0, "merged_aliases": 0, "demoted_facets": 0,
+             "proposed_edges": 0, "anchor_facets_added": 0, "dropped_related": 0,
+             "dropped_no_evidence": 0, "requoted": 0, "details": []}
 
     # 全部 LLM 调用先完成（块间并行，fn 内不碰 conn）再入库：中途失败不留半页产物
     prompts = [EXTRACT_PROMPT.format(origin=origin, focus=focus, anchor_facets_hint=hint,
@@ -222,6 +268,7 @@ def _extract(conn, page, focus_fn, cap, anchor=None, hint="", dry_run=False,
     if len(concepts) > cap:
         stats["details"].append(f"超出每页预算 {cap}，丢弃后 {len(concepts) - cap} 个概念")
         concepts = concepts[:cap]
+    _requote_failed(page, blocks, concepts, stats)
 
     # 锚点 facets 补充（直接生效：有正文依据且不改拓扑）；长句不是 facet，过滤掉
     if anchor:
@@ -242,6 +289,14 @@ def _extract(conn, page, focus_fn, cap, anchor=None, hint="", dry_run=False,
             stats["details"].append(f"丢弃「{name}」：evidence 不是正文原文（{c.get('evidence', '')[:40]}）")
             continue
         existing, how = dedup.find_duplicate(conn, name, definition)
+        if existing and how.startswith("facet:"):
+            # 粒度裁决：相似但更细粒度，降级为已有节点的 facet；其边不入库
+            if name not in existing["facets"]:
+                db.update_node(conn, existing["id"], facets=existing["facets"] + [name])
+            stats["demoted_facets"] += 1
+            stats["details"].append(f"「{name}」按粒度裁决降级为「{existing['name']}」"
+                                    f"的 facet（{how}），其边一并丢弃")
+            continue
         if existing:
             dedup.merge_as_alias(conn, existing, name)
             name_to_id[name] = existing["id"]
@@ -291,6 +346,37 @@ def _extract(conn, page, focus_fn, cap, anchor=None, hint="", dry_run=False,
                  (log_name, source, time.time()))
     conn.commit()
     return stats
+
+
+def pick_anchors_doc(conn, k=3, book=None) -> list[dict]:
+    """教材通道的缺口驱动选锚点（语料分级：教材是 high 级语料，批量提取优先走这里）。
+
+    「教材单独设节讲解（标题命中，权重 2）或正文提及（权重 1）、而图谱稀疏」的
+    生效节点优先：score = 命中权重 / (1 + 生效度数)。
+    跳过同一节版本已 ingest 过的锚点（未翻译节 hash 未定，按节前缀查重）。"""
+    done = [(r["anchor"], r["source"])
+            for r in conn.execute("SELECT anchor, source FROM ingest_log")]
+    done_set = set(done)
+    scored = []
+    for node in db.list_nodes(conn):
+        if node["status"] not in db.visible_statuses():
+            continue
+        sec, how = docs.section_for_node(conn, node, book, with_how=True)
+        if not sec:
+            continue
+        if sec["content_hash"]:
+            if (node["name"], docs.source_of(sec)) in done_set:
+                continue
+        else:
+            prefix = f"doc:{sec['book']}:{sec['sec_id']}@"
+            if any(a == node["name"] and s.startswith(prefix) for a, s in done):
+                continue
+        weight = 2.0 if how == "title" else 1.0
+        score = weight / (1 + db.degree(conn, node["id"]))
+        scored.append((score, sec, how, node))
+    scored.sort(key=lambda x: -x[0])
+    return [{"node": n, "score": s, "section": sec, "how": how}
+            for s, sec, how, n in scored[:k]]
 
 
 def pick_anchors(conn, k=3) -> list[dict]:

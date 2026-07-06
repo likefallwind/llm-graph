@@ -68,10 +68,11 @@ CREATE TABLE IF NOT EXISTS review_log (
     id         INTEGER PRIMARY KEY,
     item_type  TEXT NOT NULL,             -- node / edge
     item_id    INTEGER NOT NULL,
-    action     TEXT NOT NULL,             -- approve/reject/merge/flip/retype/demote/audit_*
+    action     TEXT NOT NULL,             -- approve/reject/merge/flip/retype/demote/audit_*/rollback
     detail     TEXT NOT NULL DEFAULT '',
     source     TEXT NOT NULL DEFAULT '',  -- 条目的 source，按通道统计 precision 用
     decided_by TEXT NOT NULL DEFAULT 'human',  -- human / auto
+    batch_id   TEXT NOT NULL DEFAULT '',  -- verify --apply 一次运行一个批次，坏批次可整批回滚
     created_at REAL NOT NULL
 );
 CREATE TABLE IF NOT EXISTS review_signals (
@@ -119,7 +120,16 @@ def connect(path: str = None) -> sqlite3.Connection:
     conn = sqlite3.connect(path)
     conn.row_factory = sqlite3.Row
     conn.executescript(SCHEMA)
+    _migrate(conn)
     return conn
+
+
+def _migrate(conn):
+    """已有库的增量迁移（SCHEMA 的 CREATE IF NOT EXISTS 只对新库生效）。"""
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(review_log)")}
+    if "batch_id" not in cols:
+        conn.execute("ALTER TABLE review_log ADD COLUMN batch_id TEXT NOT NULL DEFAULT ''")
+        conn.commit()
 
 
 def node_dict(row) -> dict:
@@ -216,12 +226,13 @@ def visible_statuses():
 
 
 def log_review(conn, item_type: str, item_id: int, action: str,
-               detail="", source="", decided_by="human"):
-    """裁决留痕：这是日后校准 AI 审核（按通道统计 precision）的标注数据，每次裁决都要记。"""
+               detail="", source="", decided_by="human", batch_id=""):
+    """裁决留痕：这是日后校准 AI 审核（按通道统计 precision）的标注数据，每次裁决都要记。
+    batch_id 标记 verify --apply 的运行批次，坏批次可 kg rollback 整批撤销。"""
     conn.execute(
-        "INSERT INTO review_log(item_type, item_id, action, detail, source, decided_by, created_at)"
-        " VALUES (?,?,?,?,?,?,?)",
-        (item_type, item_id, action, detail, source, decided_by, time.time()))
+        "INSERT INTO review_log(item_type, item_id, action, detail, source, decided_by, batch_id, created_at)"
+        " VALUES (?,?,?,?,?,?,?,?)",
+        (item_type, item_id, action, detail, source, decided_by, batch_id, time.time()))
 
 
 def get_signals(conn, item_type: str, item_id: int) -> dict | None:

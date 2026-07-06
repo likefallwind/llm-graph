@@ -1,7 +1,10 @@
-"""文档语料通道：教材/课程讲义的本地快照（含章节顺序）。
+"""文档语料通道：教材/教案/课程讲义的本地快照（含章节顺序）。
 
-与 corpus.py（维基）平行的第二个语料层，为图谱补充教学性语料：
+与 corpus.py（维基）平行的第二个语料层，为图谱补充教学性语料。
+语料分级（kg/quality.py）里这里是 high 级——教学性关系密度最高，
+批量提取优先走本通道（ingest --batch N --doc）：
 - 源用声明式配置（sources/<book>.yaml：章节列表 + 定位串），加源不改代码；
+  教案/讲义同样适用（html/pdf/本地文本均可），可用 tier 字段声明级别（缺省 high）；
 - 英文源用翻译模型（llm.TRANSLATE_MODEL）译为中文后入库——翻译文本写入即快照，
   content_hash 是版本号，下游 evidence 对翻译文本做子串校验，不变式不破坏；
 - 章节顺序（ord 列）天然编码教学先修顺序，是 verify 的 toc 结构信号来源
@@ -55,6 +58,8 @@ def load_config(path: str) -> dict:
         raise ValueError(f"book slug 只能是 [a-z0-9-]（source 解析依赖）: {cfg['book']}")
     if cfg["type"] not in ("html", "pdf"):
         raise ValueError(f"type 必须是 html 或 pdf: {cfg['type']}")
+    if cfg.get("tier") and cfg["tier"] not in ("high", "mid", "low"):
+        raise ValueError(f"tier 必须是 high/mid/low（缺省 high）: {cfg['tier']}")
     if cfg["type"] == "pdf" and not cfg.get("pdf_url"):
         raise ValueError("pdf 源必须提供顶层 pdf_url")
     for s in cfg["sections"]:
@@ -303,18 +308,19 @@ def _section_texts(conn, book=None) -> list[dict]:
     return rows
 
 
-def section_for_node(conn, node: dict, book=None):
-    """给锚点节点找教材节：节标题命中优先（跨书取最先注册的），其次正文首次出现。"""
+def section_for_node(conn, node: dict, book=None, with_how=False):
+    """给锚点节点找教材节：节标题命中优先（跨书取最先注册的），其次正文首次出现。
+    with_how=True 时返回 (sec, "title"|"body")，供缺口驱动选点按命中方式加权。"""
     names = [node["name"]] + node["aliases"]
     rows = _section_texts(conn, book)
     for sec in rows:
         core = _title_core(sec["title"])
         if any(corpus._similar(nm, core) >= TITLE_MATCH_THRESHOLD for nm in names):
-            return sec
+            return (sec, "title") if with_how else sec
     for sec in rows:
         if any(_name_in_text(nm, sec["_body"], sec["_body_norm"]) for nm in names):
-            return sec
-    return None
+            return (sec, "body") if with_how else sec
+    return (None, None) if with_how else None
 
 
 def concept_positions(conn) -> dict:

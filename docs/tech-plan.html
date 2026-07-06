@@ -1,0 +1,1014 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>自进化教学知识图谱 · 最终技术方案</title>
+  <style>
+    :root {
+      --bg: #ffffff;
+      --ink: #14201a;
+      --muted: #5b6a63;
+      --line: #d8e0da;
+      --soft: #f5f9f6;
+      --soft2: #ecf3ee;
+      --green: #1c7c54;
+      --green2: #e9f7f0;
+      --blue: #1f5eff;
+      --blue2: #e9f0ff;
+      --orange: #bc641d;
+      --orange2: #fff2e5;
+      --red: #b42318;
+      --red2: #fff0ed;
+      --purple: #5b4bb7;
+      --purple2: #f1efff;
+      --shadow: 0 12px 32px rgba(20, 32, 26, 0.08);
+      --radius: 18px;
+      --mono: "SFMono-Regular", "Cascadia Code", "Roboto Mono", Consolas, monospace;
+      --sans: "Aptos", "Segoe UI", "Helvetica Neue", Arial, "PingFang SC", "Microsoft YaHei", sans-serif;
+    }
+
+    * { box-sizing: border-box; }
+    html { scroll-behavior: smooth; }
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--ink);
+      font-family: var(--sans);
+      line-height: 1.55;
+    }
+
+    .page {
+      width: min(1500px, calc(100% - 44px));
+      margin: 0 auto;
+      padding: 28px 0 72px;
+    }
+
+    .hero {
+      border: 1px solid var(--line);
+      border-radius: 24px;
+      padding: 30px;
+      background:
+        linear-gradient(90deg, rgba(28, 124, 84, 0.06), transparent 36%),
+        linear-gradient(180deg, #fff, #fafdfb);
+      box-shadow: var(--shadow);
+    }
+
+    .kicker {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      margin: 0 0 12px;
+      padding: 7px 10px;
+      border-radius: 999px;
+      background: var(--green2);
+      color: #14603f;
+      font-size: 12px;
+      font-weight: 800;
+      letter-spacing: 0.04em;
+      text-transform: uppercase;
+    }
+
+    .kicker::before {
+      content: "";
+      width: 8px;
+      height: 8px;
+      border-radius: 50%;
+      background: var(--green);
+    }
+
+    h1 {
+      margin: 0;
+      max-width: 1080px;
+      font-size: clamp(28px, 3.6vw, 44px);
+      line-height: 1.12;
+      letter-spacing: -0.035em;
+    }
+
+    .subtitle {
+      max-width: 1080px;
+      margin: 18px 0 0;
+      color: var(--muted);
+      font-size: 14px;
+      line-height: 1.75;
+    }
+
+    .hero-map {
+      display: grid;
+      grid-template-columns: 1fr auto 1fr auto 1fr;
+      gap: 12px;
+      align-items: stretch;
+      margin-top: 24px;
+    }
+
+    .big-block {
+      min-height: 128px;
+      padding: 18px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      background: #fff;
+    }
+
+    .big-block h3 { margin: 0 0 8px; font-size: 18px; }
+    .big-block p { margin: 0; color: var(--muted); font-size: 13px; }
+
+    .arrow {
+      display: grid;
+      place-items: center;
+      color: var(--green);
+      font-size: 30px;
+      font-weight: 900;
+    }
+
+    .nav {
+      position: sticky;
+      top: 10px;
+      z-index: 20;
+      display: flex;
+      flex-wrap: wrap;
+      gap: 8px;
+      margin: 18px 0 28px;
+      padding: 8px;
+      width: fit-content;
+      max-width: 100%;
+      background: rgba(255, 255, 255, 0.88);
+      border: 1px solid var(--line);
+      border-radius: 999px;
+      backdrop-filter: blur(12px);
+      box-shadow: 0 8px 24px rgba(20, 32, 26, 0.06);
+    }
+
+    .nav a {
+      color: var(--ink);
+      text-decoration: none;
+      padding: 8px 12px;
+      border-radius: 999px;
+      font-size: 13px;
+      font-weight: 750;
+    }
+
+    .nav a:hover { background: var(--soft2); color: var(--green); }
+
+    section { margin-top: 34px; }
+
+    .section-title {
+      display: flex;
+      gap: 14px;
+      align-items: flex-start;
+      justify-content: space-between;
+      margin-bottom: 14px;
+      border-bottom: 2px solid var(--ink);
+      padding-bottom: 12px;
+    }
+
+    .section-title h2 {
+      margin: 0;
+      font-size: clamp(22px, 2.4vw, 32px);
+      line-height: 1.18;
+      letter-spacing: -0.025em;
+    }
+
+    .section-title p {
+      max-width: 560px;
+      margin: 0;
+      color: var(--muted);
+      font-size: 14px;
+    }
+
+    .panel {
+      border: 1px solid var(--line);
+      border-radius: 22px;
+      background: #fff;
+      box-shadow: var(--shadow);
+      overflow: hidden;
+    }
+
+    .panel-head {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 14px;
+      padding: 14px 18px;
+      border-bottom: 1px solid var(--line);
+      background: var(--soft);
+    }
+
+    .panel-head h3 { margin: 0; font-size: 18px; letter-spacing: -0.02em; }
+
+    .tag {
+      display: inline-flex;
+      align-items: center;
+      padding: 4px 8px;
+      border-radius: 999px;
+      font-family: var(--mono);
+      font-size: 11px;
+      font-weight: 800;
+      border: 1px solid var(--line);
+      background: #fff;
+      color: var(--muted);
+      white-space: nowrap;
+    }
+
+    .panel-body { padding: 18px; }
+
+    .pipeline {
+      display: grid;
+      grid-template-columns: repeat(7, minmax(130px, 1fr));
+      gap: 10px;
+      align-items: stretch;
+    }
+
+    .step {
+      position: relative;
+      min-height: 176px;
+      padding: 14px;
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      background: #fff;
+    }
+
+    .step:not(:last-child)::after {
+      content: "";
+      position: absolute;
+      right: -10px;
+      top: 50%;
+      width: 10px;
+      height: 1px;
+      background: var(--line);
+    }
+
+    .step b {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 8px;
+      font-size: 14px;
+      line-height: 1.25;
+    }
+
+    .idx {
+      display: inline-grid;
+      place-items: center;
+      width: 24px;
+      height: 24px;
+      border-radius: 8px;
+      color: #fff;
+      background: var(--green);
+      font-family: var(--mono);
+      font-size: 12px;
+      flex: none;
+    }
+
+    .step ul,
+    .mini-card ul {
+      margin: 0;
+      padding-left: 16px;
+      color: var(--muted);
+      font-size: 12px;
+    }
+
+    .step li,
+    .mini-card li { margin: 5px 0; }
+
+    .grid-2 { display: grid; grid-template-columns: 1fr 1fr; gap: 16px; }
+    .grid-3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 16px; }
+    .grid-4 { display: grid; grid-template-columns: repeat(4, 1fr); gap: 12px; }
+
+    .mini-card {
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      background: #fff;
+      padding: 14px;
+    }
+
+    .mini-card h4 { margin: 0 0 8px; font-size: 15px; }
+    .mini-card p { margin: 0; color: var(--muted); font-size: 12.5px; }
+
+    .blue { background: var(--blue2); border-color: #c9d8ff; }
+    .green { background: var(--green2); border-color: #c7ead8; }
+    .orange { background: var(--orange2); border-color: #ffd6ad; }
+    .red { background: var(--red2); border-color: #ffd0c9; }
+    .purple { background: var(--purple2); border-color: #d8d2ff; }
+
+    .schema { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; }
+
+    .schema-col {
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      overflow: hidden;
+      background: #fff;
+    }
+
+    .schema-col h4 {
+      margin: 0;
+      padding: 10px 12px;
+      background: var(--soft);
+      border-bottom: 1px solid var(--line);
+      font-size: 14px;
+    }
+
+    .schema-col code {
+      display: block;
+      padding: 10px 12px;
+      color: var(--muted);
+      font-family: var(--mono);
+      font-size: 11px;
+      line-height: 1.65;
+      white-space: pre-line;
+    }
+
+    .svg-wrap {
+      border: 1px solid var(--line);
+      border-radius: 18px;
+      background: #fff;
+      overflow: hidden;
+    }
+
+    svg { display: block; width: 100%; height: auto; }
+
+    .codebox {
+      margin: 0;
+      padding: 14px;
+      border-radius: 14px;
+      background: #0f1c15;
+      color: #d6ecdf;
+      overflow: auto;
+      font-family: var(--mono);
+      font-size: 11px;
+      line-height: 1.65;
+    }
+
+    .matrix {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 12px;
+      overflow: hidden;
+      border-radius: 14px;
+    }
+
+    .matrix th,
+    .matrix td {
+      border: 1px solid var(--line);
+      padding: 9px 10px;
+      text-align: left;
+      vertical-align: top;
+    }
+
+    .matrix th { background: var(--soft); font-size: 12px; }
+    .matrix td { color: var(--muted); }
+    .matrix strong { color: var(--ink); }
+
+    .prio {
+      display: inline-grid;
+      place-items: center;
+      min-width: 34px;
+      padding: 3px 8px;
+      border-radius: 8px;
+      color: #fff;
+      font-family: var(--mono);
+      font-size: 11px;
+      font-weight: 800;
+    }
+    .p0 { background: var(--red); }
+    .p1 { background: var(--orange); }
+    .p2 { background: var(--purple); }
+
+    .note {
+      margin-top: 12px;
+      padding: 12px 14px;
+      border-left: 4px solid var(--green);
+      background: var(--green2);
+      border-radius: 0 14px 14px 0;
+      color: #2d4438;
+      font-size: 13px;
+    }
+
+    .note.warn {
+      border-left-color: var(--red);
+      background: var(--red2);
+      color: #5c2a24;
+    }
+
+    .foot {
+      margin-top: 28px;
+      color: var(--muted);
+      font-size: 12px;
+      text-align: center;
+    }
+
+    @media (max-width: 1200px) {
+      .pipeline { grid-template-columns: repeat(4, 1fr); }
+      .schema { grid-template-columns: repeat(2, 1fr); }
+      .hero-map { grid-template-columns: 1fr; }
+      .arrow { transform: rotate(90deg); }
+      .grid-4 { grid-template-columns: repeat(2, 1fr); }
+    }
+
+    @media (max-width: 820px) {
+      .page { width: min(100% - 24px, 720px); padding-top: 14px; }
+      .section-title, .grid-2, .grid-3, .grid-4 { grid-template-columns: 1fr; display: grid; }
+      .pipeline, .schema { grid-template-columns: 1fr; }
+      .step::after { display: none; }
+      .nav { border-radius: 18px; }
+    }
+
+    @media print {
+      .nav { display: none; }
+      .page { width: 100%; padding: 0; }
+      .panel, .hero { box-shadow: none; break-inside: avoid; }
+      section { break-inside: avoid; }
+    }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <header class="hero">
+      <p class="kicker">Final Technical Plan · Self-Evolving Educational KG</p>
+      <h1>自进化教学知识图谱 · 最终技术方案</h1>
+      <p class="subtitle">
+        以已实现的语料库化流水线（algorithm.md）为主体，吸收 edu-KG 技术路线评审（docs/edu-KG.html）中确认采纳的改进项。
+        质量硬化五项与语料分级已于 2026-07-06 落地实现（里程碑⑦）。目标不变：图谱内容全部扎根可溯源语料，最终指导 LLM 个性化教学；人工审核逐步从守门员转为抽检员。
+      </p>
+      <div class="hero-map">
+        <div class="big-block green">
+          <h3>底座 · 分级可溯源语料</h3>
+          <p>三级质量分层：<strong>high</strong>（教材/教案/种子，提取首选）&gt; <strong>mid</strong>（维基/Wikidata，兜底+佐证）&gt; <strong>low</strong>（不参与自动裁决）。快照锁版本，一切入图内容必须在此有据。</p>
+        </div>
+        <div class="arrow">→</div>
+        <div class="big-block blue">
+          <h3>中枢 · 抽取与双信源验证</h3>
+          <p>零 LLM 结构挖掘 + LLM 有据提取（证据机械校验）+ 四级去重 + 结构佐证×LLM 判断题双重一致自动裁决。</p>
+        </div>
+        <div class="arrow">→</div>
+        <div class="big-block orange">
+          <h3>闭环 · 治理与校准</h3>
+          <p>守卫、批次化回滚、审计抽检、review_log × 信号 → precision 校准，反馈调节自动裁决松紧。</p>
+        </div>
+      </div>
+    </header>
+
+    <nav class="nav">
+      <a href="#principles">0. 核心原则</a>
+      <a href="#arch">1. 总体架构</a>
+      <a href="#schema">2. 数据模型</a>
+      <a href="#gates">3. 三道质量闸门</a>
+      <a href="#adopted">4. 本轮采纳的改进</a>
+      <a href="#rejected">5. 明确不采纳</a>
+      <a href="#roadmap">6. 路线图</a>
+    </nav>
+
+    <section id="principles">
+      <div class="section-title">
+        <h2>0. 核心原则（四条不变式）</h2>
+        <p>所有模块改动都不得破坏这四条。它们是本方案与"LLM 自由构图"路线的根本分界。</p>
+      </div>
+      <div class="grid-4">
+        <div class="mini-card green">
+          <h4>① LLM 是抽取器，不是知识源</h4>
+          <p>图谱内容必须落地到本地语料快照。LLM 只做判断题（边类型、粒度、证据摘取），不做默写题（凭记忆生成知识）。
+          LLM 记忆只允许出现在"往哪看"（expand 提假设名，须经语料验证，找不到来源页即丢弃），不进图谱内容。</p>
+        </div>
+        <div class="mini-card blue">
+          <h4>② 证据机械可校验</h4>
+          <p>每个概念、每条边必须附来源正文原文摘录（≤60 字），<code>evidence_in_text</code> 子串校验不过整条丢弃。
+          LLM 完全可能编造一句"原文"，这一行校验是后续一切佐证的地基。英文教材以翻译后中文快照为准，入库即冻结。</p>
+        </div>
+        <div class="mini-card orange">
+          <h4>③ 置信度 = 独立信源是否一致</h4>
+          <p>不用 LLM 自报数值置信度分流（自报置信度校准差，错的时候照样报高分）。
+          结构佐证（互链 / RefD / 教材目录序 / Wikidata）与 LLM 判断题复核是两个独立信源，双重一致才允许自动裁决。</p>
+        </div>
+        <div class="mini-card purple">
+          <h4>④ 全裁决留痕，闭环校准</h4>
+          <p>人工与自动裁决全部写 <code>review_log</code>；<code>calibrate</code> 按（通道 × 类型 × 佐证组合）统计 precision，
+          自动放行用 <code>review --audit</code> 抽检推翻率。高精度组合放宽、低的收紧——松紧由数据决定，不由直觉决定。</p>
+        </div>
+      </div>
+    </section>
+
+    <section id="arch">
+      <div class="section-title">
+        <h2>1. 总体架构</h2>
+        <p>三层：语料底座（低频、锁版本）→ 抽取验证主流水线（LLM 产物一律先入 proposed）→ 治理与校准闭环（反馈调节自动裁决）。</p>
+      </div>
+
+      <div class="panel">
+        <div class="panel-head"><h3>1.1 架构分层</h3><span class="tag">corpus → extract/verify → govern/calibrate</span></div>
+        <div class="panel-body">
+          <div class="svg-wrap">
+            <svg viewBox="0 0 1280 580" role="img" aria-label="架构分层图">
+              <defs>
+                <marker id="arr" markerWidth="10" markerHeight="10" refX="8" refY="3" orient="auto" markerUnits="strokeWidth">
+                  <path d="M0,0 L0,6 L9,3 z" fill="#667a6e" />
+                </marker>
+                <style>
+                  .lane{fill:#fbfdfb;stroke:#d8e0da;stroke-width:1.4;}
+                  .box{fill:#fff;stroke:#d8e0da;stroke-width:1.4;}
+                  .cg{fill:#e9f7f0;stroke:#b8e4cf;}
+                  .cb{fill:#e9f0ff;stroke:#b7c9ff;}
+                  .co{fill:#fff2e5;stroke:#ffd0a3;}
+                  .cp{fill:#f1efff;stroke:#d4ceff;}
+                  .cr{fill:#fff0ed;stroke:#ffc7bf;}
+                  .t{font:700 14px Aptos,Arial,sans-serif;fill:#14201a;}
+                  .h{font:800 15px Aptos,Arial,sans-serif;fill:#14201a;}
+                  .s{font:12px Aptos,Arial,sans-serif;fill:#5b6a63;}
+                  .m{font:9.5px SFMono-Regular,Consolas,monospace;fill:#39544a;}
+                  .lb{font:700 11px Aptos,Arial,sans-serif;fill:#4a5c53;}
+                  .ln{stroke:#667a6e;stroke-width:1.6;fill:none;marker-end:url(#arr);}
+                  .dash{stroke:#667a6e;stroke-width:1.6;fill:none;stroke-dasharray:7 6;marker-end:url(#arr);}
+                </style>
+              </defs>
+
+              <rect x="34" y="20" width="1212" height="140" rx="18" class="lane" />
+              <text x="58" y="50" class="h">语料底座 · 三级质量分层（quality.py），一切入图内容必须在此有快照</text>
+              <text x="750" y="50" class="s">低频更新，锁版本，可复现可 diff</text>
+
+              <rect x="64" y="86" width="272" height="58" rx="14" class="box cb" />
+              <text x="80" y="110" class="t">Wiki 语料 corpus 〔mid〕</text>
+              <text x="80" y="132" class="m">快照@revision_id · 相似度≥0.75 · 拒消歧义页</text>
+
+              <rect x="356" y="86" width="280" height="58" rx="14" class="box cg" />
+              <text x="372" y="110" class="t">教材/教案语料 docs 〔high〕</text>
+              <text x="372" y="132" class="m">doc_sections@content_hash · 翻译即快照 · 目录序 ord</text>
+
+              <rect x="656" y="86" width="260" height="58" rx="14" class="box cb" />
+              <text x="672" y="110" class="t">Wikidata 缓存 〔mid〕</text>
+              <text x="672" y="132" class="m">page_qid · claims（P279 / P361 / P737）</text>
+
+              <rect x="936" y="86" width="246" height="58" rx="14" class="box cg" />
+              <text x="952" y="110" class="t">种子骨架 seeds 〔high〕</text>
+              <text x="952" y="132" class="m">人工校验 YAML · status=seed</text>
+
+              <text x="470" y="180" class="lb">↓ source 锁定语料版本：wiki:&lt;lang&gt;:&lt;title&gt;@&lt;rev&gt; ／ doc:&lt;book&gt;:&lt;sec&gt;@&lt;hash&gt; ↓</text>
+
+              <rect x="34" y="196" width="1212" height="196" rx="18" class="lane" />
+              <text x="58" y="226" class="h">抽取 → 验证 主流水线</text>
+              <text x="640" y="226" class="s">LLM 产物一律先入 proposed，图算法只看 seed + approved</text>
+
+              <rect x="252" y="240" width="330" height="30" rx="10" class="box cp" style="stroke-dasharray:6 5;" />
+              <text x="266" y="260" class="m">expand 旁路：M3 只提假设名 → 语料验证 → 转 ingest，无来源页即丢弃</text>
+              <path d="M340 270 V296" class="dash" />
+
+              <rect x="64" y="296" width="150" height="72" rx="14" class="box cg" />
+              <text x="80" y="320" class="t">mine 结构挖掘</text>
+              <text x="80" y="340" class="m">重定向→别名</text>
+              <text x="80" y="356" class="m">分类/QID→候选边 · 零 LLM</text>
+
+              <rect x="224" y="296" width="150" height="72" rx="14" class="box cb" />
+              <text x="240" y="320" class="t">ingest 有据提取</text>
+              <text x="240" y="340" class="m">缺口驱动选锚点</text>
+              <text x="240" y="356" class="m">分块≤3 · 证据子串校验</text>
+
+              <rect x="384" y="296" width="150" height="72" rx="14" class="box cb" />
+              <text x="400" y="320" class="t">dedup 四级去重</text>
+              <text x="400" y="340" class="m">精确名→重定向</text>
+              <text x="400" y="356" class="m">→emb≥0.90→LLM 裁决</text>
+
+              <rect x="544" y="296" width="150" height="72" rx="14" class="box co" />
+              <text x="560" y="320" class="t">proposed 待审池</text>
+              <text x="560" y="340" class="m">节点+边 · 不参与</text>
+              <text x="560" y="356" class="m">任何图算法</text>
+
+              <rect x="704" y="296" width="150" height="72" rx="14" class="box co" />
+              <text x="720" y="320" class="t">verify 双信源复核</text>
+              <text x="720" y="340" class="m">结构佐证 × LLM 判断题</text>
+              <text x="720" y="356" class="m">--apply 双重一致自动裁决</text>
+
+              <rect x="864" y="296" width="150" height="72" rx="14" class="box co" />
+              <text x="880" y="320" class="t">review 人工裁决</text>
+              <text x="880" y="340" class="m">信号冲突排最前</text>
+              <text x="880" y="356" class="m">a/r/m/d · --audit 抽检</text>
+
+              <rect x="1024" y="296" width="158" height="72" rx="14" class="box cg" />
+              <text x="1040" y="320" class="t">生效子图</text>
+              <text x="1040" y="340" class="m">seed + approved</text>
+              <text x="1040" y="356" class="m">教学导出唯一依据</text>
+
+              <path d="M214 332 H224" class="ln" />
+              <path d="M374 332 H384" class="ln" />
+              <path d="M534 332 H544" class="ln" />
+              <path d="M694 332 H704" class="ln" />
+              <path d="M854 332 H864" class="ln" />
+              <path d="M1014 332 H1024" class="ln" />
+
+              <text x="470" y="414" class="lb">↓ 每次裁决（human / auto）必写 review_log；守卫只在生效子图上运行 ↓</text>
+
+              <rect x="34" y="430" width="1212" height="132" rx="18" class="lane" />
+              <text x="58" y="460" class="h">治理与校准闭环</text>
+              <text x="640" y="460" class="s">松紧由标注数据决定，人工从守门员转为抽检员</text>
+
+              <rect x="64" y="490" width="280" height="56" rx="14" class="box cr" />
+              <text x="80" y="512" class="t">guards 守卫</text>
+              <text x="80" y="534" class="m">环×3 · 传递冗余 · 正反同型 · 孤儿 · facet 重名</text>
+
+              <rect x="364" y="490" width="250" height="56" rx="14" class="box co" />
+              <text x="380" y="512" class="t">review_log 裁决留痕</text>
+              <text x="380" y="534" class="m">动作 · 通道 · human/auto · batch_id</text>
+
+              <rect x="634" y="490" width="280" height="56" rx="14" class="box cp" />
+              <text x="650" y="512" class="t">calibrate 校准</text>
+              <text x="650" y="534" class="m">通道×类型×佐证组合 precision · 审计推翻率</text>
+
+              <rect x="934" y="490" width="248" height="56" rx="14" class="box cr" />
+              <text x="950" y="512" class="t">批次回滚 rollback</text>
+              <text x="950" y="534" class="m">坏批次按 batch_id 整批撤销＋级联</text>
+
+              <path d="M939 368 V490" class="ln" />
+              <path d="M774 490 V368" class="dash" />
+              <rect x="640" y="422" width="128" height="16" fill="#fbfdfb" />
+              <text x="646" y="434" class="lb">调节自动裁决松紧</text>
+            </svg>
+          </div>
+        </div>
+      </div>
+
+      <div class="panel" style="margin-top:16px;">
+        <div class="panel-head"><h3>1.2 主流水线七步</h3><span class="tag">kg/*.py · 全部已实现，加粗为本轮新增约束</span></div>
+        <div class="panel-body">
+          <div class="pipeline">
+            <div class="step green">
+              <b><span class="idx">0</span>语料圈定与分级</b>
+              <ul>
+                <li>三级分层：high（教材/教案/种子）&gt; mid（维基/Wikidata）&gt; low（不自动裁决）；新源 yaml 声明 tier 接入</li>
+                <li>corpus crawl / grow：内链扩散定向爬取；docs fetch / translate：教材章节 + 目录序，翻译即快照</li>
+                <li>标题相似度 ≥0.75；消歧义页拒收；API 节流 + 退避</li>
+              </ul>
+            </div>
+            <div class="step green">
+              <b><span class="idx">1</span>结构挖掘 mine</b>
+              <ul>
+                <li>重定向 → 别名（直接生效，喂去重第 1 级）</li>
+                <li>分类树 → part_of 候选（conf 0.5）</li>
+                <li>Wikidata P279/P361/P737 → 候选边（conf 0.7）</li>
+                <li>同 QID 仲裁：疑似同概念报人工</li>
+                <li>零 LLM 调用</li>
+              </ul>
+            </div>
+            <div class="step blue">
+              <b><span class="idx">2</span>有据提取 ingest</b>
+              <ul>
+                <li>批量优先教材通道（--batch × --doc）：标题命中权重 2 / 正文 1，除以 (1+图谱度数)</li>
+                <li>维基批量兜底：语料入度 / (1+图谱度数)</li>
+                <li>长页分块 ≤3 块，--limit 是每页产出预算</li>
+                <li>evidence 子串机械校验；失败先逐字重引一次再丢弃</li>
+              </ul>
+            </div>
+            <div class="step blue">
+              <b><span class="idx">3</span>四级去重 dedup</b>
+              <ul>
+                <li>精确名 → 维基重定向 → embedding≥0.90 召回 → LLM 裁决</li>
+                <li>三元裁决：same 挂别名 / facet 降级进父节点 facets / different 入库</li>
+                <li>相似但粒度不同的近邻不再可能被合并为别名</li>
+              </ul>
+            </div>
+            <div class="step orange">
+              <b><span class="idx">4</span>复核 verify</b>
+              <ul>
+                <li>结构佐证（零 LLM）：互链 / RefD / toc 目录序 / Wikidata / 邻居重叠</li>
+                <li>LLM 判断题复核：只给材料，禁用记忆</li>
+                <li>--apply 双重一致自动裁决，整次运行一个批次号</li>
+                <li>三道闸：low 级不裁 / 无邻居重叠不批节点 / 加边成环不批边</li>
+              </ul>
+            </div>
+            <div class="step orange">
+              <b><span class="idx">5</span>审核 review</b>
+              <ul>
+                <li>分层排序：信号冲突 &gt; 证据不足 &gt; 弱一致</li>
+                <li>节点 a/r/m/d，边 a/r/f/t</li>
+                <li>--audit N 抽检自动放行</li>
+                <li>每条裁决写 review_log</li>
+              </ul>
+            </div>
+            <div class="step red">
+              <b><span class="idx">6</span>治理与校准</b>
+              <ul>
+                <li>guards：环×3 / 先修传递冗余 / 正反同型 / 孤儿 / facet 重名</li>
+                <li>calibrate：precision 按通道×类型×佐证组合</li>
+                <li>kg rollback：坏批次整批退回 proposed（后来的裁决优先，节点回滚级联其边）</li>
+              </ul>
+            </div>
+          </div>
+          <div class="note">
+            expand 是旁路而非主通道：M3 凭记忆只提"图谱缺个 XX"的名字，本地语料 / 维基检索验证通过才转 ingest 主题模式提取，找不到来源页直接丢弃——LLM 记忆的不可校准性被隔离在选点环节，不进图谱内容。
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="schema">
+      <div class="section-title">
+        <h2>2. 数据模型与边语义</h2>
+        <p>SQLite 单库；status 字段兼作审核队列，是半自动进化的骨干。层次不用节点属性表示，用类型化的边表示。</p>
+      </div>
+
+      <div class="panel">
+        <div class="panel-head"><h3>2.1 表结构</h3><span class="tag">kg/db.py</span></div>
+        <div class="panel-body">
+          <div class="schema">
+            <div class="schema-col">
+              <h4>图谱主体</h4>
+              <code>nodes: id, name(唯一), aliases[],
+  definition, facets[], status,
+  source, embedding, created_at
+
+edges: id, src, dst, type,
+  confidence, rationale, source,
+  status, UNIQUE(src,dst,type)</code>
+            </div>
+            <div class="schema-col">
+              <h4>语料层</h4>
+              <code>corpus: lang, page_id, title,
+  revision_id, text, redirects[],
+  categories[], links[]
+
+node_page: node_id → (lang, page_id)
+
+doc_sections: book, sec_id, ord,
+  title, text, content_hash</code>
+            </div>
+            <div class="schema-col">
+              <h4>复核与校准</h4>
+              <code>review_log: 每次裁决留痕
+  (动作, 通道, human/auto,
+   batch_id ← 新增)
+
+review_signals: 结构佐证
+  + LLM 复核结论
+
+page_qid / wikidata_claims: 缓存</code>
+            </div>
+            <div class="schema-col">
+              <h4>防重复</h4>
+              <code>ingest_log:
+  (锚点, 来源版本) 唯一
+  同版本不重复提取
+
+add_edge 入库拦截:
+  related_to 反向重复
+  插入前即拒</code>
+            </div>
+          </div>
+          <pre class="codebox" style="margin-top:12px;">状态机（status 兼作审核队列）：
+
+seed ──────────────┐
+                   ├──&gt; 生效（所有图算法、守卫、教学导出只看这两种）
+proposed ─审核a──&gt; approved
+    │
+    └──审核r/m/d──&gt; rejected（m 合并：边转移到目标节点后 reject；d 降级：文本进父节点 facets）
+
+生效的两条路：人工 review；或 verify --apply 双重一致自动裁决。两条路都必写 review_log。</pre>
+        </div>
+      </div>
+
+      <div class="grid-2" style="margin-top:16px;">
+        <div class="panel">
+          <div class="panel-head"><h3>2.2 边类型语义</h3><span class="tag">db.EDGE_TYPES · 4 种</span></div>
+          <div class="panel-body">
+            <table class="matrix">
+              <thead><tr><th>类型</th><th>语义</th><th>约束</th></tr></thead>
+              <tbody>
+                <tr><td><strong>is_a</strong></td><td>A 是 B 的一种</td><td>生效子图无环（守卫）</td></tr>
+                <tr><td><strong>part_of</strong></td><td>A 是 B 的组成部分</td><td>生效子图无环（守卫）</td></tr>
+                <tr><td><strong>prerequisite_of</strong></td><td>不懂 A 就无法理解 B（教学先修）</td><td>必须 DAG；唯一允许推断的边——rationale 加 <code>[推断]</code> 前缀、confidence 封顶 0.6</td></tr>
+                <tr><td><strong>related_to</strong></td><td>受限关联（封闭枚举）</td><td>只允许三种 kind：同题替代 / 演化启发 / 教学对比；无合法 kind 代码层直接丢弃；语义对称，入库拦反向重复</td></tr>
+              </tbody>
+            </table>
+            <div class="note">
+              先修是最有教学价值、却最不可抽取的边（维基正文几乎从不写"先学 A 再学 B"）。对策：允许受控推断 + 教材目录序（toc）作为独立信源交叉验证——教材目录天然编码教学先修顺序，比 LLM 零样本判先修硬得多。
+            </div>
+          </div>
+        </div>
+        <div class="panel">
+          <div class="panel-head"><h3>2.3 节点粒度：facet 升级规则</h3><span class="tag">粒度随图长出来，不预先设计</span></div>
+          <div class="panel-body">
+            <div class="mini-card green">
+              <h4>规则</h4>
+              <ul>
+                <li>候选知识点默认不是节点，而是父节点的 facet（≤12 字名词短语，如 softmax 的「温度参数」）</li>
+                <li>只有当别的知识点需要单独依赖它（要给它连边）时，才升级为独立节点</li>
+                <li>算法内部步骤 / 参数 / 公式细节一律进 facets；拿不准宁可放 facets</li>
+                <li>守卫 facet_shadows 做逆向检查：facet 与已有节点重名 → 已被升级，父节点应清理</li>
+              </ul>
+            </div>
+            <div class="note">
+              与 edu-KG 方案的 Granularity Ladder（Chapter→KP→Concept→Skill 固定分层）相比，本方案的粒度是演生的。吸收其要点落在去重环节：<strong>相似但粒度不同的节点不能合并为别名</strong>——dedup 第 4 级 LLM 裁决显式区分「同一概念」与「是对方的细粒度成分」，后者走降级 facet（§4 A5）。
+            </div>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="gates">
+      <div class="section-title">
+        <h2>3. 三道质量闸门</h2>
+        <p>回答"如何保证图谱不是 LLM 幻觉图"：提取时机械校验，复核时双独立信源，事后守卫 + 审计 + 校准。每一道都可被数据检验。</p>
+      </div>
+
+      <div class="grid-3">
+        <div class="panel">
+          <div class="panel-head"><h3>3.1 闸门一 · 提取时</h3><span class="tag">机械规则，零信任</span></div>
+          <div class="panel-body">
+            <div class="mini-card blue">
+              <h4>入库前逐条过滤</h4>
+              <ul>
+                <li>evidence 必须是来源正文子串（规范化后逐段校验），不过整条丢弃</li>
+                <li>related_to 无合法 kind 直接丢弃（dropped_related）</li>
+                <li>facet 长度 &gt;16 字符不收</li>
+                <li>推断先修 confidence 封顶 0.6，与有据边区分信任层级</li>
+                <li>正文 &lt;300 字不算有效来源</li>
+                <li>宁缺毋滥：--limit 每页产出预算总闸门</li>
+              </ul>
+            </div>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-head"><h3>3.2 闸门二 · 复核时</h3><span class="tag">双独立信源一致才动</span></div>
+          <div class="panel-body">
+            <table class="matrix">
+              <thead><tr><th>对象</th><th>自动批准</th><th>自动拒绝</th></tr></thead>
+              <tbody>
+                <tr>
+                  <td><strong>节点</strong></td>
+                  <td>LLM 判「独立概念」＋ 名字精确命中语料页 ＋ 语料页与图谱邻居有重叠（UMAP 撞名补丁）</td>
+                  <td>无（拒绝 / 降级 facet 一律人工）</td>
+                </tr>
+                <tr>
+                  <td><strong>边</strong></td>
+                  <td>LLM「支持」方向无疑 ＋ ≥1 结构佐证（互链 / Wikidata / toc=+1）；先修边另要求 refd 与 toc 都不反对 ＋ 无环类型模拟加边不成环（守卫前移为放行拦截）</td>
+                  <td>LLM「不支持」＋ 零结构佐证</td>
+                </tr>
+              </tbody>
+            </table>
+            <p style="margin:10px 0 0;color:var(--muted);font-size:12.5px;">low 级语料的条目一律不自动裁决；其余不满足条件的全部留人工。整次运行共用一个批次号（可 kg rollback 整批撤销）。LLM 复核只做阅读理解题（只给证据上下文、双方定义、图谱邻域），prompt 明令禁用模型记忆——复核时 LLM 也不是知识源。</p>
+          </div>
+        </div>
+
+        <div class="panel">
+          <div class="panel-head"><h3>3.3 闸门三 · 事后</h3><span class="tag">守卫 + 审计 + 校准</span></div>
+          <div class="panel-body">
+            <div class="mini-card red">
+              <h4>持续运行</h4>
+              <ul>
+                <li>guards：先修 / is_a / part_of 三色 DFS 环检测、先修传递冗余、正反向同型边、孤儿、facet 重名——只报告不自动修，裁决权在人</li>
+                <li>review --audit N：抽检自动放行，推翻率进 calibrate</li>
+                <li>calibrate：人工裁决 precision 按（通道 × 类型 × 佐证组合）分桶，n&lt;3 标注样本不足</li>
+                <li>kg rollback：坏批次按 batch_id 整批退回 proposed 重审</li>
+              </ul>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <div class="note warn" style="margin-top:16px;">
+        <strong>UMAP 事故（2026-07-05）与已落地的对策（2026-07-06）</strong>：多义短名 / 缩写词可被重定向劫持到无关页面（zh「UMAP」→「亞太大學交流會」），此时「名字精确命中」天然成立，LLM 复核只读到错误页面材料也会判「独立概念」——两个信源被同一错误来源污染，不再独立。对策已实现：A2 邻居重叠守卫（错误页面不会提到真概念的图谱邻居，无重叠不放行且在 review 队列排进信号冲突层）＋ A1 批次回滚（放行错了可整批撤销）。该事故的人工 reject 已留痕 review_log，恰好成为一条自动放行被推翻的校准数据。
+      </div>
+    </section>
+
+    <section id="adopted">
+      <div class="section-title">
+        <h2>4. 本轮采纳的改进（edu-KG 评审 + 语料分级）</h2>
+        <p>评审结论：对方方案广而浅、本方案窄而深，哲学一致。A0–A5 已于 2026-07-06 实现（里程碑⑦）；A6–A8 排入后续里程碑。</p>
+      </div>
+
+      <div class="panel">
+        <div class="panel-head"><h3>4.1 改进清单</h3><span class="tag">priority · module · mechanism</span></div>
+        <div class="panel-body">
+          <table class="matrix">
+            <thead><tr><th style="width:70px;">状态</th><th style="width:200px;">改进项</th><th>机制</th><th style="width:200px;">落点</th></tr></thead>
+            <tbody>
+              <tr>
+                <td><span class="prio p0">✅ P0</span></td>
+                <td><strong>A0 · 语料质量分级</strong><br/>（教材/教案优先）</td>
+                <td>显式三级：high（种子、教材/教案，教学性关系密度最高，批量提取首选 <code>--batch × --doc</code> 缺口驱动选点）＞ mid（维基/结构挖掘/Wikidata，兜底提取+结构佐证）＞ low（弱校对语料，保留级别，一律不参与自动裁决）。新语料源加 yaml 声明 <code>tier</code> 即接入，下游把关自动生效。</td>
+                <td>quality.py（新增）· ingest.pick_anchors_doc · sources/*.yaml tier 字段</td>
+              </tr>
+              <tr>
+                <td><span class="prio p0">✅ P0</span></td>
+                <td><strong>A1 · 自动裁决批次化回滚</strong><br/>（吸收 Graph Patch）</td>
+                <td>每次 <code>verify --apply</code> 运行生成 batch_id 记入 review_log；坏批次 <code>kg rollback &lt;batch_id&gt;</code> 整批退回 proposed 重审（后来的裁决优先不被覆盖；节点回滚级联退回其 approved 边）。</td>
+                <td>verify.py · db.py 迁移（review_log 加 batch_id 列）· cli rollback 命令</td>
+              </tr>
+              <tr>
+                <td><span class="prio p0">✅ P0</span></td>
+                <td><strong>A2 · 节点自动批准的邻居重叠守卫</strong><br/>（UMAP 补丁）</td>
+                <td>结构佐证新增 neighbor_overlap 信号：语料页内链 / 正文与图谱邻居概念无重叠（或无邻居可查）不放行，并在 review 队列排进信号冲突层。重定向劫持来的错误页面不会提到真概念的邻居——恢复两信源的独立性。</td>
+                <td>verify.py 结构佐证 + 自动裁决规则 · cli._triage</td>
+              </tr>
+              <tr>
+                <td><span class="prio p0">✅ P0</span></td>
+                <td><strong>A3 · 自动批准边前环检测</strong><br/>（硬约束前移）</td>
+                <td>自动批准 prerequisite_of / is_a / part_of 边前，在生效子图上模拟加边查环（批一条更新一条邻接表）；成环留人工。守卫从"事后报告"前移为"放行拦截"，自动裁决不再可能把环引入生效图。</td>
+                <td>verify.py apply_auto</td>
+              </tr>
+              <tr>
+                <td><span class="prio p1">✅ P1</span></td>
+                <td><strong>A4 · evidence 校验失败一次重引</strong><br/>（Self-Refine 轻量版）</td>
+                <td>子串校验失败的条目，丢弃前追加一次"从原文逐字重新摘录证据"的重试（概念往往是对的，只是引文不精确）。重引后仍须通过同一校验——不变式不破坏，召回率白捡。只一轮，不做多轮 Critic/Reviser 循环。</td>
+                <td>ingest._requote_failed</td>
+              </tr>
+              <tr>
+                <td><span class="prio p1">✅ P1</span></td>
+                <td><strong>A5 · 去重的粒度裁决</strong></td>
+                <td>dedup 第 4 级 LLM 裁决从二元（同一概念？）扩为三元：same（挂别名）／different（入库）／<strong>facet（降级进父节点 facets，不建节点，其边丢弃）</strong>。相似但粒度不同的节点不再可能被合并为别名。</td>
+                <td>dedup._llm_relation · ingest 降级分支</td>
+              </tr>
+              <tr>
+                <td><span class="prio p1">P1</span></td>
+                <td><strong>A6 · 教学接口带讲解资源映射</strong><br/>（Resource Graph 的现成版）</td>
+                <td><code>export.neighborhood()</code> 输出增加"该概念在哪些资源有讲解"：维基页（node_page）+ 教材章节（section_for_node，含目录序）。数据已存在，纯导出层工作；未来教学系统据此推荐阅读材料。</td>
+                <td>export.py</td>
+              </tr>
+              <tr>
+                <td><span class="prio p2">P2</span></td>
+                <td><strong>A7 · 误区（Misconception）建模</strong></td>
+                <td>教育图谱最有教学价值的 schema 缺口。分两步：先把教材中"常见错误 / 易混淆"的表述作为一类特殊 facet（<code>误区:</code> 前缀）走现有 ingest 全部约束（有据、可校验）提取；学习者层落地后再升级为独立节点类型，可挂诊断证据。</td>
+                <td>ingest prompt · 学习者层</td>
+              </tr>
+              <tr>
+                <td><span class="prio p2">P2</span></td>
+                <td><strong>A8 · 学习者层设计原则</strong><br/>（吸收 Part 2 整体设计）</td>
+                <td>做掌握度层（里程碑⑨）时采用：共享图 + 学生状态 overlay 分离；状态用<strong>状态节点</strong>而非边属性（便于版本化与时序）；交互证据<strong>只追加不覆盖</strong>；correctness / 提示使用 / 时间衰减等行为信号<strong>不让 LLM 猜</strong>，用显式公式更新（掌握度、误区概率、遗忘风险）——"LLM 不是学生状态源"，与原则①同构。</td>
+                <td>新模块（未开工）</td>
+              </tr>
+            </tbody>
+          </table>
+          <div class="note">
+            A1–A3 共同构成对 UMAP 类事故的完整防线：A2 降低放行错误的概率，A3 保证放行不破坏图的结构不变式，A1 保证错了能低成本撤销。三者都不引入新的 LLM 调用。A0 的分级把关（low 不自动裁决）在此之上再加一道来源级的闸。
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section id="rejected">
+      <div class="section-title">
+        <h2>5. 明确不采纳的部分</h2>
+        <p>记录理由与重新考虑的触发条件，避免同样的讨论重复发生。</p>
+      </div>
+      <div class="grid-4">
+        <div class="mini-card red">
+          <h4>✕ 多模型 ensemble 投票</h4>
+          <p><strong>理由</strong>：多个 LLM 的错误相关（同一训练分布），vote_score 不是独立信源；成本 ×N。结构佐证（人类校对过的维基结构 / 教材目录）才是真独立信号，且有 calibrate 闭环。<br/><strong>重新考虑</strong>：出现能力互补、成本低一个数量级的第二模型时，作召回补充而非投票。</p>
+        </div>
+        <div class="mini-card red">
+          <h4>✕ LLM 自报置信度分流</h4>
+          <p><strong>理由</strong>：自报数值置信度校准差，错的时候照样报高分——plan.md 已否决的设计决策。置信度 = 独立信源是否一致。<br/><strong>重新考虑</strong>：不考虑。</p>
+        </div>
+        <div class="mini-card orange">
+          <h4>△ 图库/向量库/事件库/对象存储四件套</h4>
+          <p><strong>理由</strong>：当前量级（数百节点、单人审核）SQLite 一体化完全够用，拆存储是过早优化。review_log 已承担事件留痕职能。<br/><strong>重新考虑</strong>：节点 &gt;10 万、或多学生在线服务上线时。</p>
+        </div>
+        <div class="mini-card orange">
+          <h4>△ 多模态解析（OCR / ASR / VLM）</h4>
+          <p><strong>理由</strong>：文本语料（维基 + 四本教材）的质量瓶颈尚未触及，多模态投入产出比低。<br/><strong>重新考虑</strong>："包括所有知识"的远期目标推进到视频课程资源、或教学接口需要图示资源时。</p>
+        </div>
+      </div>
+    </section>
+
+    <section id="roadmap">
+      <div class="section-title">
+        <h2>6. 路线图与日常循环</h2>
+        <p>里程碑 ①–⑥ 已完成（详见 plan.md）；⑦–⑨ 为本方案确定的后续顺序：先把地基硬化，再长教学能力，最后接学习者。</p>
+      </div>
+
+      <div class="panel">
+        <div class="panel-head"><h3>6.1 里程碑</h3><span class="tag">plan.md 同步</span></div>
+        <div class="panel-body">
+          <table class="matrix">
+            <thead><tr><th style="width:180px;">里程碑</th><th>内容</th><th style="width:110px;">状态</th></tr></thead>
+            <tbody>
+              <tr><td><strong>①–④ MVP 主干</strong></td><td>种子图（109 节点 / 177 边）→ 去重 + expand → 审核 CLI + 守卫 → Wikipedia 有据提取</td><td>✅ 2026-07-03</td></tr>
+              <tr><td><strong>⑤ 语料库化</strong></td><td>corpus 层（定向爬取 + revision 快照）→ 结构挖掘 → 缺口驱动批量 ingest → expand 降级为假设生成器 → 先修推断级标记</td><td>✅ 2026-07-03</td></tr>
+              <tr><td><strong>⑥ 教材语料 + 校准</strong></td><td>docs 通道（d2l-zh / cs231n / cs229 / sutton-barto，翻译即快照）→ toc 先修信号 → 分块提取 → 守卫扩展 → calibrate</td><td>✅ 2026-07-05</td></tr>
+              <tr><td><strong>⑦ 质量硬化 + 语料分级</strong></td><td>A0 语料三级 high/mid/low（quality.py，教材批量优先 --batch × --doc，low 不自动裁决）· A1 批次回滚（kg rollback）· A2 邻居重叠守卫 · A3 环检测前移 · A4 evidence 重引 · A5 去重三元裁决</td><td>✅ 2026-07-06</td></tr>
+              <tr><td><strong>⑧ 教学接口增强</strong></td><td>A6 资源映射进 neighborhood() · A7 误区 facet 提取 · review 节点批准后就地裁决关联边 · 攒金标裁决后跑 burn-in 校准实验</td><td>⬜ 下一步</td></tr>
+              <tr><td><strong>⑨ 学习者层</strong></td><td>按 A8 原则：共享图 + 学生 overlay、状态节点、只追加证据、行为信号显式建模；教学 prompt 接口</td><td>⬜</td></tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+
+      <div class="panel" style="margin-top:16px;">
+        <div class="panel-head"><h3>6.2 日常进化循环</h3><span class="tag">kg CLI</span></div>
+        <div class="panel-body">
+          <pre class="codebox">kg corpus crawl              # 补齐生效节点的页面（新节点批准后跑一次）
+kg corpus grow --limit 10    # 沿内链扩语料（可选）
+kg docs fetch &lt;book&gt;         # 教材语料增量抓取
+kg docs translate &lt;book&gt;     # 英文源预翻译（可选，不跑则 lazy 翻译）
+kg mine aliases / categories / wikidata   # 零 LLM 结构挖掘，随时可跑
+kg ingest --batch 3 --doc    # 教材缺口驱动批量提取（high 级语料，优先）
+kg ingest --batch 3          # 维基缺口驱动批量提取（mid 级，覆盖面兜底）
+kg expand                    # 假设生成器补盲区（辅助）
+kg verify --limit 20 --apply # 双信源复核 + 双重一致自动裁决（输出批次号）
+kg review                    # 人工裁决剩余队列；--audit N 抽检自动放行
+kg rollback [batch_id]       # 坏批次整批退回 proposed（不带参数列批次）
+kg calibrate                 # 看各通道×佐证组合 precision，调自动裁决松紧
+kg check → kg viz            # 守卫 + 可视化</pre>
+        </div>
+      </div>
+    </section>
+
+    <p class="foot">Design principle: 分级语料快照为地基（教材/教案 &gt; 维基 &gt; 弱校对）· 双独立信源为置信度 · 全裁决留痕为校准 · 批次可回滚 · 人工从守门员到抽检员</p>
+  </main>
+</body>
+</html>

@@ -7,15 +7,21 @@
   只回答是/否，禁止用模型记忆。复核时 LLM 也不是知识源，语料才是。
 
 --apply 自动裁决规则（保守，两个独立信源一致才动）：
-- 节点只自动批准：LLM 判「独立概念」+ 名字精确命中语料页标题/重定向；
+- 节点只自动批准：LLM 判「独立概念」+ 名字精确命中语料页标题/重定向
+  + 语料页与图谱邻居有重叠（neighbor_overlap，UMAP 撞名补丁）；
   拒绝与降级 facet 一律留人工（降级要人选归属概念）。先裁节点再裁边。
 - 边批准：LLM 判「支持」且方向无疑 + 至少一项结构佐证 + 先修方向信号不反对
+  + 无环类型（先修/is_a/part_of）模拟加边不成环（守卫前移为放行拦截）
 - 边拒绝：LLM 判「不支持」且无任何结构佐证
-其余留人工。自动裁决记 review_log(decided_by='auto')，用 kg review --audit 抽检。
+- low 级语料（quality.source_tier）的条目一律不自动裁决。
+其余留人工。自动裁决记 review_log(decided_by='auto', batch_id=本次运行批次)，
+用 kg review --audit 抽检；误放行的批次可 kg rollback <batch_id> 整批撤销。
 """
 import re
+import time
+from collections import defaultdict
 
-from . import corpus, db, docs, llm, wikidata
+from . import corpus, db, docs, guards, llm, quality, wikidata
 
 EDGE_TYPE_SEMANTICS = {
     "is_a": "src 是 dst 的一种",
@@ -70,6 +76,39 @@ def _links_to(links_lower: set, other_node: dict, other_page: dict | None) -> bo
     if other_page:
         targets |= {other_page["title"].lower(), *(r.lower() for r in other_page["redirects"])}
     return bool(links_lower & targets)
+
+
+def _name_hit(name: str, raw_text: str, norm_text: str) -> bool:
+    """名字是否出现在正文里：ASCII 名要求词边界（防 GRU 撞 congruent），中文规范化子串。"""
+    if re.fullmatch(r"[\x00-\x7f]+", name):
+        return bool(re.search(r"\b" + re.escape(name.lower()) + r"\b", raw_text.lower()))
+    return "".join(name.split()).lower() in norm_text
+
+
+def _neighbor_overlap(conn, node, nodes, edges, links_lower, index) -> bool:
+    """UMAP 撞名补丁：节点的语料页是否提到它在图谱中的邻居概念。
+
+    多义短名/缩写被重定向劫持到无关页面时「名字精确命中」天然成立，LLM 复核
+    也只读得到错误页面的材料——两个信源被同一错误来源污染。错误页面不会提到
+    真概念的图谱邻居，所以内容与邻域的重叠是恢复信源独立性的第三道检查。
+    无邻居可查（孤立提议）时返回 False，不给自动放行开门。"""
+    neigh_ids = {e["src"] if e["dst"] == node["id"] else e["dst"]
+                 for e in edges if node["id"] in (e["src"], e["dst"])} - {node["id"]}
+    names = []
+    for nid in neigh_ids:
+        nb = nodes.get(nid)
+        if nb and nb["status"] != "rejected":
+            names += [nb["name"]] + nb["aliases"]
+    names = [nm for nm in names if len(nm) >= 3]
+    if not names:
+        return False
+    if any(nm.lower() in links_lower for nm in names):
+        return True
+    page = corpus.page_for_node(conn, node, index)  # 带正文重取，只发生在 proposed 节点上
+    if not page:
+        return False
+    norm_text = "".join(page["text"].split()).lower()
+    return any(_name_hit(nm, page["text"], norm_text) for nm in names)
 
 
 def _toc_vote(pa, pb):
@@ -132,6 +171,7 @@ def structural_signals(conn) -> list[str]:
             n_edges += 1
 
     n_nodes = 0
+    live_edges = [e for e in db.list_edges(conn) if e["status"] != "rejected"]
     for n in db.list_nodes(conn, status="proposed"):
         page = page_of(n["id"])
         sig = {"has_page": bool(page)}
@@ -139,6 +179,8 @@ def structural_signals(conn) -> list[str]:
             titles = {page["title"].lower(), *(r.lower() for r in page["redirects"])}
             sig["exact_title"] = n["name"].lower() in titles or \
                 any(a.lower() in titles for a in n["aliases"])
+            sig["neighbor_overlap"] = _neighbor_overlap(
+                conn, n, nodes, live_edges, links_cache[n["id"]], index)
         db.save_signals(conn, "node", n["id"], signals=sig)
         n_nodes += 1
     conn.commit()
@@ -272,24 +314,52 @@ def apply_auto(conn) -> list[str]:
     """双重一致自动裁决：结构佐证与 LLM 复核这两个独立信源意见一致才动。
 
     先裁节点（只批准不拒绝），节点生效后其关联边才能进入边裁决；
-    刚生效节点的边通常还没有 LLM 复核结论，下一轮 verify 会补上。"""
+    刚生效节点的边通常还没有 LLM 复核结论，下一轮 verify 会补上。
+    三道新闸：low 级语料不自动裁决；节点另需 neighbor_overlap（UMAP 补丁）；
+    无环类型边先模拟加边查环。整次运行共用一个 batch_id，可 kg rollback。"""
+    batch = "auto-" + time.strftime("%Y%m%d-%H%M%S")
     lines = []
     n_node = 0
     for n in db.list_nodes(conn, status="proposed"):
         sig = db.get_signals(conn, "node", n["id"])
         if not sig or sig.get("llm_verdict") != "独立概念":
             continue
+        if not quality.auto_adjudicable(n["source"]):
+            continue
         s = sig["signals"]
         if s.get("has_page") and s.get("exact_title"):
+            if not s.get("neighbor_overlap"):
+                lines.append(f"留人工: 节点「{n['name']}」名字命中语料页"
+                             f"但页面与图谱邻居无重叠（疑似撞名）")
+                continue
             db.update_node(conn, n["id"], status="approved")
             db.log_review(conn, "node", n["id"], "approve",
-                          detail=sig.get("llm_reason") or "", source=n["source"], decided_by="auto")
+                          detail=sig.get("llm_reason") or "", source=n["source"],
+                          decided_by="auto", batch_id=batch)
             n_node += 1
             lines.append(f"自动批准节点: {n['name']}")
 
     nodes = {n["id"]: n for n in db.list_nodes(conn)}
     names = {i: n["name"] for i, n in nodes.items()}
     visible = set(db.visible_statuses())
+    # 守卫前移：无环类型的生效邻接表，批一条更新一条，放行不可能引入环
+    adj = {t: defaultdict(set) for t in guards.ACYCLIC_TYPES}
+    for t in guards.ACYCLIC_TYPES:
+        for e in db.approved_edges(conn, t):
+            adj[t][e["src"]].add(e["dst"])
+
+    def would_cycle(t, src, dst):
+        seen, stack = set(), [dst]
+        while stack:
+            u = stack.pop()
+            if u == src:
+                return True
+            if u in seen:
+                continue
+            seen.add(u)
+            stack.extend(adj[t][u] - seen)
+        return False
+
     n_approve = n_reject = 0
     for e in db.list_edges(conn, status="proposed"):
         if nodes[e["src"]]["status"] not in visible or nodes[e["dst"]]["status"] not in visible:
@@ -297,25 +367,88 @@ def apply_auto(conn) -> list[str]:
         sig = db.get_signals(conn, "edge", e["id"])
         if not sig or not sig.get("llm_verdict"):
             continue
+        if not quality.auto_adjudicable(e["source"]):
+            continue
         s = sig["signals"]
         supported = bool(s.get("wikidata") or s.get("link_src_dst") or s.get("link_dst_src")
                          or s.get("toc", 0) > 0)
         refd_against = e["type"] == "prerequisite_of" and s.get("refd", 0) < 0
         toc_against = e["type"] == "prerequisite_of" and s.get("toc", 0) < 0
         if sig["llm_verdict"] == "支持" and supported and not refd_against and not toc_against:
+            if e["type"] in adj and would_cycle(e["type"], e["src"], e["dst"]):
+                lines.append(f"留人工（批准会成环）: {names[e['src']]} -{e['type']}-> {names[e['dst']]}")
+                continue
             conn.execute("UPDATE edges SET status='approved' WHERE id=?", (e["id"],))
             db.log_review(conn, "edge", e["id"], "approve",
-                          detail=sig.get("llm_reason") or "", source=e["source"], decided_by="auto")
+                          detail=sig.get("llm_reason") or "", source=e["source"],
+                          decided_by="auto", batch_id=batch)
+            if e["type"] in adj:
+                adj[e["type"]][e["src"]].add(e["dst"])
             n_approve += 1
             lines.append(f"自动批准: {names[e['src']]} -{e['type']}-> {names[e['dst']]}")
         elif sig["llm_verdict"].startswith("不支持") and not supported:
             conn.execute("UPDATE edges SET status='rejected' WHERE id=?", (e["id"],))
             db.log_review(conn, "edge", e["id"], "reject",
-                          detail=sig.get("llm_reason") or "", source=e["source"], decided_by="auto")
+                          detail=sig.get("llm_reason") or "", source=e["source"],
+                          decided_by="auto", batch_id=batch)
             n_reject += 1
             lines.append(f"自动拒绝: {names[e['src']]} -{e['type']}-> {names[e['dst']]}"
                          f"（{sig.get('llm_reason') or ''}）")
     conn.commit()
-    lines.append(f"自动裁决：节点批准 {n_node}，边批准 {n_approve}，边拒绝 {n_reject}"
-                 f"（其余留人工；记得 kg review --audit 抽检）")
+    lines.append(f"自动裁决批次 {batch}：节点批准 {n_node}，边批准 {n_approve}，边拒绝 {n_reject}"
+                 f"（其余留人工；kg review --audit 抽检，误放行 kg rollback {batch}）")
+    return lines
+
+
+def list_batches(conn) -> list[dict]:
+    """自动裁决批次列表（供 kg rollback 不带参数时展示）。"""
+    rows = conn.execute(
+        "SELECT batch_id, COUNT(*) c,"
+        "  SUM(action='approve') approves, SUM(action='reject') rejects,"
+        "  MIN(created_at) t FROM review_log"
+        " WHERE decided_by='auto' AND batch_id != '' GROUP BY batch_id ORDER BY t DESC")
+    return [dict(r) for r in rows]
+
+
+def rollback_batch(conn, batch_id: str) -> list[str]:
+    """整批撤销一次自动裁决：条目退回 proposed（重新排队，人工再裁）。
+
+    跳过此后另有裁决记录的条目（人工已确认/推翻，后来的裁决优先）；
+    节点回滚时级联把它名下仍 approved 的边一并退回 proposed
+    （端点未生效的边不该保持生效）。回滚本身也写 review_log 留痕。"""
+    rows = conn.execute(
+        "SELECT * FROM review_log WHERE batch_id=? AND decided_by='auto'"
+        " AND action IN ('approve','reject') ORDER BY id", (batch_id,)).fetchall()
+    if not rows:
+        return [f"没有批次 {batch_id} 的自动裁决记录（kg rollback 不带参数可列出批次）"]
+    names = {n["id"]: n["name"] for n in db.list_nodes(conn)}
+    lines, n_back, n_skip = [], 0, 0
+    for r in rows:
+        later = conn.execute(
+            "SELECT 1 FROM review_log WHERE item_type=? AND item_id=? AND id>?",
+            (r["item_type"], r["item_id"], r["id"])).fetchone()
+        label = (f"节点「{names.get(r['item_id'], r['item_id'])}」" if r["item_type"] == "node"
+                 else f"边 {r['item_id']}")
+        if later:
+            n_skip += 1
+            lines.append(f"跳过 {label}：此后另有裁决记录（后来的裁决优先）")
+            continue
+        table = "edges" if r["item_type"] == "edge" else "nodes"
+        conn.execute(f"UPDATE {table} SET status='proposed' WHERE id=?", (r["item_id"],))
+        db.log_review(conn, r["item_type"], r["item_id"], "rollback",
+                      detail=f"批次 {batch_id} 回滚（原 {r['action']}）",
+                      source=r["source"], batch_id=batch_id)
+        n_back += 1
+        lines.append(f"退回 proposed: {label}（原自动 {r['action']}）")
+        if r["item_type"] == "node":
+            cascade = conn.execute(
+                "SELECT id FROM edges WHERE (src=? OR dst=?) AND status='approved'",
+                (r["item_id"], r["item_id"])).fetchall()
+            for c in cascade:
+                conn.execute("UPDATE edges SET status='proposed' WHERE id=?", (c["id"],))
+                db.log_review(conn, "edge", c["id"], "rollback",
+                              detail=f"批次 {batch_id} 级联（端点节点回滚）", batch_id=batch_id)
+                lines.append(f"  级联退回边 {c['id']}（端点节点已回滚）")
+    conn.commit()
+    lines.append(f"批次 {batch_id}：退回 {n_back} 条，跳过 {n_skip} 条")
     return lines
