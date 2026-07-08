@@ -1,0 +1,25 @@
+book: rlhf-book
+title: RLHF - Reinforcement Learning from Human Feedback（Nathan Lambert）
+lang: en
+type: pdf
+pdf_url: https://rlhfbook.com/book.pdf
+# 作者官方公开 PDF（CC 授权的在线书，持续更新；本地快照 2026-07 版）。
+# 页码为 PDF 页 = 书页（无偏移，已验证）；Bibliography（p205 起）不收。
+sections:
+  - [1, "1", "Introduction", "pages:7-17"]
+  - [2, "2", "A Tiny History of RLHF", "pages:18-20"]
+  - [3, "3", "Training Overview", "pages:21-30"]
+  - [4, "4", "Instruction Fine-Tuning", "pages:31-36"]
+  - [5, "5", "Reward Modeling", "pages:37-52"]
+  - [6, "6", "Reinforcement Learning", "pages:53-93"]
+  - [7, "7", "Reasoning and Inference-Time Scaling", "pages:94-104"]
+  - [8, "8", "Direct-Alignment Algorithms", "pages:105-116"]
+  - [9, "9", "Rejection Sampling", "pages:117-123"]
+  - [10, "10", "The Nature of Preferences", "pages:124-129"]
+  - [11, "11", "Preference Data", "pages:130-142"]
+  - [12, "12", "Synthetic Data & Distillation", "pages:143-158"]
+  - [13, "13", "Tool Use and Function Calling", "pages:159-167"]
+  - [14, "14", "Over-Optimization", "pages:168-174"]
+  - [15, "15", "Regularization", "pages:175-183"]
+  - [16, "16", "Evaluation", "pages:184-192"]
+  - [17, "17", "Crafting Model Character and Products", "pages:193-204"]

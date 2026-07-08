@@ -30,11 +30,16 @@
 两张表（SQLite，`kg/db.py`）：
 
 ```
-nodes:  id, name(唯一), aliases[], definition, facets[],
+nodes:  id, name(唯一), type('concept'), aliases[], definition, facets[],
         status, source, embedding, created_at
 edges:  id, src, dst, type, confidence, rationale, source, status, created_at
         UNIQUE(src, dst, type)
 ```
+
+节点 `type` 现在只有 `concept` 一种（`db.NODE_TYPES`），是为教育应用扩展预留的
+锚点：误区/题目/资源要升独立节点类型时在这里登记，并在 `db.EDGE_ENDPOINT_TYPES`
+（边类型 × 端点节点类型合法矩阵）补规则——`add_edge` 写入前按矩阵校验端点类型，
+守卫 `bad_edge_endpoints` 对存量数据兜底，双保险防止"误区做先修边端点"这类错挂。
 
 辅助表：语料三张（维基两张 §4 + `doc_sections` 教材章节 §4.1），`ingest_log` 防重复提取，
 复核三张——`review_log`（每次人工/自动裁决留痕，校准数据；含 `batch_id`

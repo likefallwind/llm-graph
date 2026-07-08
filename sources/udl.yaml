@@ -1,0 +1,29 @@
+book: udl
+title: Understanding Deep Learning（Simon Prince）
+lang: en
+type: pdf
+pdf_url: https://github.com/udlbook/udlbook/releases/download/v5.0.3/UnderstandingDeepLearning_02_09_26_C.pdf
+# 页码为 PDF 页（v5.0.3 / 2026-02-09 版，章起始页由章标题定位）；
+# 附录 A/B/C（p451 起，数学与概率）不收——与 mml / 种子数学骨架重叠。
+sections:
+  - [1, "1", "Introduction", "pages:15-30"]
+  - [2, "2", "Supervised learning", "pages:31-38"]
+  - [3, "3", "Shallow neural networks", "pages:39-54"]
+  - [4, "4", "Deep neural networks", "pages:55-69"]
+  - [5, "5", "Loss functions", "pages:70-90"]
+  - [6, "6", "Fitting models", "pages:91-109"]
+  - [7, "7", "Gradients and initialization", "pages:110-131"]
+  - [8, "8", "Measuring performance", "pages:132-151"]
+  - [9, "9", "Regularization", "pages:152-174"]
+  - [10, "10", "Convolutional networks", "pages:175-199"]
+  - [11, "11", "Residual networks", "pages:200-220"]
+  - [12, "12", "Transformers", "pages:221-253"]
+  - [13, "13", "Graph neural networks", "pages:254-282"]
+  - [14, "14", "Unsupervised learning", "pages:283-289"]
+  - [15, "15", "Generative adversarial networks", "pages:290-317"]
+  - [16, "16", "Normalizing flows", "pages:318-340"]
+  - [17, "17", "Variational autoencoders", "pages:341-362"]
+  - [18, "18", "Diffusion models", "pages:363-387"]
+  - [19, "19", "Reinforcement learning", "pages:388-415"]
+  - [20, "20", "Why does deep learning work?", "pages:416-434"]
+  - [21, "21", "Deep learning and ethics", "pages:435-450"]

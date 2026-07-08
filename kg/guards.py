@@ -1,4 +1,4 @@
-"""一致性守卫：层级边环检测、先修传递冗余、related_to 反向对、孤儿节点、facet 升级提示。
+"""一致性守卫：层级边环检测、先修传递冗余、related_to 反向对、边端点类型、孤儿节点、facet 升级提示。
 
 守卫只报告不自动修——裁决权在人。
 """
@@ -81,6 +81,23 @@ def mutual_edges(conn):
     return [(r["t"], names.get(r["src"], "?"), names.get(r["dst"], "?")) for r in rows]
 
 
+def bad_edge_endpoints(conn):
+    """边端点节点类型不符合 db.EDGE_ENDPOINT_TYPES 矩阵。add_edge 写入时已校验，
+    这里对存量数据兜底（未来误区/题目/资源升独立节点类型后，此守卫拦截错挂的边）。"""
+    nodes = {n["id"]: n for n in db.list_nodes(conn)}
+    hits = []
+    for e in db.list_edges(conn):
+        if e["status"] == "rejected":
+            continue
+        src_ok, dst_ok = db.EDGE_ENDPOINT_TYPES[e["type"]]
+        s, d = nodes.get(e["src"]), nodes.get(e["dst"])
+        if not s or not d or s["type"] not in src_ok or d["type"] not in dst_ok:
+            hits.append((e["type"],
+                         s["name"] if s else f"#{e['src']}", s["type"] if s else "?",
+                         d["name"] if d else f"#{e['dst']}", d["type"] if d else "?"))
+    return hits
+
+
 def orphans(conn):
     """无任何生效边的生效节点。"""
     connected = set()
@@ -134,6 +151,12 @@ def run_all(conn) -> str:
         lines.extend(f"  {a} <-{t}-> {b}" for t, a, b in mutual)
     else:
         lines.append("✓ 无正反向同型边")
+    bad_ep = bad_edge_endpoints(conn)
+    if bad_ep:
+        lines.append("⚠ 边端点节点类型不合法（对照 db.EDGE_ENDPOINT_TYPES）：")
+        lines.extend(f"  {a}({at}) -{t}-> {b}({bt})" for t, a, at, b, bt in bad_ep)
+    else:
+        lines.append("✓ 边端点节点类型合法")
     orph = orphans(conn)
     if orph:
         lines.append(f"⚠ 孤儿节点 {len(orph)} 个: " + ", ".join(orph))

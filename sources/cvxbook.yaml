@@ -1,0 +1,18 @@
+book: cvxbook
+title: Convex Optimization（Boyd & Vandenberghe）
+lang: en
+type: pdf
+pdf_url: https://web.stanford.edu/~boyd/cvxbook/bv_cvxbook.pdf
+# 作者官方公开 PDF。页码为 PDF 页（章起始页由章标题定位）；附录（p647 起）不收。
+sections:
+  - [1, "1", "Introduction", "pages:15-34"]
+  - [2, "2", "Convex sets", "pages:35-80"]
+  - [3, "3", "Convex functions", "pages:81-140"]
+  - [4, "4", "Convex optimization problems", "pages:141-228"]
+  - [5, "5", "Duality", "pages:229-304"]
+  - [6, "6", "Approximation and fitting", "pages:305-364"]
+  - [7, "7", "Statistical estimation", "pages:365-410"]
+  - [8, "8", "Geometric problems", "pages:411-470"]
+  - [9, "9", "Unconstrained minimization", "pages:471-534"]
+  - [10, "10", "Equality constrained minimization", "pages:535-574"]
+  - [11, "11", "Interior-point methods", "pages:575-646"]

@@ -14,11 +14,23 @@ RELATED_KINDS = ("同题替代", "演化启发", "教学对比")
 MISCONCEPTION_PREFIX = "误区:"
 NODE_STATUS = ("seed", "proposed", "approved", "rejected")
 EDGE_STATUS = ("seed", "proposed", "approved", "rejected")
+# 节点类型：现在只有 concept 一种；误区/题目/资源升独立类型时在此登记，
+# 并在 EDGE_ENDPOINT_TYPES 里补对应端点规则（如误区不能做先修边端点）
+NODE_TYPES = ("concept",)
+# 边类型 × 端点节点类型合法矩阵：{边类型: (允许的 src 类型, 允许的 dst 类型)}，
+# add_edge 写入前校验，guards.bad_edge_endpoints 对存量数据兜底
+EDGE_ENDPOINT_TYPES = {
+    "is_a": (("concept",), ("concept",)),
+    "part_of": (("concept",), ("concept",)),
+    "prerequisite_of": (("concept",), ("concept",)),
+    "related_to": (("concept",), ("concept",)),
+}
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS nodes (
     id         INTEGER PRIMARY KEY,
     name       TEXT NOT NULL UNIQUE,
+    type       TEXT NOT NULL DEFAULT 'concept',
     aliases    TEXT NOT NULL DEFAULT '[]',
     definition TEXT NOT NULL DEFAULT '',
     facets     TEXT NOT NULL DEFAULT '[]',
@@ -133,6 +145,10 @@ def _migrate(conn):
     if "batch_id" not in cols:
         conn.execute("ALTER TABLE review_log ADD COLUMN batch_id TEXT NOT NULL DEFAULT ''")
         conn.commit()
+    cols = {r["name"] for r in conn.execute("PRAGMA table_info(nodes)")}
+    if "type" not in cols:
+        conn.execute("ALTER TABLE nodes ADD COLUMN type TEXT NOT NULL DEFAULT 'concept'")
+        conn.commit()
 
 
 def node_dict(row) -> dict:
@@ -145,11 +161,12 @@ def node_dict(row) -> dict:
 
 
 def add_node(conn, name, definition="", aliases=None, facets=None,
-             status="proposed", source="", embedding=None) -> int:
+             status="proposed", source="", embedding=None, type_="concept") -> int:
+    assert type_ in NODE_TYPES, f"未知节点类型: {type_}"
     cur = conn.execute(
-        "INSERT INTO nodes(name, aliases, definition, facets, status, source, embedding, created_at)"
-        " VALUES (?,?,?,?,?,?,?,?)",
-        (name.strip(), json.dumps(aliases or [], ensure_ascii=False), definition.strip(),
+        "INSERT INTO nodes(name, type, aliases, definition, facets, status, source, embedding, created_at)"
+        " VALUES (?,?,?,?,?,?,?,?,?)",
+        (name.strip(), type_, json.dumps(aliases or [], ensure_ascii=False), definition.strip(),
          json.dumps(facets or [], ensure_ascii=False), status, source,
          json.dumps(embedding) if embedding else None, time.time()))
     return cur.lastrowid
@@ -200,6 +217,12 @@ def add_edge(conn, src: int, dst: int, type_: str, confidence=1.0,
     """同向重复靠 UNIQUE(src,dst,type) 的 INSERT OR IGNORE；related_to 语义对称，
     反向已存在（未拒绝）也视为重复。两种情形都返回 0，调用方按 falsy 判断跳过。"""
     assert type_ in EDGE_TYPES, f"未知边类型: {type_}"
+    src_ok, dst_ok = EDGE_ENDPOINT_TYPES[type_]
+    types = conn.execute(
+        "SELECT (SELECT type FROM nodes WHERE id=?), (SELECT type FROM nodes WHERE id=?)",
+        (src, dst)).fetchone()
+    assert types[0] in src_ok and types[1] in dst_ok, \
+        f"边 {type_} 端点节点类型不合法: src={types[0]} dst={types[1]}"
     if type_ == "related_to":
         dup = conn.execute(
             "SELECT id FROM edges WHERE src=? AND dst=? AND type='related_to'"

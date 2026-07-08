@@ -1,0 +1,25 @@
+book: slp3
+title: Speech and Language Processing 第三版草稿（Jurafsky & Martin）
+lang: en
+type: pdf
+pdf_url: https://web.stanford.edu/~jurafsky/slp3/ed3book_jan26.pdf
+# 页码为 PDF 页（2026-01 草稿，章起始页由章标题定位）。略过第 1 章（占位页）、
+# 14-16 章（语音：Phonetics/ASR/TTS，非当前图谱主干）、21-25 章（语义角色/情感
+# 词典/共指/篇章/对话，语言学细分任务，教学优先级低）。
+sections:
+  - [1, "2", "Words and Tokens", "pages:12-45"]
+  - [2, "3", "N-gram Language Models", "pages:46-69"]
+  - [3, "4", "Logistic Regression and Text Classification", "pages:70-103"]
+  - [4, "5", "Embeddings", "pages:104-127"]
+  - [5, "6", "Neural Networks", "pages:128-153"]
+  - [6, "7", "Large Language Models", "pages:154-180"]
+  - [7, "8", "Transformers", "pages:181-206"]
+  - [8, "9", "Masked Language Models", "pages:207-225"]
+  - [9, "10", "Post-training: Instruction Tuning, Alignment, and Test-Time Compute", "pages:226-242"]
+  - [10, "11", "Information Retrieval and Retrieval-Augmented Generation", "pages:243-265"]
+  - [11, "12", "Machine Translation", "pages:266-291"]
+  - [12, "13", "RNNs and LSTMs", "pages:292-317"]
+  - [13, "17", "Sequence Labeling for Parts of Speech and Named Entities", "pages:390-414"]
+  - [14, "18", "Context-Free Grammars and Constituency Parsing", "pages:415-438"]
+  - [15, "19", "Dependency Parsing", "pages:439-462"]
+  - [16, "20", "Information Extraction: Relations, Events, and Time", "pages:463-488"]

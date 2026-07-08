@@ -1,0 +1,688 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>教育知识图谱工作汇报 | 2026-07-08</title>
+  <style>
+    :root {
+      --paper: #fbfaf7;
+      --ink: #172033;
+      --muted: #667085;
+      --line: #d9dfeb;
+      --blue: #2457d6;
+      --green: #0b7f68;
+      --gold: #b7791f;
+      --red: #b42318;
+      --card: #ffffff;
+      --soft-blue: #eef4ff;
+      --soft-green: #eaf8f3;
+      --soft-gold: #fff6df;
+      --shadow: 0 22px 55px rgba(23, 32, 51, 0.11);
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    html {
+      scroll-behavior: smooth;
+    }
+
+    body {
+      margin: 0;
+      color: var(--ink);
+      background:
+        linear-gradient(135deg, rgba(36, 87, 214, 0.10), rgba(11, 127, 104, 0.08) 44%, rgba(183, 121, 31, 0.10)),
+        var(--paper);
+      font-family: "Noto Serif SC", "Songti SC", "SimSun", serif;
+      line-height: 1.72;
+    }
+
+    .page {
+      width: min(1180px, calc(100vw - 36px));
+      margin: 0 auto;
+      padding: 28px 0 46px;
+    }
+
+    .hero {
+      min-height: 520px;
+      display: grid;
+      grid-template-columns: 1.18fr 0.82fr;
+      gap: 24px;
+      align-items: stretch;
+      padding: 30px;
+      border: 1px solid rgba(23, 32, 51, 0.12);
+      background:
+        linear-gradient(115deg, rgba(255, 255, 255, 0.94), rgba(255, 255, 255, 0.76)),
+        repeating-linear-gradient(90deg, rgba(36, 87, 214, 0.08) 0 1px, transparent 1px 76px),
+        repeating-linear-gradient(0deg, rgba(11, 127, 104, 0.06) 0 1px, transparent 1px 76px);
+      border-radius: 8px;
+      box-shadow: var(--shadow);
+      overflow: hidden;
+      position: relative;
+    }
+
+    .hero::before {
+      content: "";
+      position: absolute;
+      left: 0;
+      right: 0;
+      top: 0;
+      height: 7px;
+      background: linear-gradient(90deg, var(--blue), var(--green), var(--gold));
+    }
+
+    .hero-main {
+      position: relative;
+      z-index: 1;
+      padding: 18px 6px 8px 0;
+    }
+
+    .eyebrow {
+      display: inline-flex;
+      align-items: center;
+      gap: 9px;
+      color: var(--blue);
+      font-family: "Noto Sans SC", "Microsoft YaHei", sans-serif;
+      font-weight: 800;
+      letter-spacing: 0;
+      font-size: 13px;
+      margin-bottom: 18px;
+    }
+
+    .eyebrow i {
+      width: 34px;
+      height: 2px;
+      background: var(--blue);
+      display: inline-block;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: clamp(36px, 5.4vw, 70px);
+      line-height: 1.05;
+      letter-spacing: 0;
+      max-width: 820px;
+    }
+
+    .lead {
+      margin: 22px 0 0;
+      max-width: 760px;
+      font-size: 20px;
+      color: #344054;
+    }
+
+    .hero-meta {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 10px;
+      margin-top: 34px;
+      max-width: 820px;
+    }
+
+    .meta-item {
+      border: 1px solid var(--line);
+      background: rgba(255, 255, 255, 0.74);
+      padding: 13px 14px;
+      border-radius: 8px;
+      min-height: 92px;
+    }
+
+    .meta-item b {
+      display: block;
+      font-family: "Noto Sans SC", "Microsoft YaHei", sans-serif;
+      font-size: 23px;
+      line-height: 1.2;
+      color: var(--ink);
+    }
+
+    .meta-item span {
+      display: block;
+      margin-top: 7px;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .graph-panel {
+      position: relative;
+      z-index: 1;
+      align-self: stretch;
+      border: 1px solid var(--line);
+      background: #fff;
+      border-radius: 8px;
+      padding: 20px;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      min-height: 420px;
+    }
+
+    .node-map {
+      position: relative;
+      height: 330px;
+      border-radius: 8px;
+      background:
+        linear-gradient(180deg, rgba(245, 248, 255, 0.92), rgba(255, 252, 244, 0.88)),
+        linear-gradient(90deg, rgba(23, 32, 51, 0.07) 1px, transparent 1px),
+        linear-gradient(0deg, rgba(23, 32, 51, 0.05) 1px, transparent 1px);
+      background-size: auto, 42px 42px, 42px 42px;
+      overflow: hidden;
+    }
+
+    .node {
+      position: absolute;
+      width: 116px;
+      min-height: 56px;
+      padding: 9px 10px;
+      border: 1px solid rgba(23, 32, 51, 0.18);
+      background: #fff;
+      border-radius: 8px;
+      font-family: "Noto Sans SC", "Microsoft YaHei", sans-serif;
+      font-size: 13px;
+      box-shadow: 0 10px 22px rgba(23, 32, 51, 0.09);
+    }
+
+    .node strong {
+      display: block;
+      font-size: 14px;
+      line-height: 1.25;
+    }
+
+    .node small {
+      color: var(--muted);
+      font-size: 11px;
+    }
+
+    .n1 { left: 24px; top: 26px; border-color: rgba(36, 87, 214, 0.35); }
+    .n2 { right: 30px; top: 44px; border-color: rgba(11, 127, 104, 0.35); }
+    .n3 { left: 104px; top: 136px; border-color: rgba(183, 121, 31, 0.42); }
+    .n4 { right: 76px; bottom: 42px; border-color: rgba(180, 35, 24, 0.32); }
+    .n5 { left: 24px; bottom: 34px; border-color: rgba(36, 87, 214, 0.35); }
+
+    .edge {
+      position: absolute;
+      height: 2px;
+      transform-origin: left center;
+      background: linear-gradient(90deg, rgba(36, 87, 214, 0.50), rgba(11, 127, 104, 0.45));
+    }
+
+    .e1 { left: 136px; top: 78px; width: 110px; transform: rotate(8deg); }
+    .e2 { left: 102px; top: 110px; width: 100px; transform: rotate(66deg); }
+    .e3 { left: 220px; top: 170px; width: 112px; transform: rotate(48deg); }
+    .e4 { left: 120px; bottom: 102px; width: 172px; transform: rotate(-12deg); }
+
+    .panel-note {
+      margin: 14px 0 0;
+      font-family: "Noto Sans SC", "Microsoft YaHei", sans-serif;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .section {
+      margin-top: 22px;
+      padding: 26px;
+      border: 1px solid rgba(23, 32, 51, 0.12);
+      background: rgba(255, 255, 255, 0.88);
+      border-radius: 8px;
+      box-shadow: 0 12px 32px rgba(23, 32, 51, 0.06);
+    }
+
+    .section-head {
+      display: flex;
+      justify-content: space-between;
+      gap: 20px;
+      align-items: flex-end;
+      margin-bottom: 16px;
+    }
+
+    h2 {
+      margin: 0;
+      font-size: 30px;
+      line-height: 1.18;
+    }
+
+    .section-head p {
+      margin: 0;
+      max-width: 520px;
+      color: var(--muted);
+      font-family: "Noto Sans SC", "Microsoft YaHei", sans-serif;
+      font-size: 14px;
+    }
+
+    .cards {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 12px;
+    }
+
+    .card {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      background: var(--card);
+      padding: 15px;
+      min-height: 154px;
+    }
+
+    .card.blue { background: var(--soft-blue); }
+    .card.green { background: var(--soft-green); }
+    .card.gold { background: var(--soft-gold); }
+
+    h3 {
+      margin: 0 0 8px;
+      font-size: 17px;
+      line-height: 1.3;
+    }
+
+    .card p,
+    .card li {
+      font-family: "Noto Sans SC", "Microsoft YaHei", sans-serif;
+      font-size: 14px;
+      color: #3f4a5f;
+    }
+
+    .card p {
+      margin: 0;
+    }
+
+    ul {
+      padding: 0;
+      margin: 0;
+      list-style: none;
+    }
+
+    li {
+      margin: 8px 0 0;
+      padding-left: 16px;
+      position: relative;
+    }
+
+    li::before {
+      content: "";
+      position: absolute;
+      left: 0;
+      top: 0.74em;
+      width: 6px;
+      height: 6px;
+      background: var(--blue);
+      border-radius: 50%;
+    }
+
+    .timeline {
+      display: grid;
+      grid-template-columns: 0.8fr 1.2fr;
+      gap: 18px;
+      align-items: start;
+    }
+
+    .quote {
+      border-left: 5px solid var(--green);
+      background: #f6fbf8;
+      padding: 18px;
+      border-radius: 8px;
+      font-size: 21px;
+      line-height: 1.55;
+      margin: 0;
+    }
+
+    .steps {
+      display: grid;
+      gap: 10px;
+    }
+
+    .step {
+      display: grid;
+      grid-template-columns: 72px 1fr;
+      gap: 12px;
+      align-items: start;
+      padding: 13px;
+      border: 1px solid var(--line);
+      background: #fff;
+      border-radius: 8px;
+    }
+
+    .step b {
+      font-family: "Noto Sans SC", "Microsoft YaHei", sans-serif;
+      color: var(--blue);
+    }
+
+    .step p {
+      margin: 0;
+      font-family: "Noto Sans SC", "Microsoft YaHei", sans-serif;
+      color: #3f4a5f;
+      font-size: 14px;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      overflow: hidden;
+      border-radius: 8px;
+      font-family: "Noto Sans SC", "Microsoft YaHei", sans-serif;
+      font-size: 14px;
+      background: #fff;
+    }
+
+    th,
+    td {
+      border: 1px solid var(--line);
+      padding: 12px;
+      vertical-align: top;
+      text-align: left;
+    }
+
+    th {
+      background: #eef2f7;
+      color: #263347;
+    }
+
+    code {
+      font-family: "SFMono-Regular", Consolas, "Liberation Mono", monospace;
+      font-size: 0.92em;
+      color: #14377d;
+      background: #eef4ff;
+      border: 1px solid #d6e4ff;
+      padding: 1px 5px;
+      border-radius: 5px;
+    }
+
+    .pill {
+      display: inline-block;
+      font-family: "Noto Sans SC", "Microsoft YaHei", sans-serif;
+      font-size: 12px;
+      font-weight: 800;
+      padding: 3px 8px;
+      border-radius: 999px;
+      border: 1px solid currentColor;
+      color: var(--green);
+      background: #f0fdf9;
+      white-space: nowrap;
+    }
+
+    .speech {
+      margin: 0;
+      background: #172033;
+      color: #eef4ff;
+      padding: 20px;
+      border-radius: 8px;
+      font-size: 18px;
+      line-height: 1.75;
+    }
+
+    .footer {
+      margin-top: 18px;
+      color: var(--muted);
+      font-family: "Noto Sans SC", "Microsoft YaHei", sans-serif;
+      font-size: 12px;
+      text-align: center;
+    }
+
+    @media (max-width: 980px) {
+      .hero,
+      .timeline {
+        grid-template-columns: 1fr;
+      }
+
+      .cards {
+        grid-template-columns: repeat(2, minmax(0, 1fr));
+      }
+
+      .section-head {
+        display: block;
+      }
+
+      .section-head p {
+        margin-top: 8px;
+      }
+    }
+
+    @media (max-width: 640px) {
+      .page {
+        width: min(100vw - 22px, 1180px);
+        padding-top: 12px;
+      }
+
+      .hero,
+      .section {
+        padding: 18px;
+      }
+
+      .hero-meta,
+      .cards {
+        grid-template-columns: 1fr;
+      }
+
+      .graph-panel {
+        min-height: 360px;
+      }
+
+      .node-map {
+        height: 270px;
+      }
+
+      .node {
+        width: 104px;
+        font-size: 12px;
+      }
+
+      .n2 { right: 14px; }
+      .n3 { left: 86px; }
+      .n4 { right: 34px; }
+      h2 { font-size: 24px; }
+      .speech { font-size: 16px; }
+    }
+
+    @media print {
+      body {
+        background: #fff;
+      }
+
+      .page {
+        width: 100%;
+        padding: 0;
+      }
+
+      .hero,
+      .section {
+        box-shadow: none;
+        break-inside: avoid;
+      }
+    }
+  </style>
+</head>
+<body>
+  <main class="page">
+    <section class="hero">
+      <div class="hero-main">
+        <div class="eyebrow"><i></i> 2026-07-08 工作汇报</div>
+        <h1>教育知识图谱从“可构建”推进到“可治理”</h1>
+        <p class="lead">
+          本轮重点不是堆功能，而是把教育 KG 的正确性边界、审核链路和演化机制做实：让系统既能自动扩展，也能被约束、审计和回滚。
+        </p>
+        <div class="hero-meta">
+          <div class="meta-item">
+            <b>5 个文件</b>
+            <span>代码、算法文档、协作规则与展示材料同步更新</span>
+          </div>
+          <div class="meta-item">
+            <b>3 道闸门</b>
+            <span>证据校验、双信源复核、端点类型守卫</span>
+          </div>
+          <div class="meta-item">
+            <b>1 条主线</b>
+            <span>从候选抽取到批准入图，再到审计回滚</span>
+          </div>
+        </div>
+      </div>
+
+      <aside class="graph-panel" aria-label="教育知识图谱治理示意">
+        <div class="node-map">
+          <span class="edge e1"></span>
+          <span class="edge e2"></span>
+          <span class="edge e3"></span>
+          <span class="edge e4"></span>
+          <div class="node n1"><strong>Concept</strong><small>知识点主图</small></div>
+          <div class="node n2"><strong>Evidence</strong><small>原文证据</small></div>
+          <div class="node n3"><strong>Verifier</strong><small>双信源复核</small></div>
+          <div class="node n4"><strong>Guard</strong><small>端点类型约束</small></div>
+          <div class="node n5"><strong>Patch</strong><small>审计与回滚</small></div>
+        </div>
+        <p class="panel-note">
+          核心判断：共享主图必须低频、证据驱动、版本化合并；学生状态和资源质量可以更高频演化，但不能污染主知识结构。
+        </p>
+      </aside>
+    </section>
+
+    <section class="section">
+      <div class="section-head">
+        <h2>交付成果</h2>
+        <p>把“怎么建图、怎么防错、怎么解释给团队”放到同一套实现和文档里，减少后续协作中的隐性误差。</p>
+      </div>
+      <div class="cards">
+        <article class="card blue">
+          <h3>数据库约束</h3>
+          <p>新增节点类型字段与边端点合法矩阵，边写入前检查端点类型，先从底层阻断错误关系。</p>
+        </article>
+        <article class="card green">
+          <h3>一致性守卫</h3>
+          <p>新增边端点扫描能力，能对存量图谱发现错挂关系，给后续批量治理留下入口。</p>
+        </article>
+        <article class="card gold">
+          <h3>质量流程</h3>
+          <p>明确 proposed 到 approved 的路径：证据子串、结构佐证、LLM 复核、人工审核与回滚。</p>
+        </article>
+        <article class="card">
+          <h3>汇报材料</h3>
+          <p>重写技术路线页面，把统一 Educational KG、图记忆、自进化和治理边界串成完整叙事。</p>
+        </article>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="section-head">
+        <h2>关键思考</h2>
+        <p>这次工作的价值在于把风险前置：未来节点类型变多、外部源接入、LLM 自动抽取增多时，系统仍然有边界。</p>
+      </div>
+      <div class="timeline">
+        <blockquote class="quote">
+          不是让 LLM 自由构图，而是让 LLM 在证据、结构和状态机约束下提出候选，再由治理机制决定是否进入生效图。
+        </blockquote>
+        <div class="steps">
+          <div class="step">
+            <b>第一层</b>
+            <p>所有 LLM 产物先进入 <code>proposed</code>，不直接参与图算法和教学导出。</p>
+          </div>
+          <div class="step">
+            <b>第二层</b>
+            <p>只有证据、结构佐证和复核结论同时成立，才允许自动批准为 <code>approved</code>。</p>
+          </div>
+          <div class="step">
+            <b>第三层</b>
+            <p>边写入前检查端点类型，运行后由守卫扫描存量数据，形成前后两道保护。</p>
+          </div>
+          <div class="step">
+            <b>第四层</b>
+            <p>审核日志和批次回滚让自动化结果可追责，发现污染可以按批次撤销。</p>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="section-head">
+        <h2>代码与文档清单</h2>
+        <p>当前改动覆盖实现、守卫、算法说明和对外展示，能支撑明天直接汇报。</p>
+      </div>
+      <table>
+        <thead>
+          <tr>
+            <th>模块</th>
+            <th>完成内容</th>
+            <th>汇报时怎么讲</th>
+            <th>状态</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>kg/db.py</code></td>
+            <td>新增 <code>nodes.type</code>、<code>NODE_TYPES</code>、<code>EDGE_ENDPOINT_TYPES</code>，并在 <code>add_edge</code> 前校验。</td>
+            <td>从数据入口处减少错误边，后续扩展误区、题目、资源节点时不用重做主结构。</td>
+            <td><span class="pill">已完成</span></td>
+          </tr>
+          <tr>
+            <td><code>kg/guards.py</code></td>
+            <td>新增 <code>bad_edge_endpoints</code> 守卫，纳入统一检查输出。</td>
+            <td>不仅防新问题，也能发现历史图谱中的结构问题。</td>
+            <td><span class="pill">已完成</span></td>
+          </tr>
+          <tr>
+            <td><code>algorithm.md</code></td>
+            <td>补充节点类型、端点矩阵、误挂边风险和治理方式。</td>
+            <td>让实现逻辑和算法设计保持一致，便于团队评审。</td>
+            <td><span class="pill">已完成</span></td>
+          </tr>
+          <tr>
+            <td><code>docs/edu-KG.html</code></td>
+            <td>把技术路线升级为“自动构图 + 自进化 + LLM 交互 + 治理闭环”。</td>
+            <td>对外展示时能讲清楚架构价值，不只是展示代码细节。</td>
+            <td><span class="pill">已完成</span></td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <section class="section">
+      <div class="section-head">
+        <h2>下一步建议</h2>
+        <p>后续可以用一个端到端 demo 把治理能力演示出来，让汇报从“说明”变成“可见”。</p>
+      </div>
+      <div class="cards">
+        <article class="card">
+          <h3>补演示脚本</h3>
+          <ul>
+            <li>构造一个候选边</li>
+            <li>触发端点类型检查</li>
+            <li>展示守卫报告</li>
+          </ul>
+        </article>
+        <article class="card">
+          <h3>补回滚样例</h3>
+          <ul>
+            <li>记录 batch_id</li>
+            <li>展示审计日志</li>
+            <li>演示批量撤销</li>
+          </ul>
+        </article>
+        <article class="card">
+          <h3>补 precision 统计</h3>
+          <ul>
+            <li>按来源通道统计</li>
+            <li>按边类型统计</li>
+            <li>辅助调节自动批准阈值</li>
+          </ul>
+        </article>
+        <article class="card">
+          <h3>补资源节点规划</h3>
+          <ul>
+            <li>定义资源类型</li>
+            <li>定义可用关系</li>
+            <li>接入质量分更新</li>
+          </ul>
+        </article>
+      </div>
+    </section>
+
+    <section class="section">
+      <div class="section-head">
+        <h2>60 秒汇报稿</h2>
+        <p>会议里可以直接使用，重点突出“做了什么、为什么重要、下一步怎么推进”。</p>
+      </div>
+      <p class="speech">
+        本轮我把教育知识图谱从能构建，进一步推进到可治理。具体做了三件事：第一，在数据库层加入节点类型和边端点矩阵，防止未来误区、题目、资源等节点扩展后出现错挂关系；第二，新增一致性守卫，既能拦截新增错误，也能扫描历史数据；第三，把技术路线文档重写成完整闭环，明确所有 LLM 产物必须先进入候选状态，经过证据校验、结构佐证、复核和审核之后才能进入生效图。这样后续系统不是简单依赖模型生成，而是有规则、有证据、有审计、有回滚。下一步我建议补一个端到端演示，把候选生成、守卫告警和批次回滚现场跑出来。
+      </p>
+    </section>
+
+    <p class="footer">本页基于当前工作区变更生成：kg/db.py · kg/guards.py · algorithm.md · CLAUDE.md · docs/edu-KG.html</p>
+  </main>
+</body>
+</html>

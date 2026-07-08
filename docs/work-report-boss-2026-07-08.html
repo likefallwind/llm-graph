@@ -1,0 +1,283 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>教育知识图谱工作汇报（2026-07-08）</title>
+  <style>
+    :root {
+      --bg: #f4f7fc;
+      --card: #ffffff;
+      --ink: #0f172a;
+      --muted: #4f5a73;
+      --line: #d7def0;
+      --accent: #2048f0;
+      --accent-soft: #ecf2ff;
+      --ok: #0f766e;
+      --warn: #92400e;
+      --bad: #991b1b;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: "Noto Sans SC", "PingFang SC", "Microsoft YaHei", Arial, sans-serif;
+      color: var(--ink);
+      background: radial-gradient(1200px 500px at 85% -10%, #edf2ff 0%, transparent 70%),
+                  radial-gradient(1000px 500px at -10% 10%, #f5f7ff 0%, transparent 55%),
+                  var(--bg);
+      line-height: 1.65;
+      padding: 24px;
+    }
+    .wrap {
+      max-width: 1100px;
+      margin: 0 auto;
+      padding-bottom: 34px;
+    }
+    .hero {
+      background: linear-gradient(120deg, #1e3a8a, #4338ca);
+      color: #fff;
+      padding: 28px;
+      border-radius: 16px;
+      box-shadow: 0 20px 50px rgba(30,58,138,.15);
+      position: relative;
+      overflow: hidden;
+    }
+    .hero::after {
+      content: "";
+      position: absolute;
+      inset: auto -120px -95px auto;
+      width: 260px;
+      height: 260px;
+      background: radial-gradient(circle, rgba(255,255,255,.18), rgba(255,255,255,0));
+      pointer-events: none;
+    }
+    h1 { margin: 0 0 10px; font-size: 30px; }
+    .sub { color: #dbeafe; }
+    .badge {
+      display: inline-block;
+      background: #f0f5ff;
+      color: #1e3a8a;
+      padding: 6px 10px;
+      border-radius: 999px;
+      font-weight: 700;
+      font-size: 12px;
+      margin-bottom: 14px;
+    }
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 14px;
+      margin-top: 16px;
+    }
+    .card {
+      background: var(--card);
+      border: 1px solid var(--line);
+      border-radius: 14px;
+      padding: 16px;
+      box-shadow: 0 12px 24px rgba(15, 23, 42, 0.06);
+    }
+    .card h2 { margin: 0 0 8px; font-size: 20px; }
+    .card h3 { margin: 0 0 8px; font-size: 16px; color: #1e3a8a; }
+    .muted { color: var(--muted); }
+    .tag {
+      display: inline-block;
+      font-size: 12px;
+      border: 1px solid #bfd1ff;
+      background: var(--accent-soft);
+      color: #1e3a8a;
+      border-radius: 10px;
+      padding: 3px 8px;
+      margin-right: 6px;
+      margin-top: 6px;
+    }
+    ul, ol { margin: 10px 0 0 20px; padding: 0; }
+    .list-tight li { margin: 8px 0; }
+    .result {
+      border-left: 4px solid #1e40af;
+      padding-left: 12px;
+      background: #f8faff;
+      border-radius: 8px;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      margin-top: 10px;
+      font-size: 14px;
+    }
+    th, td {
+      border: 1px solid #d6deee;
+      padding: 8px;
+      text-align: left;
+      vertical-align: top;
+    }
+    thead {
+      background: #f3f6ff;
+    }
+    .status {
+      font-weight: 700;
+      padding: 3px 8px;
+      border-radius: 8px;
+      display: inline-block;
+      font-size: 12px;
+    }
+    .ok { color: var(--ok); border: 1px solid #5eead4; background: #ecfdf5; }
+    .warn { color: var(--warn); border: 1px solid #fcd34d; background: #fffbeb; }
+    .bad { color: var(--bad); border: 1px solid #fecaca; background: #fef2f2; }
+    .quote {
+      background: #f9fafb;
+      border: 1px solid #e5e7eb;
+      border-left: 4px solid #2563eb;
+      padding: 8px 12px;
+      margin: 12px 0;
+      border-radius: 8px;
+      color: #111827;
+      font-size: 14px;
+    }
+    .footer {
+      margin-top: 20px;
+      color: var(--muted);
+      font-size: 12px;
+      text-align: center;
+    }
+    pre {
+      white-space: pre-wrap;
+      background: #0f172a;
+      color: #e2e8f0;
+      padding: 12px;
+      border-radius: 8px;
+      overflow: auto;
+    }
+    @media (max-width: 900px) {
+      .grid { grid-template-columns: 1fr; }
+      h1 { font-size: 24px; }
+      body { padding: 14px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <section class="hero">
+      <span class="badge">明日汇报版本 · 有思考有落地</span>
+      <h1>教育知识图谱（EduKG）建设与治理能力更新</h1>
+      <p class="sub">汇报人：研发同学 · 会议时间：2026-07-08（明天） · 输出：可交付与可解释</p>
+      <p>汇报目标是让老板看到：我不仅做了实现，还做了架构边界校验、治理设计和风险收敛。</p>
+    </section>
+
+    <div class="grid">
+      <section class="card">
+        <h2>1. 本轮工作概况（已落地）</h2>
+        <div class="result">
+          <p>本次更新不是“改一个字段”式迭代，而是把“图谱构建正确性 + 审核可控性 + 可持续演化”打通成闭环。</p>
+        </div>
+        <ul class="list-tight">
+          <li>在数据库层引入了节点类型治理雏形：<span class="tag">NODE_TYPES</span><span class="tag">EDGE_ENDPOINT_TYPES</span></li>
+          <li>对边入库前添加端点类型约束和运行时断言，避免误挂关系。</li>
+          <li>新增守卫规则 <span class="tag">bad_edge_endpoints</span>，对存量数据进行补充扫描和报警。</li>
+          <li>扩充质量闸门文档：把“证据优先、双信源复核、自动批准边界、rollback”写入统一流程。</li>
+          <li>将技术路线文档 <span class="tag">docs/edu-KG.html</span> 做到“从理念到流程到执行边界”三层一致。</li>
+          <li>算法文档更新 schema 与状态流（proposed/approved）解释，减少实现和文档不同步。</li>
+        </ul>
+      </section>
+
+      <section class="card">
+        <h2>2. 关键决策（为什么这样做）</h2>
+        <h3>2.1 先把“正确关系”约束化</h3>
+        <p class="quote">风险识别：误区/题目/资源如果先不加类型边界，未来一旦上线会在运行期产生大量错误边，难以回滚、难以审计。</p>
+        <ul class="list-tight">
+          <li>把所有关系写入前先校验端点类型，防止“错误类型做先修边”这类高风险误用。</li>
+          <li>同时保留历史数据兼容：新增守卫针对存量数据告警，不强杀业务，便于先修复再治理。</li>
+        </ul>
+
+        <h3>2.2 让审核策略从经验型变为证据型</h3>
+        <ul class="list-tight">
+          <li>LLM 提取结果一律经过证据子串校验，proposed 不直接入生效图。</li>
+          <li>通过“结构佐证 + LLM 判定”双信源自动批准；冲突与弱证据转人工。</li>
+          <li>保留 <code>batch_id</code> 回滚路径，便于发现问题后整批撤销。</li>
+        </ul>
+      </section>
+    </div>
+
+    <section class="card" style="margin-top:14px;">
+      <h2>3. 这次提交的技术交付清单（代码）</h2>
+      <table>
+        <thead>
+          <tr>
+            <th>文件</th>
+            <th>变更点</th>
+            <th>业务价值</th>
+            <th>状态</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td><code>kg/db.py</code></td>
+            <td>新增 <code>type</code> 字段、<code>NODE_TYPES</code>、<code>EDGE_ENDPOINT_TYPES</code>；<code>add_node/add_edge</code> 增加类型断言。</td>
+            <td>从结构层面限制错误建图，避免后期数据污染；便于未来扩展题目/误区/资源独立节点。</td>
+            <td><span class="status ok">DONE</span></td>
+          </tr>
+          <tr>
+            <td><code>kg/guards.py</code></td>
+            <td>新增 <code>bad_edge_endpoints</code> 守卫并挂到 <code>run_all</code> 汇总报告。</td>
+            <td>给运维和审核提供“快速诊断面板”，降低排查成本；支持未来批量修复。</td>
+            <td><span class="status ok">DONE</span></td>
+          </tr>
+          <tr>
+            <td><code>algorithm.md</code></td>
+            <td>节点类型与边端点规则写入文档；补充治理语义。</td>
+            <td>文档与实现一致，减少团队认知偏差与后续误用。</td>
+            <td><span class="status ok">DONE</span></td>
+          </tr>
+          <tr>
+            <td><code>CLAUDE.md</code></td>
+            <td>补充边语义、节点类型和自动批准策略的执行规则。</td>
+            <td>确保协作约束清晰、可复用，降低“知道和做到不一致”。</td>
+            <td><span class="status ok">DONE</span></td>
+          </tr>
+          <tr>
+            <td><code>docs/edu-KG.html</code></td>
+            <td>重构技术路线文档：统一 KG、分层演化、审计与回滚闭环、外部源边界。</td>
+            <td>对外汇报与评审时可直接展示，提升沟通效率与说服力。</td>
+            <td><span class="status ok">DONE</span></td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <div class="grid" style="margin-top:14px;">
+      <section class="card">
+        <h2>4. 我为什么说“经过了思考”</h2>
+        <h3>4.1 先定义问题边界，再动代码</h3>
+        <p>不是先写入新字段，而是先确认：谁能作为哪个端点？谁能作为先修边？哪些关系允许推断？没有先验规则，新增特性会把治理复杂度推高。</p>
+        <h3>4.2 先做快失败，再支持长期扩展</h3>
+        <p>保留当前只有 <code>concept</code> 的单类型实现，给未来误区/题目/资源预留类型位；一旦扩展，不需推翻已知逻辑。</p>
+        <h3>4.3 用“双保险”而不是“单断言”</h3>
+        <p>新增边时硬约束 + 守卫扫描并行：前者防新错，后者查历史错；避免“补齐后才发现历史积累问题”。</p>
+      </section>
+
+      <section class="card">
+        <h2>5. 风险与建议动作</h2>
+        <ul class="list-tight">
+          <li>仍需补齐现有历史数据的修复脚本：将已发现 <code>bad_edge_endpoints</code> 逐项消毒。</li>
+          <li>当前文档强调的自动批准需要持续观察自动判定的误杀率，建议逐步量化 <code>precision</code>。</li>
+          <li>对外部源（Wiki/Wikidata/ConceptNet）仍坚持“候选增强，不直接入主图”，防止噪声吞噬主知识层。</li>
+          <li>建议下一阶段补 <strong>端到端演示脚本</strong>：提案生成 → 守卫告警 → 回滚演示，形成汇报现场可演示资产。</li>
+        </ul>
+        <div class="result">
+          <p>结论：本轮已从“能跑”推进到“可控、可追责、可扩展”。</p>
+        </div>
+      </section>
+    </div>
+
+    <section class="card" style="margin-top:14px;">
+      <h2>6. 可直接读给老板的 60 秒口播稿（中文）</h2>
+      <pre>本轮我做了三件关键事：第一，把知识图谱的关系建模收紧到可验证的结构约束，避免未来错挂关系。
+第二，把提取流程从“凭感觉”改为“证据优先 + 双信源复核 + 可回滚”。
+第三，把文档和执行口径对齐，确保开发、审核、测试围绕同一套规则跑。
+从当前结果看，主图质量不再靠经验猜测，而是靠可追踪规则、守卫报告和回滚机制支撑。接下来我会补齐历史坏边清理与自动化 demo，将质量控制能力从文档落到日常运维流程。
+</pre>
+    </section>
+
+    <p class="footer">文件列表变更：<code>kg/db.py</code> · <code>kg/guards.py</code> · <code>algorithm.md</code> · <code>CLAUDE.md</code> · <code>docs/edu-KG.html</code></p>
+  </div>
+</body>
+</html>

@@ -1,0 +1,31 @@
+book: pml1
+title: Probabilistic Machine Learning - An Introduction（Murphy 2022）
+lang: en
+type: pdf
+pdf_url: https://github.com/probml/pml-book/releases/latest/download/book1.pdf
+# 作者官方公开 PDF（GitHub releases）。页码为 PDF 页（章起始页由章标题定位）；
+# 附录 Notation（p803 起）不收。
+sections:
+  - [1, "1", "Introduction", "pages:31-62"]
+  - [2, "2", "Probability: Univariate Models", "pages:63-106"]
+  - [3, "3", "Probability: Multivariate Models", "pages:107-136"]
+  - [4, "4", "Statistics", "pages:137-196"]
+  - [5, "5", "Decision Theory", "pages:197-236"]
+  - [6, "6", "Information Theory", "pages:237-258"]
+  - [7, "7", "Linear Algebra", "pages:259-304"]
+  - [8, "8", "Optimization", "pages:305-352"]
+  - [9, "9", "Linear Discriminant Analysis", "pages:353-368"]
+  - [10, "10", "Logistic Regression", "pages:369-400"]
+  - [11, "11", "Linear Regression", "pages:401-444"]
+  - [12, "12", "Generalized Linear Models", "pages:445-454"]
+  - [13, "13", "Neural Networks for Tabular Data", "pages:455-496"]
+  - [14, "14", "Neural Networks for Images", "pages:497-532"]
+  - [15, "15", "Neural Networks for Sequences", "pages:533-576"]
+  - [16, "16", "Exemplar-based Methods", "pages:577-596"]
+  - [17, "17", "Kernel Methods", "pages:597-632"]
+  - [18, "18", "Trees, Forests, Bagging, and Boosting", "pages:633-656"]
+  - [19, "19", "Learning with Fewer Labeled Examples", "pages:657-686"]
+  - [20, "20", "Dimensionality Reduction", "pages:687-744"]
+  - [21, "21", "Clustering", "pages:745-770"]
+  - [22, "22", "Recommender Systems", "pages:771-782"]
+  - [23, "23", "Graph Embeddings", "pages:783-802"]

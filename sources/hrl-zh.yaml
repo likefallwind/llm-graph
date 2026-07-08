@@ -1,0 +1,27 @@
+book: hrl-zh
+title: 动手学强化学习（张伟楠等，上海交大）
+lang: zh
+type: html
+# 站点为 dumi 静态渲染，正文在 HTML 里（已验证）；URL 含中文路径，requests 可直接请求。
+sections:
+  - [1, "1", "初探强化学习", "https://hrl.boyuai.com/chapter/1/初探强化学习/"]
+  - [2, "2", "多臂老虎机", "https://hrl.boyuai.com/chapter/1/多臂老虎机/"]
+  - [3, "3", "马尔可夫决策过程", "https://hrl.boyuai.com/chapter/1/马尔可夫决策过程/"]
+  - [4, "4", "动态规划算法", "https://hrl.boyuai.com/chapter/1/动态规划算法/"]
+  - [5, "5", "时序差分算法", "https://hrl.boyuai.com/chapter/1/时序差分算法/"]
+  - [6, "6", "Dyna-Q算法", "https://hrl.boyuai.com/chapter/1/dyna-q算法/"]
+  - [7, "7", "DQN算法", "https://hrl.boyuai.com/chapter/2/dqn算法/"]
+  - [8, "8", "DQN改进算法", "https://hrl.boyuai.com/chapter/2/dqn改进算法/"]
+  - [9, "9", "策略梯度算法", "https://hrl.boyuai.com/chapter/2/策略梯度算法/"]
+  - [10, "10", "Actor-Critic算法", "https://hrl.boyuai.com/chapter/2/actor-critic算法/"]
+  - [11, "11", "TRPO算法", "https://hrl.boyuai.com/chapter/2/trpo算法/"]
+  - [12, "12", "PPO算法", "https://hrl.boyuai.com/chapter/2/ppo算法/"]
+  - [13, "13", "DDPG算法", "https://hrl.boyuai.com/chapter/2/ddpg算法/"]
+  - [14, "14", "SAC算法", "https://hrl.boyuai.com/chapter/2/sac算法/"]
+  - [15, "15", "模仿学习", "https://hrl.boyuai.com/chapter/3/模仿学习/"]
+  - [16, "16", "模型预测控制", "https://hrl.boyuai.com/chapter/3/模型预测控制/"]
+  - [17, "17", "基于模型的策略优化", "https://hrl.boyuai.com/chapter/3/基于模型的策略优化/"]
+  - [18, "18", "离线强化学习", "https://hrl.boyuai.com/chapter/3/离线强化学习/"]
+  - [19, "19", "目标导向的强化学习", "https://hrl.boyuai.com/chapter/3/目标导向的强化学习/"]
+  - [20, "20", "多智能体强化学习入门", "https://hrl.boyuai.com/chapter/3/多智能体强化学习入门/"]
+  - [21, "21", "多智能体强化学习进阶", "https://hrl.boyuai.com/chapter/3/多智能体强化学习进阶/"]

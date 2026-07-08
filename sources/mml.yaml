@@ -1,0 +1,20 @@
+book: mml
+title: Mathematics for Machine Learning（Deisenroth, Faisal & Ong）
+lang: en
+type: pdf
+pdf_url: https://mml-book.github.io/book/mml-book.pdf
+# 页码为 PDF 页（章起始页由章标题定位；正文止于 p408，References p409 起）。
+# 数学先修链的权威语料：第一部分（2-7 章）数学基础，第二部分（8-12 章）四个 ML 核心问题。
+sections:
+  - [1, "1", "Introduction and Motivation", "pages:17-22"]
+  - [2, "2", "Linear Algebra", "pages:23-75"]
+  - [3, "3", "Analytic Geometry", "pages:76-103"]
+  - [4, "4", "Matrix Decompositions", "pages:104-144"]
+  - [5, "5", "Vector Calculus", "pages:145-177"]
+  - [6, "6", "Probability and Distributions", "pages:178-230"]
+  - [7, "7", "Continuous Optimization", "pages:231-256"]
+  - [8, "8", "When Models Meet Data", "pages:257-294"]
+  - [9, "9", "Linear Regression", "pages:295-322"]
+  - [10, "10", "Dimensionality Reduction with Principal Component Analysis", "pages:323-353"]
+  - [11, "11", "Density Estimation with Gaussian Mixture Models", "pages:354-375"]
+  - [12, "12", "Classification with Support Vector Machines", "pages:376-408"]

@@ -95,19 +95,26 @@
 
     .hero-map {
       display: grid;
-      grid-template-columns: 1fr auto 1fr auto 1fr;
+      grid-template-columns: 1.05fr 1fr 1fr;
       gap: 12px;
       align-items: stretch;
       margin-top: 24px;
     }
 
+    .hero-map.two-up {
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+    }
+
     .big-block {
-      min-height: 128px;
+      min-height: 118px;
       padding: 18px;
       border: 1px solid var(--line);
       border-radius: var(--radius);
       background: #fff;
     }
+
+    .big-block.wide { grid-column: span 2; }
+    .hero-map.two-up .big-block.wide { grid-column: span 1; }
 
     .big-block h3 {
       margin: 0 0 8px;
@@ -228,6 +235,15 @@
       grid-template-columns: repeat(7, minmax(130px, 1fr));
       gap: 10px;
       align-items: stretch;
+    }
+
+    .pipeline.summary-pipeline {
+      grid-template-columns: repeat(4, minmax(180px, 1fr));
+      gap: 14px;
+    }
+
+    .summary-pipeline .step {
+      min-height: 190px;
     }
 
     .step {
@@ -489,7 +505,7 @@
       .schema { grid-template-columns: repeat(2, 1fr); }
       .loop-grid { grid-template-columns: 1fr; }
       .hero-map { grid-template-columns: 1fr; }
-      .arrow { transform: rotate(90deg); }
+      .big-block.wide { grid-column: span 1; }
       .grid-4 { grid-template-columns: repeat(2, 1fr); }
     }
 
@@ -515,107 +531,77 @@
       <p class="kicker">Technical Roadmap · EduKG × Graph Memory</p>
       <h1>面向个性化教育大模型的教育知识图谱技术路线</h1>
       <p class="subtitle">
-        先构建可验证的多模态教育 KG，再通过学生交互持续写入证据、更新学习状态、驱动教学决策，形成面向个性化教学的动态图记忆系统。
+        自动化构建可验证的教育知识图谱，并让图谱在证据、审核和学生交互中持续自进化；同时让图谱与大模型双向交互，支持可解释、可追踪的个性化教学输出。
       </p>
-      <div class="hero-map">
+      <div class="hero-map two-up">
         <div class="big-block blue">
-          <h3>Part 1 · KG Construction</h3>
-          <p>课程资源解析、多模态抽取、schema 约束、LLM ensemble、自一致性验证、实体归一、图存储。</p>
+          <h3>Automated & Self-Evolving KG · 自动化构图与自进化</h3>
+          <p>从教材、课标、讲义、题库和人工 seed 中自动抽取知识点、题目、资源、误区与关系；所有候选先进入 proposed，经证据校验、双信源复核和治理提交后进入生效图，并在交互证据与审核反馈中持续更新。</p>
         </div>
-        <div class="arrow">→</div>
         <div class="big-block green">
-          <h3>Part 2 · Graph Memory</h3>
-          <p>Memory Writer 写入证据；State Updater 更新学生状态；Reader 读取个性化子图；Tutor 生成教学动作。</p>
-        </div>
-        <div class="arrow">→</div>
-        <div class="big-block orange">
-          <h3>Part 3 · Self-Evolving</h3>
-          <p>误区发现、题型模板挖掘、资源质量重估、候选知识入库、审核合并与回滚。</p>
+          <h3>KG × LLM Personalization · 图谱与大模型交互</h3>
+          <p>图谱为大模型提供目标知识、先修路径、学生状态、近期证据、活跃误区和可用资源；大模型生成教学反馈后，交互结果继续写回 Evidence Graph，驱动学生状态、资源质量和图谱候选演化。</p>
         </div>
       </div>
     </header>
 
     <nav class="nav">
-      <a href="#kg-build">1. KG 构建</a>
-      <a href="#schema">2. Schema</a>
-      <a href="#quality">3. 质量控制</a>
-      <a href="#evolving">4. Self-Evolving</a>
-      <a href="#storage">5. 存储与服务</a>
+      <a href="#kg-build">可信底座</a>
+      <a href="#schema">图谱语义</a>
+      <a href="#quality">质量闸门</a>
+      <a href="#evolving">图记忆演化</a>
+      <a href="#storage">服务架构</a>
     </nav>
 
     <section id="kg-build">
       <div class="section-title">
-        <h2>第一部分：KG 构建</h2>
-        <p>目标：把课程资源转成稳定、可追溯、可验证、可被教学系统调用的教育图谱底座，并补强教育场景所需的 schema 约束、题目映射和误区建模。</p>
+        <h2>可信教育图谱底座</h2>
+        <p>目标：把高质量教育材料转成稳定、可追溯、可验证、可被教学系统调用的统一 Educational KG，并覆盖知识结构、题目映射、教学资源、误区建模与治理状态。</p>
       </div>
 
       <div class="panel">
         <div class="panel-head">
           <h3>1.1 自动化构图主流水线</h3>
-          <span class="tag">Extraction → Verification → Integration → Augmentation</span>
+          <span class="tag">Trusted Sources → Candidate Extraction → Verification → Governed Commit</span>
         </div>
         <div class="panel-body">
-          <div class="pipeline">
+          <div class="pipeline summary-pipeline">
             <div class="step blue">
-              <b><span class="idx">0</span>Source Registry</b>
+              <b><span class="idx">1</span>可信语料进入</b>
               <ul>
-                <li>教材 / 课标 / 讲义 / 题库 / 视频 / 图片 / 音频</li>
-                <li>记录 source_id、grade、subject、version、license</li>
-                <li>保留 raw asset 与 evidence span</li>
-              </ul>
-            </div>
-            <div class="step">
-              <b><span class="idx">1</span>Multimodal Parsing</b>
-              <ul>
-                <li>PDF layout + OCR + table extraction</li>
-                <li>ASR 转写视频/音频</li>
-                <li>CLIP / BLIP / VLM 生成图像语义标签</li>
+                <li>教材 / 课标 / 讲义 / 题库 / 人工 seed 优先</li>
+                <li>切分章节、题目和解析，冻结 source_id、version、content_hash</li>
+                <li>Wiki / Wikidata / ConceptNet 只作为后续扩展候选源</li>
               </ul>
             </div>
             <div class="step green">
-              <b><span class="idx">2</span>Ontology-constrained IE</b>
+              <b><span class="idx">2</span>候选图谱生成</b>
               <ul>
-                <li>按 schema 抽取 Concept / Skill / Formula / Exercise</li>
-                <li>LLM 输出 JSON schema，不收自由文本</li>
-                <li>每个 triple 附 evidence 与 confidence</li>
-              </ul>
-            </div>
-            <div class="step orange">
-              <b><span class="idx">3</span>Self-Refine</b>
-              <ul>
-                <li>Extractor → Critic → Reviser 多轮修正</li>
-                <li>检查粒度、别名、关系方向、证据缺失</li>
-                <li>低置信 triple 进入待审池</li>
+                <li>零 LLM 结构挖掘：目录、课标层级、题库标签产生初始关系候选</li>
+                <li>LLM 有据抽取：只读给定材料，输出 entity / relation / evidence_span</li>
+                <li>候选包括知识点、技能、题目、资源、误区和关系</li>
               </ul>
             </div>
             <div class="step purple">
-              <b><span class="idx">4</span>Self-Consistency Vote</b>
+              <b><span class="idx">3</span>质量验证与裁决</b>
               <ul>
-                <li>多模型 / 多 prompt / 多采样投票</li>
-                <li>保留 vote_score ≥ α 的节点和边</li>
-                <li>冲突关系进入 conflict queue</li>
-              </ul>
-            </div>
-            <div class="step red">
-              <b><span class="idx">5</span>Canonicalization</b>
-              <ul>
-                <li>别名合并：embedding + 字符串 + 课程层级</li>
-                <li>知识粒度对齐：KP → Concept → Skill</li>
-                <li>外部锚定：Wikipedia / ConceptNet / 课标术语</li>
+                <li>所有 LLM 产物先入 proposed，不直接进入生效图</li>
+                <li>证据子串校验 + 四级去重 + 粒度对齐，防止误合并和误拆分</li>
+                <li>结构佐证 × LLM 判断题复核；冲突、弱证据、先修争议进入人工 review</li>
               </ul>
             </div>
             <div class="step blue">
-              <b><span class="idx">6</span>Graph Commit</b>
+              <b><span class="idx">4</span>受控提交与演化</b>
               <ul>
-                <li>写入 Domain KG / Resource Graph</li>
-                <li>生成向量索引与 graph index</li>
-                <li>记录版本、来源、审核状态、可回滚 diff</li>
+                <li>仅 seed + approved 写入 Educational KG 生效子图</li>
+                <li>每次提交记录 batch_id、review_log、source pointer 和可回滚 patch</li>
+                <li>审计抽检与交互反馈进入 precision 校准，持续调节自动放行阈值</li>
               </ul>
             </div>
           </div>
 
           <div class="note">
-            推荐不要让 LLM 直接“自由构图”。所有抽取都必须受 ontology、JSON schema、课程层级和证据 span 约束；否则图谱会在粒度和关系语义上迅速漂移。
+            初始构图阶段先把教材、课标、讲义、题库和人工 seed 中可验证的知识结构、先修关系、题目映射和误区雏形做扎实；资源节点可以进入同一张 Educational KG，但多模态内容先以 source pointer / span / timestamp / region 方式挂接，不作为第一阶段的知识结构来源。Wiki / Wikidata / ConceptNet 不进入初始主通道，主要在 Self-Evolving 阶段用于候选扩展、别名补充和结构佐证。
           </div>
         </div>
       </div>
@@ -625,20 +611,20 @@
           <div class="panel-head"><h3>1.2 构图组件拆解</h3><span class="tag">modules</span></div>
           <div class="panel-body grid-2">
             <div class="mini-card blue">
-              <h4>Extractor</h4>
-              <p>多模态输入 → schema-constrained JSON。输出实体、关系、证据、置信度。</p>
+              <h4>Corpus Manager</h4>
+              <p>管理教材、课标、讲义、题库和人工 seed；冻结版本、章节、content_hash 与来源许可。</p>
             </div>
             <div class="mini-card orange">
-              <h4>Critic / Verifier</h4>
-              <p>检查三类错误：实体粒度不一致、关系方向错误、无证据 hallucination。</p>
+              <h4>Evidence Extractor</h4>
+              <p>从指定语料中抽取 Concept / Skill / Formula / Exercise / Misconception，必须绑定原文 evidence span。</p>
             </div>
             <div class="mini-card green">
-              <h4>Entity Linker</h4>
-              <p>把 “判别式 / Δ / b²-4ac” 链接到同一 canonical concept。</p>
+              <h4>Verifier / Reviewer</h4>
+              <p>执行子串校验、schema 约束、环检测、结构佐证和人工审核；proposed 通过后才 approved。</p>
             </div>
             <div class="mini-card purple">
               <h4>Graph Integrator</h4>
-              <p>做 duplicate merge、conflict resolution、version diff、graph commit。</p>
+              <p>做去重、粒度裁决、batch commit、graph patch、rollback，并导出可教学调用的生效子图。</p>
             </div>
           </div>
         </div>
@@ -653,7 +639,8 @@
     "canonical_id": "math.quadratic.discriminant",
     "aliases": ["Δ", "b^2-4ac"],
     "granularity": "concept",
-    "source_span": "...",
+    "source": "textbook:grade9_math:chapter_2@hash_abcd",
+    "evidence_in_text": "判别式 b²-4ac 可用于判断方程根的情况",
     "confidence": 0.91
   },
   "triple": {
@@ -661,8 +648,8 @@
     "relation": "USED_IN",
     "tail": "判断一元二次方程实数根个数",
     "evidence": "当 Δ>0 时有两个不相等实根...",
-    "vote_score": 0.83,
-    "status": "verified"
+    "structural_support": ["教材章节邻近", "题库解析多次出现"],
+    "status": "proposed"
   }
 }</pre>
           </div>
@@ -672,16 +659,16 @@
 
     <section id="schema">
       <div class="section-title">
-        <h2>教育 KG Schema</h2>
-        <p>逻辑上是一套统一图谱，物理上分为共享底座、资源图、证据图、学生状态 overlay 和候选演化层。</p>
+        <h2>图谱语义与分层 Schema</h2>
+        <p>逻辑上以一张统一 Educational KG 表达知识结构、题目、资源和误区；再叠加 Evidence Graph、学生状态 overlay、候选演化层和治理日志，支撑长期个性化教学。</p>
       </div>
 
       <div class="panel">
-        <div class="panel-head"><h3>2.1 五类子图与核心节点</h3><span class="tag">shared base + learner overlay</span></div>
+        <div class="panel-head"><h3>2.1 统一主图与动态层</h3><span class="tag">unified KG + learner overlay</span></div>
         <div class="panel-body">
           <div class="schema">
             <div class="schema-col">
-              <h4>Domain KG</h4>
+              <h4>Educational KG</h4>
               <code>Subject
 Grade
 Chapter
@@ -691,16 +678,12 @@ Skill
 Formula
 Theorem
 ProblemTemplate
-Misconception</code>
-            </div>
-            <div class="schema-col">
-              <h4>Resource Graph</h4>
-              <code>TextChunk
+Misconception
+Exercise
+TextChunk
 Image
 VideoSegment
 AudioClip
-Example
-Exercise
 Hint
 Explanation
 WorkedSolution</code>
@@ -734,6 +717,15 @@ CandidateMisconception
 CandidateTemplate
 CandidateResourceMapping
 GraphPatch</code>
+            </div>
+            <div class="schema-col">
+              <h4>Governance Log</h4>
+              <code>SourcePointer
+ReviewLog
+AuditSample
+PrecisionStat
+ThresholdPatch
+RollbackPatch</code>
             </div>
           </div>
         </div>
@@ -769,20 +761,16 @@ GraphPatch</code>
               </defs>
 
               <rect x="34" y="28" width="1212" height="158" class="lane" />
-              <text x="58" y="58" class="h">Shared Educational Base</text>
-              <text x="58" y="80" class="s">全体学生共享，低频受控更新</text>
+              <text x="58" y="58" class="h">Unified Educational KG</text>
+              <text x="58" y="80" class="s">全体学生共享，受控更新</text>
 
-              <rect x="64" y="96" width="290" height="60" class="box base" />
-              <text x="84" y="122" class="t">Domain KG</text>
-              <text x="84" y="144" class="m">Concept · Skill · Formula · Prerequisite</text>
-
-              <rect x="390" y="96" width="330" height="60" class="box res" />
-              <text x="410" y="122" class="t">Resource Graph</text>
-              <text x="410" y="144" class="m">Text · Image · Video · Hint · Exercise</text>
+              <rect x="64" y="96" width="650" height="60" class="box base" />
+              <text x="84" y="122" class="t">Educational KG</text>
+              <text x="84" y="144" class="m">Concept · Skill · Formula · Exercise · Resource · Misconception</text>
 
               <rect x="870" y="96" width="260" height="60" class="box buf" />
               <text x="890" y="122" class="t">Versioned KG Patch</text>
-              <text x="890" y="144" class="m">approved nodes / edges / resources</text>
+              <text x="890" y="144" class="m">approved nodes / edges / quality patches</text>
 
               <rect x="34" y="210" width="1212" height="205" class="lane" />
               <text x="58" y="240" class="h">Online Graph-Memory Loop</text>
@@ -829,13 +817,13 @@ GraphPatch</code>
               <rect x="628" y="386" width="146" height="18" fill="#fbfcff" />
               <text x="650" y="400" class="label">feedback write-back</text>
 
-              <path d="M209 156 V196 M555 156 V196 M209 196 H1005 V310" class="thin" />
+              <path d="M389 156 V196 H1005 V310" class="thin" />
               <rect x="540" y="176" width="226" height="18" fill="#ffffff" />
-              <text x="560" y="190" class="label">shared knowledge / resource grounding</text>
+              <text x="560" y="190" class="label">shared KG grounding</text>
 
               <rect x="34" y="455" width="1212" height="115" class="lane" />
               <text x="58" y="487" class="h">Controlled Evolution Layer</text>
-              <text x="58" y="509" class="s">从交互证据中挖掘新误区、新题型和资源映射；先进入候选区，验证后再合并主图</text>
+              <text x="58" y="509" class="s">从交互证据中挖掘新误区、新题型、资源映射和质量补丁；先进入候选区，验证后再合并主图</text>
 
               <rect x="315" y="524" width="250" height="36" class="box buf" />
               <text x="350" y="547" class="t">Candidate Buffer</text>
@@ -847,8 +835,8 @@ GraphPatch</code>
               <text x="868" y="547" class="t">Graph Patch</text>
 
               <path d="M465 388 V524" class="dash" />
-              <rect x="468" y="452" width="96" height="18" fill="#fbfcff" />
-              <text x="474" y="466" class="label">pattern mining</text>
+              <rect x="468" y="452" width="142" height="18" fill="#fbfcff" />
+              <text x="474" y="466" class="label">evidence pattern mining</text>
 
               <path d="M565 542 H615" class="dash" />
               <path d="M775 542 H825" class="dash" />
@@ -856,16 +844,12 @@ GraphPatch</code>
               <path d="M995 542 H1240 V120 H1130" class="dash" />
               <rect x="1018" y="544" width="116" height="18" fill="#fbfcff" />
               <text x="1028" y="558" class="label">validated update</text>
-
-              <path d="M1165 402 V455" class="dash" />
-              <rect x="1168" y="423" width="106" height="18" fill="#fbfcff" />
-              <text x="1174" y="437" class="label">effect monitoring</text>
             </svg>
           </div>
 
           <div class="legend">
-            <span><i style="background:#e9f0ff"></i>共享知识底座</span>
-            <span><i style="background:#e9f7f0"></i>资源图</span>
+            <span><i style="background:#e9f0ff"></i>统一教育图谱</span>
+            <span><i style="background:#e9f7f0"></i>教学动作 / 资源调用</span>
             <span><i style="background:#fff2e5"></i>交互证据</span>
             <span><i style="background:#f1efff"></i>学生状态 overlay</span>
             <span><i style="background:#fff0ed"></i>候选演化缓冲</span>
@@ -879,8 +863,8 @@ GraphPatch</code>
           <table class="matrix">
             <thead><tr><th>子图</th><th>核心关系</th><th>技术约束</th><th>用途</th></tr></thead>
             <tbody>
-              <tr><td><strong>Domain KG</strong></td><td>PART_OF, PREREQUISITE_OF, REQUIRES_SKILL, TESTED_BY, HAS_MISCONCEPTION</td><td>关系方向必须通过规则校验；先修边需要课程层级或专家证据。</td><td>诊断知识缺口、规划学习路径。</td></tr>
-              <tr><td><strong>Resource Graph</strong></td><td>EXPLAINS, DEMONSTRATES, REMEDIATES, HAS_HINT, HAS_SOLUTION_STEP</td><td>多模态资源必须绑定 timestamp/span/region；资源质量动态评分。</td><td>个性化讲解、补救资源推荐。</td></tr>
+              <tr><td><strong>Educational KG · Knowledge</strong></td><td>PART_OF, PREREQUISITE_OF, REQUIRES_SKILL, TESTED_BY, HAS_MISCONCEPTION</td><td>关系方向必须通过规则校验；先修边需要课程层级或专家证据。</td><td>诊断知识缺口、规划学习路径。</td></tr>
+              <tr><td><strong>Educational KG · Resource</strong></td><td>EXPLAINS, DEMONSTRATES, REMEDIATES, HAS_HINT, HAS_SOLUTION_STEP</td><td>资源节点与多模态片段必须绑定 source pointer、span、timestamp 或 region；资源质量动态评分。</td><td>个性化讲解、补救资源推荐。</td></tr>
               <tr><td><strong>Evidence Graph</strong></td><td>EVIDENCES_CONCEPT, EVIDENCES_SKILL, INDICATES_MISCONCEPTION, USED_HINT</td><td>每条证据保留 raw_text、model_id、prompt_version、confidence。</td><td>状态更新、审计、教师复查。</td></tr>
               <tr><td><strong>Learner State</strong></td><td>HAS_CONCEPT_STATE, HAS_SKILL_STATE, HAS_MISCONCEPTION_STATE, NEXT_TARGET</td><td>使用状态节点而非直接在边上写 mastery，便于版本化和时间序列。</td><td>长期学生建模、个性化策略。</td></tr>
             </tbody>
@@ -891,69 +875,94 @@ GraphPatch</code>
 
     <section id="quality">
       <div class="section-title">
-        <h2>质量控制：如何保证图谱不是“LLM 幻觉图”</h2>
-        <p>采用多模型抽取、自反馈修正、自一致性投票、外部知识增强与人工审核闭环，并额外加入教育粒度控制和关系方向校验。</p>
+        <h2>质量闸门与治理机制</h2>
+        <p>采用证据机械校验、proposed/approved 状态机、双信源复核、规则守卫与人工审核闭环。多模型投票只作为辅助信号，不作为直接入图依据。</p>
       </div>
 
       <div class="grid-3">
         <div class="panel">
-          <div class="panel-head"><h3>3.1 多模型抽取</h3><span class="tag">ensemble</span></div>
+          <div class="panel-head"><h3>3.1 闸门一：证据优先抽取</h3><span class="tag">mechanical evidence gate</span></div>
           <div class="panel-body">
             <div class="mini-card blue">
-              <h4>LLM Ensemble</h4>
+              <h4>Zero-trust IE</h4>
               <ul>
-                <li>模型 A：高精度抽取</li>
-                <li>模型 B：召回补充</li>
-                <li>模型 C：中文教育术语校验</li>
-                <li>temperature = 0 用于稳定抽取</li>
+                <li>LLM 只读当前语料块，不允许凭模型记忆补知识</li>
+                <li>每个实体 / 关系必须绑定 source 与 evidence_in_text</li>
+                <li>evidence 必须通过正文子串校验，不通过则重引一次</li>
+                <li>LLM 输出一律先进入 proposed，不能直接进入生效图</li>
               </ul>
             </div>
-            <pre class="codebox" style="margin-top:12px;">vote_score(t) = count(agree(t)) / N
-accept(t) if vote_score(t) ≥ α
-review(t) if β ≤ vote_score(t) &lt; α
-reject(t) if vote_score(t) &lt; β</pre>
+            <pre class="codebox" style="margin-top:12px;">accept_candidate(t) only if:
+  evidence_in_text ⊂ source_text
+  AND schema_valid(t)
+  AND no_hard_constraint_violation(t)
+  AND status(t) = proposed
+
+commit(t) only if:
+  human_approved OR dual_source_verified</pre>
           </div>
         </div>
 
         <div class="panel">
-          <div class="panel-head"><h3>3.2 粒度统一</h3><span class="tag">granularity</span></div>
+          <div class="panel-head"><h3>3.2 闸门二：双信源复核</h3><span class="tag">structure × LLM judgment</span></div>
           <div class="panel-body">
             <div class="mini-card green">
-              <h4>Granularity Ladder</h4>
+              <h4>Verify Before Approval</h4>
               <ul>
-                <li>Chapter：一元二次方程</li>
-                <li>KnowledgePoint：根的判别式</li>
-                <li>Concept：Δ / 实数根</li>
-                <li>Skill：根据 Δ 判断根的个数</li>
-                <li>Misconception：Δ&lt;0 表示方程无意义</li>
+                <li>结构佐证：教材目录、课标层级、题库解析、同章节邻近</li>
+                <li>LLM 判断题：只给证据上下文、候选边、节点定义和图谱邻域</li>
+                <li>自动批准：结构佐证与 LLM 判断同时支持，且不违反硬约束</li>
+                <li>人工 review：弱证据、信号冲突、先修争议、粒度争议</li>
               </ul>
             </div>
-            <div class="note">实体合并不能只靠 embedding，相似但粒度不同的节点不能合并。</div>
+            <div class="note">LLM 在这里是阅读理解裁判，不是知识源；它只能判断给定材料是否支持候选节点或候选边。</div>
           </div>
         </div>
 
         <div class="panel">
-          <div class="panel-head"><h3>3.3 关系校验</h3><span class="tag">constraints</span></div>
+          <div class="panel-head"><h3>3.3 闸门三：规则守卫</h3><span class="tag">constraints</span></div>
           <div class="panel-body">
             <div class="mini-card red">
               <h4>Hard Constraints</h4>
               <ul>
                 <li>Exercise 才能 TESTS Concept / Skill</li>
                 <li>Misconception 不能 PREREQUISITE_OF Concept</li>
-                <li>PREREQUISITE_OF 不能形成明显循环</li>
-                <li>Resource 必须有 source pointer</li>
+                <li>PREREQUISITE_OF / PART_OF / IS_A 入图前模拟加边查环</li>
+                <li>Resource 节点与 EXPLAINS / REMEDIATES 等边必须有 source pointer / span / timestamp / region</li>
               </ul>
             </div>
             <pre class="codebox" style="margin-top:12px;">IF edge.type = PREREQUISITE_OF:
   require head.grade_level ≤ tail.grade_level
-  require evidence OR expert_review
-  reject cycles longer than 1</pre>
+  require textbook_toc_support OR curriculum_support OR expert_review
+  reject if adding edge creates cycle
+  cap confidence if edge is inferred</pre>
           </div>
         </div>
       </div>
 
       <div class="panel" style="margin-top:16px;">
-        <div class="panel-head"><h3>3.4 质量评估指标</h3><span class="tag">offline eval</span></div>
+        <div class="panel-head"><h3>3.4 闭环治理：审核、校准与回滚</h3><span class="tag">review_log × signal → precision</span></div>
+        <div class="panel-body grid-4">
+          <div class="mini-card"><h4>Status Machine</h4><p><code>seed / proposed / approved / rejected</code>；所有教学调用和图算法只读取 seed + approved。</p></div>
+          <div class="mini-card"><h4>Dual-source Verify</h4><p>结构佐证与文本证据同时成立才自动批准；弱证据、冲突关系和先修争议进入人工 review。</p></div>
+          <div class="mini-card"><h4>Audit Sampling</h4><p>对自动批准结果执行抽检；人工推翻样本写入 review_log，成为校准数据。</p></div>
+          <div class="mini-card"><h4>Calibration</h4><p>按来源通道、边类型、佐证组合统计 precision，反馈调节自动裁决松紧。</p></div>
+          <div class="mini-card"><h4>Batch Rollback</h4><p>每次自动提交记录 batch_id 和 graph patch；发现污染可整批回滚。</p></div>
+        </div>
+      </div>
+
+      <div class="panel" style="margin-top:16px;">
+        <div class="panel-head"><h3>3.5 粒度统一</h3><span class="tag">granularity</span></div>
+        <div class="panel-body grid-4">
+          <div class="mini-card"><h4>Chapter</h4><p>一元二次方程、函数、力学等课程章节或主题单元。</p></div>
+          <div class="mini-card"><h4>KnowledgePoint</h4><p>根的判别式、函数单调性、牛顿第二定律等可教学知识点。</p></div>
+          <div class="mini-card"><h4>Concept / Skill</h4><p>Δ、实数根、根据 Δ 判断根个数等概念与可操作技能。</p></div>
+          <div class="mini-card"><h4>Facet / Misconception</h4><p>相似但不应独立成点的描述降级为 facet；高价值错误模式再升级为 Misconception。</p></div>
+        </div>
+      </div>
+
+      <div class="panel" style="margin-top:16px;">
+        <div class="panel-head"><h3>3.6 质量评估指标</h3><span class="tag">offline eval</span></div>
         <div class="panel-body grid-4">
           <div class="mini-card"><h4>Entity F1</h4><p>抽取实体与专家标注实体的 precision / recall / F1，按 Concept、Skill、Misconception 分开统计。</p></div>
           <div class="mini-card"><h4>Relation Accuracy</h4><p>关系类型、方向、证据有效性分别评估，尤其关注 prerequisite 和 tests mapping。</p></div>
@@ -965,16 +974,92 @@ reject(t) if vote_score(t) &lt; β</pre>
 
     <section id="evolving">
       <div class="section-title">
-        <h2>第二部分：KG Self-Evolving</h2>
-        <p>核心是图记忆闭环：每次学习交互不是简单日志，而是被 Writer 结构化为图记忆，由 Updater 更新学生状态，由 Reader 读取个性化子图，再由 Tutor 生成教学动作。</p>
+        <h2>图记忆与多层次 Self-Evolving</h2>
+        <p>Self-Evolving 不是单一模块，而是多层闭环：Educational KG 在证据和审核反馈中受控扩展，资源节点根据教学使用效果更新映射与质量分，Learner State 随交互高频变化，Governance 根据 review_log 校准自动裁决策略。</p>
       </div>
 
       <div class="panel">
-        <div class="panel-head"><h3>4.1 教育图记忆闭环</h3><span class="tag">write → update → read → teach → write back</span></div>
+        <div class="panel-head"><h3>4.1 多层次 Self-Evolving 总览</h3><span class="tag">KG structure → resource quality → learner → governance</span></div>
+        <div class="panel-body">
+          <div class="grid-4">
+            <div class="mini-card blue">
+              <h4>Layer A · KG Structure Evolution</h4>
+              <p>从 approved 节点发现缺定义、缺先修、缺题目映射、缺误区；优先回到教材 / 课标 / 题库找证据，再用 Wiki / Wikidata / ConceptNet 扩展候选。</p>
+            </div>
+            <div class="mini-card green">
+              <h4>Layer B · Resource Node Evolution</h4>
+              <p>在同一张 Educational KG 中，根据资源被调用后的答题改善、提示依赖、错误复发率和教师反馈，更新资源到知识点 / 误区 / 技能的映射与质量分。</p>
+            </div>
+            <div class="mini-card orange">
+              <h4>Layer C · Learner State Evolution</h4>
+              <p>每次交互写入 Evidence Graph，并更新 mastery、misconception_prob、forgetting_risk、hint_dependency 等学生状态。</p>
+            </div>
+            <div class="mini-card purple">
+              <h4>Layer D · Governance Evolution</h4>
+              <p>review_log 记录 human / auto 裁决，按来源通道 × 边类型 × 佐证组合统计 precision，自动调节后续放行阈值。</p>
+            </div>
+          </div>
+
+          <table class="matrix" style="margin-top:14px;">
+            <thead><tr><th>层次</th><th>触发信号</th><th>候选产物</th><th>更新频率</th><th>是否直接改主图</th></tr></thead>
+            <tbody>
+              <tr><td><strong>Educational KG · Structure</strong></td><td>schema 完整性缺口、教材/题库新术语、审核通过率高的模式</td><td>CandidateConcept / CandidateRelation / CandidateMisconception</td><td>低频</td><td>否，必须 proposed → verified → approved</td></tr>
+              <tr><td><strong>Educational KG · Resource</strong></td><td>资源使用效果、资源失效、资源与误区匹配不足</td><td>CandidateResourceMapping / resource_quality_patch</td><td>中频</td><td>否，先更新质量分和候选映射，再受控提交资源边</td></tr>
+              <tr><td><strong>Learner State</strong></td><td>答题正确性、ErrorSpan、HintUse、时间衰减</td><td>StudentConceptState / StudentMisconceptionState</td><td>高频</td><td>可以自动更新学生 overlay，不改共享 Educational KG</td></tr>
+              <tr><td><strong>Governance</strong></td><td>review_log、审计抽检、人工推翻率、坏批次回滚</td><td>threshold_patch / rule_patch / rollback_patch</td><td>周期性</td><td>只改裁决策略，不直接新增知识</td></tr>
+            </tbody>
+          </table>
+
+          <div class="note" style="margin-top:14px;">
+            多层次自进化的关键边界：学生状态可以高频自动变，资源质量可以中频重估，共享 Educational KG 的结构性变更只能低频、证据驱动、版本化合并；治理层负责让自动化程度随 precision 数据变松或变紧。
+          </div>
+        </div>
+      </div>
+
+      <div class="panel" style="margin-top:16px;">
+        <div class="panel-head"><h3>4.2 外部扩展信息源</h3><span class="tag">Wiki / Wikidata / ConceptNet as expansion sources</span></div>
+        <div class="panel-body">
+          <div class="grid-4">
+            <div class="mini-card blue">
+              <h4>Wikipedia</h4>
+              <p>用于补充概念定义、别名、相关页面和跨章节候选。只在图谱发现缺口后定向检索，页面需锁定 revision_id。</p>
+            </div>
+            <div class="mini-card green">
+              <h4>Wikidata</h4>
+              <p>用于实体消歧、同义实体合并和结构佐证，例如 subclass / part-of / related entity claim；不能单独决定教学先修。</p>
+            </div>
+            <div class="mini-card orange">
+              <h4>ConceptNet</h4>
+              <p>用于常识型关联、同义词、上下位和 prerequisite 候选提示；只生成 candidate，不直接写入 Educational KG。</p>
+            </div>
+            <div class="mini-card purple">
+              <h4>Safety Gate</h4>
+              <p>外部源产物必须回到教材、课标、讲义、题库或人工审核中获得证据支持；找不到教育语料支撑则保留为 proposed 或丢弃。</p>
+            </div>
+          </div>
+
+          <table class="matrix" style="margin-top:14px;">
+            <thead><tr><th>缺口类型</th><th>外部源如何参与</th><th>产物状态</th><th>入图条件</th></tr></thead>
+            <tbody>
+              <tr><td><strong>缺定义 / 缺别名</strong></td><td>Wikipedia 页面摘要、重定向、同义标题；Wikidata label / alias</td><td>CandidateAlias / CandidateDefinition</td><td>教材或课标术语匹配，且人工或双信源验证通过</td></tr>
+              <tr><td><strong>缺上位 / 组成关系</strong></td><td>Wikidata subclass / part-of claim，ConceptNet IsA / PartOf</td><td>CandidateRelation</td><td>不违反 schema 和环检测，并有课程结构或教材语料佐证</td></tr>
+              <tr><td><strong>缺相关概念</strong></td><td>Wikipedia 内链、分类、ConceptNet RelatedTo</td><td>CandidateConcept</td><td>回到教育语料中找到 evidence span 后才能进入 verify</td></tr>
+              <tr><td><strong>缺先修候选</strong></td><td>ConceptNet prerequisite 类关系、Wikidata 相关 claim 仅作提示</td><td>CandidatePrerequisite</td><td>必须由教材目录序、课标层级或专家审核支撑，外部源不能单独批准</td></tr>
+            </tbody>
+          </table>
+
+          <div class="note" style="margin-top:14px;">
+            外部开放知识源在这里的角色是“扩展候选空间”，不是“替代教育语料”。它们帮助系统知道往哪里找，但所有正式知识仍必须经过 proposed → verify/review → approved 的受控流程。
+          </div>
+        </div>
+      </div>
+
+      <div class="panel" style="margin-top:16px;">
+        <div class="panel-head"><h3>4.3 教育图记忆闭环</h3><span class="tag">write → update → read → teach → write back</span></div>
         <div class="panel-body">
           <div class="loop-grid">
             <div class="rail">
-              <div class="mini-card blue"><h4>Shared Memory</h4><p>Domain KG、Resource Graph、Pedagogical Rules。低频更新，所有学生共享。</p></div>
+              <div class="mini-card blue"><h4>Shared Memory</h4><p>Educational KG、Pedagogical Rules。知识结构与资源节点低频或中频受控更新，所有学生共享。</p></div>
               <div class="mini-card green"><h4>Learner Overlay</h4><p>StudentConceptState、StudentSkillState、StudentMisconceptionState。高频更新。</p></div>
               <div class="mini-card orange"><h4>Evidence Store</h4><p>Attempt、ErrorSpan、HintUse、Feedback、Assessment。只追加，不覆盖。</p></div>
             </div>
@@ -1014,15 +1099,15 @@ reject(t) if vote_score(t) &lt; β</pre>
 
             <div class="rail">
               <div class="mini-card red"><h4>Evolution Buffer</h4><p>从大量证据中发现新误区、新题型、新资源映射、新先修候选。</p></div>
-              <div class="mini-card purple"><h4>Validator</h4><p>规则校验 + 统计支持 + LLM critic + 教师审核 + A/B 效果验证。</p></div>
-              <div class="mini-card green"><h4>Graph Patch</h4><p>通过 patch 合并到 Domain KG / Resource Graph，保留版本和回滚路径。</p></div>
+              <div class="mini-card purple"><h4>Validator</h4><p>规则校验 + 统计支持 + LLM critic + 教师审核 + review_log 留痕。</p></div>
+              <div class="mini-card green"><h4>Graph Patch</h4><p>通过 patch 合并到 Educational KG，保留版本和回滚路径。</p></div>
             </div>
           </div>
         </div>
       </div>
 
       <div class="panel" style="margin-top:16px;">
-        <div class="panel-head"><h3>4.2 状态更新机制</h3><span class="tag">not pure LLM</span></div>
+        <div class="panel-head"><h3>4.4 状态更新机制</h3><span class="tag">not pure LLM</span></div>
         <div class="panel-body">
           <div class="formula">
             <div class="formula-card">
@@ -1055,16 +1140,15 @@ reject(t) if vote_score(t) &lt; β</pre>
       </div>
 
       <div class="panel" style="margin-top:16px;">
-        <div class="panel-head"><h3>4.3 Self-Evolving 不等于自动乱改图</h3><span class="tag">candidate → validate → commit</span></div>
+        <div class="panel-head"><h3>4.5 Self-Evolving 不等于自动乱改图</h3><span class="tag">candidate → validate → commit</span></div>
         <div class="panel-body">
           <div class="pipeline">
             <div class="step orange"><b><span class="idx">1</span>Pattern Mining</b><ul><li>聚合同类错误</li><li>发现高频未知误区</li><li>识别资源失效</li></ul></div>
             <div class="step blue"><b><span class="idx">2</span>Candidate Build</b><ul><li>CandidateMisconception</li><li>CandidateRelation</li><li>CandidateTemplate</li></ul></div>
             <div class="step purple"><b><span class="idx">3</span>Evidence Attach</b><ul><li>support_count</li><li>student_coverage</li><li>example_attempts</li></ul></div>
             <div class="step red"><b><span class="idx">4</span>Validation</b><ul><li>schema constraint</li><li>LLM critic</li><li>teacher review</li></ul></div>
-            <div class="step green"><b><span class="idx">5</span>A/B Test</b><ul><li>诊断准确率</li><li>反馈质量</li><li>学习收益</li></ul></div>
-            <div class="step blue"><b><span class="idx">6</span>Graph Patch</b><ul><li>versioned commit</li><li>rollback</li><li>audit log</li></ul></div>
-            <div class="step"><b><span class="idx">7</span>Monitor</b><ul><li>drift detection</li><li>conflict queue</li><li>quality score</li></ul></div>
+            <div class="step blue"><b><span class="idx">5</span>Graph Patch</b><ul><li>versioned commit</li><li>rollback</li><li>audit log</li></ul></div>
+            <div class="step"><b><span class="idx">6</span>Monitor</b><ul><li>drift detection</li><li>conflict queue</li><li>quality score</li></ul></div>
           </div>
         </div>
       </div>
@@ -1079,7 +1163,7 @@ reject(t) if vote_score(t) &lt; β</pre>
       <div class="panel">
         <div class="panel-head"><h3>5.1 工程组件</h3><span class="tag">serving stack</span></div>
         <div class="panel-body grid-4">
-          <div class="mini-card blue"><h4>Graph DB</h4><p>Domain KG、Resource Graph、Evidence Graph、Learner State Graph。支持 k-hop traversal 和 schema constraint。</p></div>
+          <div class="mini-card blue"><h4>Graph DB</h4><p>Educational KG、Evidence Graph、Learner State Graph。支持 k-hop traversal、schema constraint 和跨层查询。</p></div>
           <div class="mini-card green"><h4>Vector DB</h4><p>教材片段、视频转写、图片描述、题目解析 embedding，用于候选召回。</p></div>
           <div class="mini-card orange"><h4>Event Store</h4><p>原始交互、评分结果、模型版本、prompt 版本、状态更新日志，只追加可回放。</p></div>
           <div class="mini-card purple"><h4>Object Storage</h4><p>PDF、图片、视频、音频、OCR 结果、ASR 文本和切片资源。</p></div>
@@ -1119,7 +1203,7 @@ reject(t) if vote_score(t) &lt; β</pre>
       </div>
     </section>
 
-    <p class="foot">Design principle: shared domain-resource graph + student-specific learner overlay + append-only evidence graph + controlled evolution buffer.</p>
+    <p class="foot">Design principle: unified educational KG + student-specific learner overlay + append-only evidence graph + controlled evolution buffer.</p>
   </main>
 </body>
 </html>

@@ -1,0 +1,27 @@
+book: dlbook
+title: Deep Learning（Goodfellow, Bengio & Courville）
+lang: en
+type: html
+# 官方网页版（deeplearningbook.org 仅提供 HTML，无官方 PDF）。
+# 正文可抽取（已验证）；数学公式会碎行，属可接受噪声（同 pdftotext）。
+sections:
+  - [1, "1", "Introduction", "https://www.deeplearningbook.org/contents/intro.html"]
+  - [2, "2", "Linear Algebra", "https://www.deeplearningbook.org/contents/linear_algebra.html"]
+  - [3, "3", "Probability and Information Theory", "https://www.deeplearningbook.org/contents/prob.html"]
+  - [4, "4", "Numerical Computation", "https://www.deeplearningbook.org/contents/numerical.html"]
+  - [5, "5", "Machine Learning Basics", "https://www.deeplearningbook.org/contents/ml.html"]
+  - [6, "6", "Deep Feedforward Networks", "https://www.deeplearningbook.org/contents/mlp.html"]
+  - [7, "7", "Regularization for Deep Learning", "https://www.deeplearningbook.org/contents/regularization.html"]
+  - [8, "8", "Optimization for Training Deep Models", "https://www.deeplearningbook.org/contents/optimization.html"]
+  - [9, "9", "Convolutional Networks", "https://www.deeplearningbook.org/contents/convnets.html"]
+  - [10, "10", "Sequence Modeling: Recurrent and Recursive Nets", "https://www.deeplearningbook.org/contents/rnn.html"]
+  - [11, "11", "Practical Methodology", "https://www.deeplearningbook.org/contents/guidelines.html"]
+  - [12, "12", "Applications", "https://www.deeplearningbook.org/contents/applications.html"]
+  - [13, "13", "Linear Factor Models", "https://www.deeplearningbook.org/contents/linear_factors.html"]
+  - [14, "14", "Autoencoders", "https://www.deeplearningbook.org/contents/autoencoders.html"]
+  - [15, "15", "Representation Learning", "https://www.deeplearningbook.org/contents/representation.html"]
+  - [16, "16", "Structured Probabilistic Models for Deep Learning", "https://www.deeplearningbook.org/contents/graphical_models.html"]
+  - [17, "17", "Monte Carlo Methods", "https://www.deeplearningbook.org/contents/monte_carlo.html"]
+  - [18, "18", "Confronting the Partition Function", "https://www.deeplearningbook.org/contents/partition.html"]
+  - [19, "19", "Approximate Inference", "https://www.deeplearningbook.org/contents/inference.html"]
+  - [20, "20", "Deep Generative Models", "https://www.deeplearningbook.org/contents/generative_models.html"]

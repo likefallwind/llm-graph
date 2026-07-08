@@ -1,0 +1,22 @@
+book: prml
+title: Pattern Recognition and Machine Learning（Bishop 2006）
+lang: en
+type: pdf
+pdf_url: https://www.microsoft.com/en-us/research/uploads/prod/2006/01/Bishop-Pattern-Recognition-and-Machine-Learning-2006.pdf
+# 微软官方公开 PDF（直连需浏览器 UA，本地已预下载 data/docs/prml.pdf）。
+# 页码为 PDF 页 = 书页 + 20（已逐章抽查）；附录（p695 起）不收。
+sections:
+  - [1, "1", "Introduction", "pages:21-86"]
+  - [2, "2", "Probability Distributions", "pages:87-156"]
+  - [3, "3", "Linear Models for Regression", "pages:157-198"]
+  - [4, "4", "Linear Models for Classification", "pages:199-244"]
+  - [5, "5", "Neural Networks", "pages:245-310"]
+  - [6, "6", "Kernel Methods", "pages:311-344"]
+  - [7, "7", "Sparse Kernel Machines", "pages:345-378"]
+  - [8, "8", "Graphical Models", "pages:379-442"]
+  - [9, "9", "Mixture Models and EM", "pages:443-480"]
+  - [10, "10", "Approximate Inference", "pages:481-542"]
+  - [11, "11", "Sampling Methods", "pages:543-578"]
+  - [12, "12", "Continuous Latent Variables", "pages:579-624"]
+  - [13, "13", "Sequential Data", "pages:625-672"]
+  - [14, "14", "Combining Models", "pages:673-694"]

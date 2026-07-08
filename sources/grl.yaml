@@ -1,0 +1,17 @@
+book: grl
+title: Graph Representation Learning（William Hamilton）
+lang: en
+type: pdf
+pdf_url: https://www.cs.mcgill.ca/~wlh/grl_book/files/GRL_Book.pdf
+# 作者官方公开的出版前版本 PDF。页码为 PDF 页（章起始页由章标题定位）；
+# Conclusion（p131 起）与参考文献不收。
+sections:
+  - [1, "1", "Introduction", "pages:9-16"]
+  - [2, "2", "Background and Traditional Approaches", "pages:17-36"]
+  - [3, "3", "Neighborhood Reconstruction Methods", "pages:37-45"]
+  - [4, "4", "Multi-relational Data and Knowledge Graphs", "pages:46-54"]
+  - [5, "5", "The Graph Neural Network Model", "pages:55-75"]
+  - [6, "6", "Graph Neural Networks in Practice", "pages:76-82"]
+  - [7, "7", "Theoretical Motivations", "pages:83-110"]
+  - [8, "8", "Traditional Graph Generation Approaches", "pages:111-115"]
+  - [9, "9", "Deep Generative Models", "pages:116-130"]
