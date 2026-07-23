@@ -183,7 +183,7 @@ def cmd_mine(args):
     elif args.action == "categories":
         lines = mine.category_edges(conn)
     else:
-        lines = wikidata.mine_edges(conn)
+        lines = wikidata.mine_edges(conn, create_spine=args.spine)
     for line in lines:
         print(line)
     print(f"共 {len(lines)} 条" if lines else "无新发现")
@@ -560,6 +560,8 @@ def main():
     s = sub.add_parser("mine", help="结构挖掘（零 LLM）：aliases 重定向→别名 / categories 分类→候选边"
                                     " / wikidata QID关系→候选边+同概念仲裁")
     s.add_argument("action", choices=["aliases", "categories", "wikidata"])
+    s.add_argument("--spine", action="store_true",
+                   help="wikidata 专用：给现有节点的 P279/P361 上位类补建脊节点（落地语料），把孤岛接回主干")
     s.set_defaults(fn=cmd_mine)
 
     s = sub.add_parser("review", help="逐条审核 proposed 节点与边（--audit N 抽检自动放行的条目）")

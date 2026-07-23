@@ -74,6 +74,35 @@ def wikidata_claims(qids: list[str], props: list[str]) -> dict:
     return out
 
 
+def wikidata_sitelinks(qids: list[str], langs=("zh", "en")) -> dict:
+    """批量把 QID 解析到维基百科页面标题（脊节点落地用）。
+
+    返回 {qid: {"lang": .., "title": .., "label": ..}}；按 langs 顺序取第一个有
+    对应维基页的语言（zh 优先），都没有则只回 label（无 title，调用方据此跳过）。
+    """
+    wikis = [f"{l}wiki" for l in langs]
+    out = {}
+    for i in range(0, len(qids), 50):
+        batch = qids[i:i + 50]
+        data = _get("wd", {"action": "wbgetentities", "ids": "|".join(batch),
+                           "props": "sitelinks|labels", "format": "json", "utf8": 1})
+        for qid, ent in data.get("entities", {}).items():
+            labels = ent.get("labels", {})
+            label = ""
+            for l in list(langs) + ["en"]:
+                if labels.get(l, {}).get("value"):
+                    label = labels[l]["value"]
+                    break
+            rec = {"lang": None, "title": None, "label": label}
+            sitelinks = ent.get("sitelinks", {})
+            for wl, l in zip(wikis, langs):
+                if sitelinks.get(wl, {}).get("title"):
+                    rec["lang"], rec["title"] = l, sitelinks[wl]["title"]
+                    break
+            out[qid] = rec
+    return out
+
+
 def fetch_page(title: str, lang: str) -> dict | None:
     """整页抓取：正文 + revision_id + 指向本页的重定向 + 分类 + 内链。
 

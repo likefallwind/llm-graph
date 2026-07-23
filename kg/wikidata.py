@@ -9,7 +9,7 @@
 import json
 import time
 
-from . import db, wiki
+from . import corpus, db, wiki
 
 # 只关心能映射到图谱边语义的属性
 PROPS = {
@@ -17,6 +17,8 @@ PROPS = {
     "P361": ("part_of", "「{a}」是「{b}」的组成部分"),
     "P737": ("related_to", "「{a}」受「{b}」启发"),  # 特殊方向处理见 mine_edges
 }
+# 分类脊只沿这两种分类关系向上补节点（P737 是启发关系，不是上位，不建脊）
+SPINE_PROPS = ("P279", "P361")
 CONFIDENCE = 0.7  # 人类校对过的结构，比分类挖掘（0.5）可信，但语义映射仍需审
 
 
@@ -81,8 +83,70 @@ def relation_between(conn, qid_a: str, qid_b: str) -> list[str]:
     return out
 
 
-def mine_edges(conn) -> list[str]:
-    """QID 间 claims -> 候选边（proposed）；同 QID 节点对 -> 疑似同概念告警。"""
+def materialize_spine(conn, nq: dict, qid_to_node: dict, names: dict) -> list[str]:
+    """给现有节点的 P279/P361 上位类 QID 补建脊节点（proposed，落地语料）。
+
+    只上补一层（不递归，避免爬到 Wikidata 顶层抽象类）：收集所有现有节点在
+    SPINE_PROPS 上、尚未成节点的目标 QID -> 解析到维基页 -> 抓页入库 -> 建 proposed
+    节点并映射 QID。定义留空（不让 LLM 编，日后 ingest 从语料补）。就地更新
+    nq/qid_to_node/names，返回日志行。
+    """
+    wanted = {}  # {target_qid: 触发它的一个子节点名，用于日志}
+    for nid, qid in nq.items():
+        if qid_to_node.get(qid) != nid:
+            continue
+        for prop in SPINE_PROPS:
+            for t in _claims_of(conn, qid).get(prop, []):
+                if t not in qid_to_node and t not in wanted:
+                    wanted[t] = names[nid]
+    if not wanted:
+        return []
+
+    lines, index = [], corpus.title_index(conn)
+    sitelinks = wiki.wikidata_sitelinks(list(wanted))
+    for t, sl in sitelinks.items():
+        child = wanted[t]
+        title = sl.get("title")
+        if not title:
+            lines.append(f"✗ 脊类 {t}（{sl.get('label') or '无标签'}）无维基页，跳过（{child} 的上位）")
+            continue
+        try:
+            page = corpus.find_page(conn, title, index) or wiki.fetch_page(title, sl["lang"])
+        except Exception as e:  # 单页抓取失败（网络超时等）不杀整轮，跳过下轮再补
+            lines.append(f"✗ 脊类「{title}」抓取失败，跳过（{type(e).__name__}）")
+            continue
+        if not page or len(page["text"]) < wiki.MIN_USEFUL_CHARS or corpus._is_disambiguation(page):
+            lines.append(f"✗ 脊类「{title}」正文无效或消歧义页，跳过（{child} 的上位）")
+            continue
+        corpus.save_page(conn, page)
+        # 该上位类可能已作为节点存在（尚未映射 QID）：按抓取归一化后的正式标题/别名复用
+        existing = db.find_by_name_or_alias(conn, page["title"]) or \
+            (db.find_by_name_or_alias(conn, sl["label"]) if sl.get("label") else None)
+        if existing:
+            # 复用已有节点：不动它已有的页面映射，只记录 QID 让本次能连边
+            node_id = existing["id"]
+            names[node_id] = existing["name"]
+        else:
+            aliases = [sl["label"]] if sl.get("label") and sl["label"] != page["title"] else []
+            node_id = db.add_node(conn, page["title"], aliases=aliases,
+                                  status="proposed", source=f"wikidata:spine:{t}")
+            corpus.map_node(conn, node_id, page)
+            conn.execute("INSERT OR REPLACE INTO page_qid(lang, page_id, qid, fetched_at)"
+                         " VALUES (?,?,?,?)", (page["lang"], page["page_id"], t, time.time()))
+            names[node_id] = page["title"]
+            lines.append(f"＋脊节点「{page['title']}」（{t}，{child} 的上位）")
+        conn.commit()  # 逐个落盘，网络中断也不丢已建的脊节点
+        nq[node_id] = t
+        qid_to_node[t] = node_id
+    return lines
+
+
+def mine_edges(conn, create_spine=False) -> list[str]:
+    """QID 间 claims -> 候选边（proposed）；同 QID 节点对 -> 疑似同概念告警。
+
+    create_spine=True 时，先给现有节点的 P279/P361 上位类补建脊节点（落地语料），
+    再连边——让分类脊长出来、把孤岛接回主干。
+    """
     lines = []
     n_pages = ensure_qids(conn)
     n_claims = ensure_claims(conn)
@@ -103,6 +167,8 @@ def mine_edges(conn) -> list[str]:
                          f"——同一概念请合并，共享来源页则需拆分映射，请人工裁决")
 
     qid_to_node = {qid: ids[0] for qid, ids in by_qid.items() if len(ids) == 1}
+    if create_spine:
+        lines += materialize_spine(conn, nq, qid_to_node, names)
     for nid, qid in nq.items():
         if qid_to_node.get(qid) != nid:
             continue  # 歧义 QID（多节点共用）：claims 归属不明，不做边的源头
