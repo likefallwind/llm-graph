@@ -24,6 +24,7 @@ relations:
     acyclic: true
     minimum_evidence: {explicit_high_authority: 1, independent_standard_sources: 2}
     insufficient_alone: [hyperlink, cooccurrence, category_membership, toc_order]
+    high_impact_review: true
 
   subfield_of:
     family: taxonomy
@@ -35,6 +36,7 @@ relations:
     acyclic: true
     minimum_evidence: {explicit_high_authority: 1, independent_standard_sources: 2}
     insufficient_alone: [hyperlink, cooccurrence, toc_order]
+    high_impact_review: true
 
   part_of:
     family: composition

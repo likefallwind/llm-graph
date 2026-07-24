@@ -4,7 +4,7 @@ from __future__ import annotations
 from . import store, validators
 
 
-POLICY_VERSION = "claim-policy-1"
+POLICY_VERSION = "claim-policy-3"
 
 
 def shadow_claim(conn, claim_id: int) -> dict:

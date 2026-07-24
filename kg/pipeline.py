@@ -240,8 +240,31 @@ def status(conn) -> dict:
     result["claims_by_status"] = {
         row["status"]: row["n"] for row in conn.execute(
             "SELECT status,COUNT(*) n FROM claims GROUP BY status")}
+    result["aliases_by_status"] = {
+        row["status"]: row["n"] for row in conn.execute(
+            "SELECT status,COUNT(*) n FROM aliases GROUP BY status")}
+    result["entity_resolution"] = {
+        "events": conn.execute(
+            "SELECT COUNT(*) FROM entity_resolution_events").fetchone()[0],
+        "type_conflicts": conn.execute(
+            "SELECT COUNT(*) FROM entity_type_assertions"
+            " WHERE status='conflict'").fetchone()[0],
+        "alignment_candidates": {
+            row["status"]: row["n"] for row in conn.execute(
+                "SELECT status,COUNT(*) n FROM entity_alignment_candidates"
+                " GROUP BY status")
+        },
+    }
     result["latest_shadow"] = [
         dict(row) for row in conn.execute(
             "SELECT target_id,outcome,reason,created_at FROM decisions"
             " WHERE decided_by='shadow' ORDER BY id DESC LIMIT 10")]
+    result["alignment_review"] = [
+        dict(row) for row in conn.execute(
+            "SELECT ac.id,ac.observed_name,e.canonical_name target,"
+            " ac.score,ac.evidence_count,ac.independent_sources"
+            " FROM entity_alignment_candidates ac"
+            " JOIN entities e ON e.id=ac.entity_id"
+            " WHERE ac.status='suspected'"
+            " ORDER BY ac.score DESC,ac.id LIMIT 10")]
     return result

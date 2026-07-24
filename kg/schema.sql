@@ -58,11 +58,83 @@ CREATE TABLE IF NOT EXISTS aliases (
     language          TEXT NOT NULL DEFAULT '',
     alias_type        TEXT NOT NULL DEFAULT 'alias',
     source_snapshot_id INTEGER REFERENCES source_snapshots(id),
+    status            TEXT NOT NULL DEFAULT 'proposed'
+                      CHECK(status IN ('proposed','verified','rejected')),
+    evidence_excerpt  TEXT NOT NULL DEFAULT '',
     created_at        REAL NOT NULL,
     UNIQUE(entity_id, normalized_name, language)
 );
 CREATE INDEX IF NOT EXISTS idx_aliases_normalized
     ON aliases(normalized_name);
+
+CREATE TABLE IF NOT EXISTS entity_type_assertions (
+    id                 INTEGER PRIMARY KEY,
+    entity_id          INTEGER NOT NULL REFERENCES entities(id),
+    observed_type      TEXT NOT NULL,
+    source_snapshot_id INTEGER REFERENCES source_snapshots(id),
+    observation_id     INTEGER REFERENCES observations(id),
+    status             TEXT NOT NULL
+                       CHECK(status IN ('consistent','conflict')),
+    reason             TEXT NOT NULL DEFAULT '',
+    created_at         REAL NOT NULL,
+    UNIQUE(observation_id)
+);
+CREATE INDEX IF NOT EXISTS idx_entity_type_assertions_entity
+    ON entity_type_assertions(entity_id, status);
+
+CREATE TABLE IF NOT EXISTS entity_resolution_events (
+    id                 INTEGER PRIMARY KEY,
+    observation_id     INTEGER REFERENCES observations(id),
+    source_snapshot_id INTEGER REFERENCES source_snapshots(id),
+    raw_name           TEXT NOT NULL,
+    deterministic_name TEXT NOT NULL,
+    llm_normalized_name TEXT NOT NULL DEFAULT '',
+    entity_id          INTEGER REFERENCES entities(id),
+    selected_candidate_id INTEGER REFERENCES entities(id),
+    outcome            TEXT NOT NULL,
+    matched_by         TEXT NOT NULL DEFAULT '',
+    candidate_ids      TEXT NOT NULL DEFAULT '[]',
+    confidence         REAL,
+    reason             TEXT NOT NULL DEFAULT '',
+    resolver_version   TEXT NOT NULL,
+    created_at         REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_entity_resolution_events_observation
+    ON entity_resolution_events(observation_id);
+
+CREATE TABLE IF NOT EXISTS entity_alignment_candidates (
+    id                   INTEGER PRIMARY KEY,
+    observed_name        TEXT NOT NULL,
+    normalized_name      TEXT NOT NULL,
+    entity_id            INTEGER NOT NULL REFERENCES entities(id),
+    relation             TEXT NOT NULL DEFAULT 'suspected_same_entity'
+                         CHECK(relation='suspected_same_entity'),
+    status               TEXT NOT NULL DEFAULT 'suspected'
+                         CHECK(status IN ('suspected','verified','rejected')),
+    score                REAL NOT NULL DEFAULT 0.0,
+    evidence_count       INTEGER NOT NULL DEFAULT 0,
+    independent_sources  INTEGER NOT NULL DEFAULT 0,
+    policy_version       TEXT NOT NULL,
+    created_at           REAL NOT NULL,
+    updated_at           REAL NOT NULL,
+    UNIQUE(normalized_name, entity_id)
+);
+CREATE INDEX IF NOT EXISTS idx_entity_alignment_candidates_queue
+    ON entity_alignment_candidates(status, score DESC);
+
+CREATE TABLE IF NOT EXISTS entity_alignment_evidence (
+    id                 INTEGER PRIMARY KEY,
+    candidate_id       INTEGER NOT NULL REFERENCES entity_alignment_candidates(id),
+    source_snapshot_id INTEGER REFERENCES source_snapshots(id),
+    observation_id     INTEGER REFERENCES observations(id),
+    confidence         REAL NOT NULL CHECK(confidence >= 0.0 AND confidence <= 1.0),
+    reason             TEXT NOT NULL DEFAULT '',
+    resolver_version   TEXT NOT NULL,
+    created_at         REAL NOT NULL,
+    UNIQUE(candidate_id, source_snapshot_id)
+);
+CREATE INDEX IF NOT EXISTS idx_entity_alignment_evidence_candidate
+    ON entity_alignment_evidence(candidate_id);
 
 CREATE TABLE IF NOT EXISTS entity_external_ids (
     id          INTEGER PRIMARY KEY,

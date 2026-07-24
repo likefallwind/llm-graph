@@ -20,16 +20,23 @@ def materialize(conn, batch: ObservationBatch, *, source_snapshot_id: int,
     entity_ids: list[int] = []
     claim_ids: list[int] = []
     rejected = list(batch.rejected)
+    suspected: set[str] = set()
 
     for item in batch.entities:
         observation_id = store.add_observation(
             conn, run_id, source_snapshot_id,
             subject_text=item.name, subject_type=item.entity_type,
             excerpt=item.evidence, location=item.location, payload=item.raw)
-        result = entity_resolution.resolve(conn, item)
+        result = entity_resolution.resolve(
+            conn, item, source_snapshot_id=source_snapshot_id,
+            observation_id=observation_id)
         if result.entity_id is None:
-            store.resolve_observation(conn, observation_id, False)
-            rejected.append(f"实体「{item.name}」消歧失败：{result.reason}")
+            if result.outcome == "suspected_same_entity":
+                suspected.add(item.name.casefold())
+                rejected.append(f"实体「{item.name}」疑似对齐，等待更多证据：{result.reason}")
+            else:
+                store.resolve_observation(conn, observation_id, False)
+                rejected.append(f"实体「{item.name}」消歧失败：{result.reason}")
             continue
         resolved[item.name.casefold()] = result.entity_id
         entity_ids.append(result.entity_id)
@@ -39,8 +46,13 @@ def materialize(conn, batch: ObservationBatch, *, source_snapshot_id: int,
             mechanically_valid=True, extraction_run_id=run_id,
             metadata={"resolution": result.outcome, "resolution_reason": result.reason})
         for alias in item.aliases:
-            store.add_alias(
-                conn, result.entity_id, alias, source_snapshot_id=source_snapshot_id)
+            try:
+                store.add_alias(
+                    conn, result.entity_id, alias,
+                    source_snapshot_id=source_snapshot_id, status="proposed",
+                    evidence_excerpt=item.evidence)
+            except ValueError as exc:
+                rejected.append(f"实体「{item.name}」别名「{alias}」未登记：{exc}")
         store.resolve_observation(conn, observation_id, True)
 
     for item in batch.claims:
@@ -52,9 +64,16 @@ def materialize(conn, batch: ObservationBatch, *, source_snapshot_id: int,
         subject_id = resolved.get(item.subject.casefold())
         object_id = resolved.get(item.object.casefold())
         if not subject_id or not object_id:
-            store.resolve_observation(conn, observation_id, False)
-            rejected.append(
-                f"Claim「{item.subject} -{item.relation}-> {item.object}」端点未完成消歧")
+            if (item.subject.casefold() in suspected
+                    or item.object.casefold() in suspected):
+                rejected.append(
+                    f"Claim「{item.subject} -{item.relation}-> {item.object}」"
+                    "等待疑似实体对齐")
+            else:
+                store.resolve_observation(conn, observation_id, False)
+                rejected.append(
+                    f"Claim「{item.subject} -{item.relation}-> {item.object}」"
+                    "端点未完成消歧")
             continue
         try:
             claim = store.add_claim(

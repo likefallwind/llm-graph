@@ -133,21 +133,64 @@ def get_entity(conn, entity_id: int) -> models.Entity | None:
 
 
 def add_alias(conn, entity_id: int, name: str, *, language: str = "",
-              alias_type: str = "alias", source_snapshot_id: int | None = None) -> int:
+              alias_type: str = "alias", source_snapshot_id: int | None = None,
+              status: str = "proposed",
+              evidence_excerpt: str = "") -> int | None:
     normalized = normalize_name(name)
     if not normalized:
         raise ValueError("别名不能为空")
+    if status not in {"proposed", "verified", "rejected"}:
+        raise ValueError(f"非法 alias 状态: {status}")
+    entity = get_entity(conn, entity_id)
+    if not entity:
+        raise ValueError(f"实体不存在: {entity_id}")
+    if normalized == entity.normalized_name:
+        return None
+    canonical = conn.execute(
+        "SELECT id FROM entities WHERE normalized_name=? AND status!='rejected'",
+        (normalized,)).fetchone()
+    if canonical and canonical["id"] != entity_id:
+        raise ValueError(
+            f"别名「{name}」与实体 {canonical['id']} 的规范名冲突")
     conn.execute(
         "INSERT OR IGNORE INTO aliases"
-        " (entity_id,name,normalized_name,language,alias_type,source_snapshot_id,created_at)"
-        " VALUES (?,?,?,?,?,?,?)",
+        " (entity_id,name,normalized_name,language,alias_type,source_snapshot_id,"
+        "  status,evidence_excerpt,created_at)"
+        " VALUES (?,?,?,?,?,?,?,?,?)",
         (entity_id, name.strip(), normalized, language, alias_type,
-         source_snapshot_id, time.time()))
+         source_snapshot_id, status, evidence_excerpt.strip(), time.time()))
     row = conn.execute(
-        "SELECT id FROM aliases WHERE entity_id=? AND normalized_name=? AND language=?",
+        "SELECT id,status FROM aliases"
+        " WHERE entity_id=? AND normalized_name=? AND language=?",
         (entity_id, normalized, language)).fetchone()
+    if status == "verified" and row["status"] == "proposed":
+        conn.execute(
+            "UPDATE aliases SET status='verified',source_snapshot_id=COALESCE(?,source_snapshot_id),"
+            " evidence_excerpt=CASE WHEN ?!='' THEN ? ELSE evidence_excerpt END WHERE id=?",
+            (source_snapshot_id, evidence_excerpt.strip(), evidence_excerpt.strip(), row["id"]))
     conn.commit()
     return row["id"]
+
+
+def set_alias_status(conn, alias_id: int, status: str) -> None:
+    if status not in {"proposed", "verified", "rejected"}:
+        raise ValueError(f"非法 alias 状态: {status}")
+    cur = conn.execute("UPDATE aliases SET status=? WHERE id=?", (status, alias_id))
+    if not cur.rowcount:
+        raise ValueError(f"Alias 不存在: {alias_id}")
+    conn.commit()
+
+
+def update_alias_classification(conn, alias_id: int, *, status: str,
+                                alias_type: str) -> None:
+    if status not in {"proposed", "verified", "rejected"}:
+        raise ValueError(f"非法 alias 状态: {status}")
+    cur = conn.execute(
+        "UPDATE aliases SET status=?,alias_type=? WHERE id=?",
+        (status, alias_type, alias_id))
+    if not cur.rowcount:
+        raise ValueError(f"Alias 不存在: {alias_id}")
+    conn.commit()
 
 
 def add_external_id(conn, entity_id: int, provider: str, external_id: str) -> int:
@@ -276,17 +319,147 @@ def decide(conn, target_type: str, target_id: int, outcome: str, *,
         reason=reason, evidence_snapshot=evidence_snapshot, batch_id=batch_id)
 
 
-def find_entities(conn, name: str) -> list[models.Entity]:
-    """按规范名或别名精确召回；别名可对应多个实体，所以返回列表。"""
+def find_canonical_entity(conn, name: str) -> models.Entity | None:
+    """只查规范名。规范名全局唯一，是实体解析的最高优先级。"""
+    normalized = normalize_name(name)
+    row = conn.execute(
+        "SELECT * FROM entities"
+        " WHERE status!='rejected' AND normalized_name=?",
+        (normalized,)).fetchone()
+    return _entity(row) if row else None
+
+
+def find_verified_alias_entities(conn, name: str) -> list[models.Entity]:
+    """只通过已验证 alias 精确召回；同一 alias 可能仍有歧义。"""
     normalized = normalize_name(name)
     rows = conn.execute(
         "SELECT DISTINCT e.* FROM entities e"
-        " LEFT JOIN aliases a ON a.entity_id=e.id"
+        " JOIN aliases a ON a.entity_id=e.id"
         " WHERE e.status!='rejected'"
-        " AND (e.normalized_name=? OR a.normalized_name=?)"
-        " ORDER BY CASE WHEN e.normalized_name=? THEN 0 ELSE 1 END, e.id",
-        (normalized, normalized, normalized)).fetchall()
+        " AND a.status='verified' AND a.normalized_name=?"
+        " ORDER BY e.id",
+        (normalized,)).fetchall()
     return [_entity(row) for row in rows]
+
+
+def find_entities(conn, name: str) -> list[models.Entity]:
+    """规范名优先；仅在规范名未命中时查询已验证 alias。"""
+    canonical = find_canonical_entity(conn, name)
+    return [canonical] if canonical else find_verified_alias_entities(conn, name)
+
+
+def add_type_assertion(conn, entity_id: int, observed_type: str, *,
+                       source_snapshot_id: int | None = None,
+                       observation_id: int | None = None,
+                       status: str, reason: str = "") -> int:
+    if status not in {"consistent", "conflict"}:
+        raise ValueError(f"非法类型断言状态: {status}")
+    cur = conn.execute(
+        "INSERT OR IGNORE INTO entity_type_assertions"
+        " (entity_id,observed_type,source_snapshot_id,observation_id,status,reason,created_at)"
+        " VALUES (?,?,?,?,?,?,?)",
+        (entity_id, observed_type, source_snapshot_id, observation_id,
+         status, reason, time.time()))
+    conn.commit()
+    return cur.lastrowid
+
+
+def add_resolution_event(conn, *, raw_name: str, deterministic_name: str,
+                         outcome: str, matched_by: str,
+                         resolver_version: str, reason: str = "",
+                         llm_normalized_name: str = "",
+                         entity_id: int | None = None,
+                         selected_candidate_id: int | None = None,
+                         observation_id: int | None = None,
+                         source_snapshot_id: int | None = None,
+                         candidate_ids: list[int] | None = None,
+                         confidence: float | None = None) -> int:
+    cur = conn.execute(
+        "INSERT INTO entity_resolution_events"
+        " (observation_id,source_snapshot_id,raw_name,deterministic_name,"
+        "  llm_normalized_name,entity_id,selected_candidate_id,outcome,matched_by,"
+        "  candidate_ids,confidence,reason,resolver_version,created_at)"
+        " VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        (observation_id, source_snapshot_id, raw_name, deterministic_name,
+         llm_normalized_name, entity_id, selected_candidate_id, outcome,
+         matched_by, _json(candidate_ids or []),
+         confidence, reason, resolver_version, time.time()))
+    conn.commit()
+    return cur.lastrowid
+
+
+def add_alignment_evidence(
+        conn, *, observed_name: str, entity_id: int, confidence: float,
+        policy_version: str, resolver_version: str, reason: str = "",
+        source_snapshot_id: int | None = None,
+        observation_id: int | None = None,
+        direct_verify: bool = False) -> dict:
+    """累计 suspected_same_entity 证据，并在跨来源门槛满足时验证 alias。"""
+    normalized = normalize_name(observed_name)
+    now = time.time()
+    conn.execute(
+        "INSERT OR IGNORE INTO entity_alignment_candidates"
+        " (observed_name,normalized_name,entity_id,relation,status,score,"
+        "  evidence_count,independent_sources,policy_version,created_at,updated_at)"
+        " VALUES (?,?,?,'suspected_same_entity','suspected',0.0,0,0,?,?,?)",
+        (observed_name.strip(), normalized, entity_id, policy_version, now, now))
+    candidate = conn.execute(
+        "SELECT * FROM entity_alignment_candidates"
+        " WHERE normalized_name=? AND entity_id=?",
+        (normalized, entity_id)).fetchone()
+    conn.execute(
+        "INSERT OR IGNORE INTO entity_alignment_evidence"
+        " (candidate_id,source_snapshot_id,observation_id,confidence,reason,"
+        "  resolver_version,created_at) VALUES (?,?,?,?,?,?,?)",
+        (candidate["id"], source_snapshot_id, observation_id, confidence,
+         reason, resolver_version, now))
+
+    evidence_rows = conn.execute(
+        "SELECT ae.confidence,s.independence_group"
+        " FROM entity_alignment_evidence ae"
+        " LEFT JOIN source_snapshots ss ON ss.id=ae.source_snapshot_id"
+        " LEFT JOIN sources s ON s.id=ss.source_id"
+        " WHERE ae.candidate_id=?",
+        (candidate["id"],)).fetchall()
+    by_group: dict[str, float] = {}
+    for row in evidence_rows:
+        group = row["independence_group"]
+        if not group:
+            # 无可溯源来源的证据不参与跨来源自动升级。
+            continue
+        by_group[group] = max(by_group.get(group, 0.0), row["confidence"])
+    score = 0.0
+    if by_group:
+        remaining = 1.0
+        for value in by_group.values():
+            remaining *= 1.0 - value
+        score = 1.0 - remaining
+    count = len(evidence_rows)
+    groups = len(by_group)
+    conn.execute(
+        "UPDATE entity_alignment_candidates"
+        " SET score=?,evidence_count=?,independent_sources=?,updated_at=?"
+        " WHERE id=?",
+        (score, count, groups, now, candidate["id"]))
+
+    competing = conn.execute(
+        "SELECT COUNT(*) FROM entity_alignment_candidates"
+        " WHERE normalized_name=? AND entity_id!=? AND status!='rejected'"
+        " AND score>=?",
+        (normalized, entity_id, max(0.0, score - 0.10))).fetchone()[0]
+    if ((groups >= 2 and score >= 0.95) or direct_verify) and not competing:
+        conn.execute(
+            "UPDATE entity_alignment_candidates SET status='verified',updated_at=?"
+            " WHERE id=?", (now, candidate["id"]))
+        conn.execute(
+            "UPDATE aliases SET status='verified'"
+            " WHERE entity_id=? AND normalized_name=? AND status='proposed'",
+            (entity_id, normalized))
+    conn.commit()
+    row = conn.execute(
+        "SELECT * FROM entity_alignment_candidates WHERE id=?",
+        (candidate["id"],)).fetchone()
+    return dict(row)
 
 
 def add_observation(conn, run_id: int, source_snapshot_id: int, *,

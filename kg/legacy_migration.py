@@ -158,7 +158,7 @@ def apply(conn) -> dict:
                 status="rejected" if node["status"] == "rejected" else "proposed",
                 metadata=metadata)
         for alias in json.loads(node["aliases"]):
-            store.add_alias(conn, entity.id, alias)
+            store.add_alias(conn, entity.id, alias, status="verified")
         node_map[node["id"]] = entity.id
         conn.execute(
             "INSERT INTO legacy_entity_map(legacy_node_id,entity_id,migrated_at)"

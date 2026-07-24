@@ -190,7 +190,7 @@ def cmd_mine(args):
 
 
 def cmd_pipeline(args):
-    from . import legacy_migration, pipeline
+    from . import entity_resolution, legacy_migration, pipeline
     conn = db.connect()
     if args.action == "status":
         print(json.dumps(pipeline.status(conn), ensure_ascii=False, indent=2))
@@ -201,6 +201,11 @@ def cmd_pipeline(args):
             result["next"] = "确认备份后加 --apply 执行；迁移幂等且所有非拒绝项保持 proposed"
         else:
             result = legacy_migration.apply(conn)
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return
+    if args.action == "align-aliases":
+        result = entity_resolution.review_proposed_aliases(
+            conn, limit=args.alignment_limit)
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return
     if args.action == "batch":
@@ -658,7 +663,12 @@ def main():
     s = sub.add_parser(
         "pipeline",
         help="新语料流水线：Snapshot -> Observation -> Claim/Evidence -> Shadow 决策")
-    s.add_argument("action", choices=["read", "doc", "wiki", "batch", "migrate", "status"])
+    s.add_argument(
+        "action",
+        choices=[
+            "read", "doc", "wiki", "batch", "migrate", "status",
+            "align-aliases",
+        ])
     s.add_argument("--file", help="read: UTF-8 本地语料文件")
     s.add_argument("--observations", help="read: 已有结构化 Observation JSON；缺省由 LLM 抽取")
     s.add_argument("--source", help="read: 来源 slug")
@@ -681,6 +691,9 @@ def main():
                    help="batch: 本次处理的未读 Wikipedia 页面数")
     s.add_argument("--max-entities", type=int, default=20)
     s.add_argument("--max-claims", type=int, default=30)
+    s.add_argument(
+        "--alignment-limit", type=int, default=50,
+        help="align-aliases: 本次最多复核的 proposed alias 数")
     s.add_argument("--no-verify-llm", action="store_true",
                    help="不调用 LLM 蕴含验证；Claim 将保持 needs_more_evidence 的 Shadow 结果")
     s.set_defaults(fn=cmd_pipeline)

@@ -12,12 +12,13 @@ ENTAILMENT_PROMPT = """你是有据 Claim 复核器。只能依据给出的 evid
 
 Claim：{subject} -{relation}-> {object}
 关系语义：{semantics}
+方向规则：{direction_rule}
 Evidence：
 ---
 {excerpt}
 ---
 
-判断这段 evidence 是否支持该关系的类型和方向。
+判断这段 evidence 是否支持该关系的类型和方向，并严格遵守方向规则。
 输出 JSON：
 {{"verdict":"supports|contradicts|insufficient","reason":"一句话理由"}}
 """
@@ -43,20 +44,30 @@ class Validation:
     high_authority_supports: int
 
 
-def verify_entailment(conn, claim_id: int) -> list[str]:
+def verify_entailment(conn, claim_id: int, *, force: bool = False) -> list[str]:
     claim = store.get_claim(conn, claim_id)
     if not claim:
         raise ValueError(f"Claim 不存在: {claim_id}")
     subject = store.get_entity(conn, claim.subject_id)
     object_ = store.get_entity(conn, claim.object_id)
-    semantics = registry().relation(claim.relation)["description"]
+    policy = registry().relation(claim.relation)
+    semantics = policy["description"]
+    if policy["symmetric"]:
+        direction_rule = (
+            "此关系是对称关系，交换 subject/object 不改变含义；"
+            "不得仅因 evidence 中两个端点的出现顺序相反而判定 contradicts。")
+    else:
+        direction_rule = "此关系是有向关系，必须检查 subject/object 方向。"
     lines = []
     for evidence in store.evidence_for_claim(conn, claim_id):
-        if not evidence.mechanically_valid or evidence.entailment != "unreviewed":
+        if not evidence.mechanically_valid:
+            continue
+        if not force and evidence.entailment != "unreviewed":
             continue
         answer = llm.chat_json([{"role": "user", "content": ENTAILMENT_PROMPT.format(
             subject=subject.canonical_name, relation=claim.relation,
             object=object_.canonical_name, semantics=semantics,
+            direction_rule=direction_rule,
             excerpt=evidence.excerpt)}])
         verdict = str(answer.get("verdict", "insufficient")).strip()
         if verdict not in {"supports", "contradicts", "insufficient"}:
@@ -146,7 +157,7 @@ def evaluate(conn, claim_id: int) -> Validation:
     if strong == 0:
         reasons.append("现有支持仅为弱证据")
         outcome = "needs_more_evidence"
-    elif high >= required_high or independent >= required_independent:
+    elif high >= required_high and independent >= required_independent:
         reasons.append(
             f"强证据 {strong} 条，独立来源组 {independent} 个，高权威支持 {high} 条")
         outcome = "human_review" if policy.get("high_impact_review") else "auto_approve"
