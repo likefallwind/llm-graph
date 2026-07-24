@@ -1,4 +1,4 @@
-# LLM Graph v2 Development Plan
+# LLM Graph Development Plan
 
 ## 1. Objective
 
@@ -11,7 +11,7 @@ However, an LLM response is never itself accepted as knowledge. Every published
 entity and claim must be grounded in a versioned source snapshot and mechanically
 locatable evidence.
 
-The v2 system should eventually support this loop:
+The redesigned system should eventually support this loop:
 
 ```text
 AI coverage gap
@@ -29,8 +29,10 @@ AI coverage gap
 
 ## 2. Development Strategy
 
-Keep the existing repository and reuse its useful infrastructure, but replace
-the graph representation, verification, and evaluation core.
+Develop directly on the `develop` branch. Reuse the useful infrastructure in
+the repository while replacing the graph representation, verification, and
+evaluation core in place. The stable `main` branch is the rollback boundary;
+do not maintain parallel v1/v2 packages or databases.
 
 ### Reuse
 
@@ -54,13 +56,13 @@ the graph representation, verification, and evaluation core.
 - review-history-only calibration
 - sparse-node and link-popularity-only expansion
 
-### Isolation
+### Branch Workflow
 
-- Keep v1 operational and read-only during initial v2 development.
-- Create a separate `data/kg-v2.db`.
-- Build v2 under `kg/v2/`.
-- Do not modify or migrate the current database in place.
-- Import v1 data only after the v2 vertical slice passes its quality gates.
+- All redesign work happens on `develop`.
+- `main` remains the stable baseline until the redesigned pipeline passes.
+- Refactor existing modules instead of creating versioned packages.
+- Schema changes require a database backup and reversible migrations.
+- Existing data is legacy input and must be revalidated before publication.
 
 ## 3. Non-Negotiable Invariants
 
@@ -444,7 +446,7 @@ Hard violations block publication. Soft anomalies create review tasks.
 
 ### 6.1 Gold Benchmark
 
-Create a versioned benchmark before enabling v2 automatic decisions.
+Create a versioned benchmark before enabling redesigned automatic decisions.
 
 Initial target: at least 300 human-reviewed examples covering:
 
@@ -508,26 +510,26 @@ Targets can be revised through documented benchmark evidence, not convenience.
 
 ## 7. Implementation Phases
 
-## Phase 0: Freeze and Baseline
+## Phase 0: Baseline
 
 Tasks:
 
-- freeze v1 graph expansion and real automatic approval;
+- avoid broad graph expansion and real automatic approval during the redesign;
 - back up the current database;
 - export current entities, edges, sources, evidence text, signals, and decisions;
 - record current quality and coverage metrics;
-- document known v1 failure examples.
+- document known failure examples.
 
 Deliverables:
 
 - `data/baseline/` export package;
-- `reports/v1-baseline.json`;
+- `reports/baseline.json`;
 - versioned failure-case set.
 
 Exit criteria:
 
-- v1 can be reproduced and compared with v2;
-- no v1 data is required to be mutated during v2 development.
+- the current baseline can be reproduced and compared with the redesign;
+- database changes have a reversible migration path.
 
 ## Phase 1: Ontology, Evidence Policy, and Benchmark
 
@@ -542,8 +544,8 @@ Tasks:
 
 Deliverables:
 
-- `design/ontology-v2.md`;
-- `design/evidence-policy-v2.md`;
+- `design/ontology.md`;
+- `design/evidence-policy.md`;
 - `config/relation-registry-v1.yaml`;
 - `config/ai-coverage-taxonomy-v1.yaml`;
 - `benchmarks/gold-v1.jsonl`.
@@ -553,25 +555,25 @@ Exit criteria:
 - every relation has unambiguous semantics and validation rules;
 - benchmark examples exercise every relation and major failure mode.
 
-## Phase 2: v2 Storage Foundation
+## Phase 2: Storage Foundation
 
 Tasks:
 
-- create `kg/v2/schema.sql`;
+- create `kg/schema.sql` and explicit migrations;
 - implement source and snapshot storage;
 - implement entities, aliases, and external identifiers;
 - implement claims and evidence;
 - implement immutable run records and reversible decisions;
-- implement storage-level constraints and migrations for v2 only.
+- implement storage-level constraints and reversible migrations.
 
 Proposed modules:
 
 ```text
-kg/v2/models.py
-kg/v2/store.py
-kg/v2/sources.py
-kg/v2/ontology.py
-kg/v2/runs.py
+kg/models.py
+kg/store.py
+kg/sources.py
+kg/ontology.py
+kg/runs.py
 ```
 
 Exit criteria:
@@ -602,18 +604,18 @@ Tasks:
 Proposed modules:
 
 ```text
-kg/v2/observations.py
-kg/v2/extract.py
-kg/v2/entity_resolution.py
-kg/v2/claims.py
-kg/v2/validators/
-kg/v2/decision.py
-kg/v2/pipeline.py
+kg/observations.py
+kg/extract.py
+kg/entity_resolution.py
+kg/claims.py
+kg/validators/
+kg/decision.py
+kg/pipeline.py
 ```
 
 Exit criteria:
 
-- the bounded domain runs end to end without v1 edge persistence;
+- the bounded domain runs end to end using redesigned claim persistence;
 - every output claim has inspectable evidence;
 - results can be evaluated against the gold set;
 - no real automatic decisions are required.
@@ -668,36 +670,36 @@ Exit criteria:
 - expansion is not dominated by link popularity or current graph proximity;
 - coverage progress is measurable over time.
 
-## Phase 7: v1 Import and Comparative Evaluation
+## Phase 7: Legacy Data Migration and Comparative Evaluation
 
 Tasks:
 
-- import v1 nodes as legacy entity observations;
-- import v1 edges as unverified legacy claims;
-- convert v1 source and rationale fields into legacy evidence;
+- import existing nodes as legacy entity observations;
+- import existing edges as unverified legacy claims;
+- convert existing source and rationale fields into legacy evidence;
 - re-run entity resolution and relation validation;
-- compare v1 and v2 on the same benchmark;
+- compare the baseline and redesign on the same benchmark;
 - retain rejected and changed claims for audit.
 
 Exit criteria:
 
-- no v1 item is silently promoted into the v2 published graph;
-- every migrated claim receives v2 provenance and validation state;
-- v2 outperforms v1 on agreed quality metrics.
+- no legacy item is silently promoted into the published graph;
+- every migrated claim receives complete provenance and validation state;
+- the redesign outperforms the baseline on agreed quality metrics.
 
 ## Phase 8: Cutover and Cleanup
 
 Tasks:
 
-- switch visualization and exports to v2;
-- switch routine evolution commands to the v2 pipeline;
-- archive the v1 database and modules;
-- remove replaced v1 code only after cutover;
+- switch visualization and exports to the redesigned claim model;
+- switch routine evolution commands to the redesigned pipeline;
+- archive the pre-redesign database;
+- remove replaced code only after cutover;
 - publish operational and recovery documentation.
 
 Exit criteria:
 
-- v2 is the only writable knowledge core;
+- the redesigned store is the only writable knowledge core;
 - the old system remains reproducible from its archive;
 - rollback and recovery procedures are documented.
 
@@ -707,12 +709,12 @@ The first implementation iteration should not attempt full AI coverage.
 
 Produce:
 
-1. `design/ontology-v2.md`
-2. `design/evidence-policy-v2.md`
+1. `design/ontology.md`
+2. `design/evidence-policy.md`
 3. `config/relation-registry-v1.yaml`
 4. `config/ai-coverage-taxonomy-v1.yaml`
 5. `benchmarks/gold-v1.jsonl`
-6. `kg/v2/schema.sql`
+6. `kg/schema.sql`
 
 Then implement one vertical slice:
 

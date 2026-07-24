@@ -1,0 +1,138 @@
+version: 1
+root:
+  id: ai
+  name: Artificial Intelligence
+  importance: 1.0
+  children:
+    - id: foundations
+      name: Foundations
+      children:
+        - {id: mathematics, name: Mathematical Foundations}
+        - {id: probability_statistics, name: Probability and Statistics}
+        - {id: optimization, name: Optimization}
+        - {id: information_theory, name: Information Theory}
+        - {id: algorithms_complexity, name: Algorithms and Complexity}
+    - id: machine_learning
+      name: Machine Learning
+      children:
+        - {id: supervised_learning, name: Supervised Learning}
+        - {id: unsupervised_learning, name: Unsupervised Learning}
+        - {id: semi_self_supervised, name: Semi-supervised and Self-supervised Learning}
+        - {id: representation_learning, name: Representation Learning}
+        - {id: probabilistic_ml, name: Probabilistic Machine Learning}
+        - {id: kernel_methods, name: Kernel Methods}
+        - {id: ensemble_learning, name: Ensemble Learning}
+        - {id: transfer_meta_learning, name: Transfer and Meta Learning}
+        - {id: causal_learning, name: Causal Learning}
+    - id: deep_learning
+      name: Deep Learning
+      children:
+        - {id: neural_network_basics, name: Neural Network Foundations}
+        - {id: convolutional_networks, name: Convolutional Networks}
+        - {id: sequence_models, name: Sequence Models}
+        - {id: attention_transformers, name: Attention and Transformers}
+        - {id: generative_models, name: Generative Models}
+        - {id: graph_neural_networks, name: Graph Neural Networks}
+        - {id: deep_learning_optimization, name: Deep Learning Optimization}
+    - id: natural_language_processing
+      name: Natural Language Processing
+      children:
+        - {id: text_representation, name: Text Representation}
+        - {id: language_modeling, name: Language Modeling}
+        - {id: information_extraction, name: Information Extraction}
+        - {id: machine_translation, name: Machine Translation}
+        - {id: question_answering, name: Question Answering}
+        - {id: retrieval_nlp, name: Retrieval and Search}
+        - {id: dialogue_systems, name: Dialogue Systems}
+        - {id: large_language_models, name: Large Language Models}
+    - id: computer_vision
+      name: Computer Vision
+      children:
+        - {id: image_classification, name: Image Classification}
+        - {id: object_detection, name: Object Detection}
+        - {id: segmentation, name: Segmentation}
+        - {id: vision_generation, name: Image and Video Generation}
+        - {id: video_understanding, name: Video Understanding}
+        - {id: three_d_vision, name: 3D Vision}
+        - {id: vision_language, name: Vision-Language Learning}
+    - id: speech_audio
+      name: Speech and Audio
+      children:
+        - {id: speech_recognition, name: Speech Recognition}
+        - {id: speech_synthesis, name: Speech Synthesis}
+        - {id: speaker_audio_understanding, name: Speaker and Audio Understanding}
+    - id: reinforcement_learning
+      name: Reinforcement Learning
+      children:
+        - {id: rl_foundations, name: Reinforcement Learning Foundations}
+        - {id: value_based_rl, name: Value-based Methods}
+        - {id: policy_based_rl, name: Policy-based Methods}
+        - {id: model_based_rl, name: Model-based Reinforcement Learning}
+        - {id: offline_rl, name: Offline Reinforcement Learning}
+        - {id: multi_agent_rl, name: Multi-agent Reinforcement Learning}
+        - {id: hierarchical_rl, name: Hierarchical Reinforcement Learning}
+        - {id: rl_human_feedback, name: Reinforcement Learning from Human Feedback}
+    - id: multimodal_ai
+      name: Multimodal AI
+      children:
+        - {id: multimodal_representation, name: Multimodal Representation}
+        - {id: multimodal_generation, name: Multimodal Generation}
+        - {id: multimodal_reasoning, name: Multimodal Reasoning}
+    - id: agents
+      name: AI Agents
+      children:
+        - {id: planning_reasoning, name: Planning and Reasoning}
+        - {id: tool_use, name: Tool Use}
+        - {id: memory_agents, name: Agent Memory}
+        - {id: multi_agent_systems, name: Multi-agent Systems}
+    - id: robotics_embodied
+      name: Robotics and Embodied AI
+      children:
+        - {id: robot_perception, name: Robot Perception}
+        - {id: robot_planning_control, name: Planning and Control}
+        - {id: robot_learning, name: Robot Learning}
+        - {id: embodied_agents, name: Embodied Agents}
+    - id: recommender_search
+      name: Recommender Systems and Search
+      children:
+        - {id: recommendation, name: Recommendation}
+        - {id: ranking, name: Ranking}
+        - {id: information_retrieval, name: Information Retrieval}
+    - id: ai_systems
+      name: AI Systems
+      children:
+        - {id: training_systems, name: Training Systems}
+        - {id: inference_serving, name: Inference and Serving}
+        - {id: distributed_ai, name: Distributed AI}
+        - {id: model_compression, name: Model Compression}
+        - {id: hardware_acceleration, name: Hardware Acceleration}
+        - {id: mlops, name: MLOps}
+    - id: evaluation
+      name: Evaluation
+      children:
+        - {id: metrics_benchmarks, name: Metrics and Benchmarks}
+        - {id: robustness, name: Robustness}
+        - {id: reliability_calibration, name: Reliability and Calibration}
+        - {id: human_evaluation, name: Human Evaluation}
+    - id: safety_responsible_ai
+      name: Safety and Responsible AI
+      children:
+        - {id: alignment, name: Alignment}
+        - {id: interpretability, name: Interpretability}
+        - {id: fairness, name: Fairness}
+        - {id: privacy, name: Privacy}
+        - {id: security, name: AI Security}
+        - {id: governance_ethics, name: Governance and Ethics}
+
+coverage_policy:
+  minimum_source_families_per_leaf: 2
+  required_entity_types: [concept, method, task]
+  recommended_entity_types: [model, architecture, dataset, metric, loss, resource]
+  metrics:
+    - core_entity_coverage
+    - typed_claim_density
+    - multi_source_evidence_rate
+    - orphan_rate
+    - unresolved_conflict_rate
+    - source_diversity
+    - freshness

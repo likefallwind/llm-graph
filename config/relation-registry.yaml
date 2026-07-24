@@ -1,0 +1,151 @@
+version: 1
+
+entity_types:
+  field: {description: Recognized AI research or teaching field.}
+  concept: {description: Abstract idea, property, principle, object, or phenomenon.}
+  method: {description: Reusable algorithm, procedure, strategy, or technique.}
+  task: {description: Problem definition with inputs, outputs, or a success criterion.}
+  model: {description: Named model family or concrete learned or specified model.}
+  architecture: {description: Reusable structural design for models or systems.}
+  dataset: {description: Named data collection used for training or evaluation.}
+  metric: {description: Defined evaluation measurement.}
+  loss: {description: Optimization objective or loss function.}
+  system: {description: Implemented framework, pipeline, training, or serving system.}
+  resource: {description: Paper, textbook, course, specification, or documentation.}
+
+relations:
+  is_a:
+    family: taxonomy
+    description: Subject is a more specific kind of object.
+    subject_types: [concept, method, task, model, architecture, dataset, metric, loss, system]
+    object_types: [concept, method, task, model, architecture, dataset, metric, loss, system]
+    symmetric: false
+    transitive: true
+    acyclic: true
+    minimum_evidence: {explicit_high_authority: 1, independent_standard_sources: 2}
+    insufficient_alone: [hyperlink, cooccurrence, category_membership, toc_order]
+
+  subfield_of:
+    family: taxonomy
+    description: Subject field is conventionally organized under object field.
+    subject_types: [field]
+    object_types: [field]
+    symmetric: false
+    transitive: true
+    acyclic: true
+    minimum_evidence: {explicit_high_authority: 1, independent_standard_sources: 2}
+    insufficient_alone: [hyperlink, cooccurrence, toc_order]
+
+  part_of:
+    family: composition
+    description: Subject is a component, stage, or structural part of object.
+    subject_types: [concept, method, model, architecture, loss, system]
+    object_types: [concept, method, model, architecture, system]
+    symmetric: false
+    transitive: contextual
+    acyclic: true
+    minimum_evidence: {explicit_high_authority: 1, independent_standard_sources: 2}
+    insufficient_alone: [hyperlink, cooccurrence, category_membership, toc_order]
+
+  prerequisite_of:
+    family: educational
+    description: Understanding subject is materially required for object at the stated scope.
+    subject_types: [field, concept, method]
+    object_types: [field, concept, method, task]
+    symmetric: false
+    transitive: contextual
+    acyclic: true
+    qualifiers: [scope, strength, inference]
+    minimum_evidence: {explicit_high_authority: 1, independent_curriculum_sources: 2}
+    insufficient_alone: [hyperlink, cooccurrence, toc_order]
+    high_impact_review: true
+
+  often_confused_with:
+    family: educational
+    description: Teaching material documents a common confusion.
+    subject_types: [field, concept, method, task, model, architecture, metric, loss]
+    object_types: [field, concept, method, task, model, architecture, metric, loss]
+    symmetric: true
+    transitive: false
+    acyclic: false
+    minimum_evidence: {explicit_high_authority: 1, independent_standard_sources: 2}
+    insufficient_alone: [hyperlink, cooccurrence, toc_order]
+
+  pedagogical_contrast_with:
+    family: educational
+    description: Teaching material explicitly compares the entities.
+    subject_types: [field, concept, method, task, model, architecture, metric, loss]
+    object_types: [field, concept, method, task, model, architecture, metric, loss]
+    symmetric: true
+    transitive: false
+    acyclic: false
+    minimum_evidence: {explicit_high_authority: 1, independent_standard_sources: 2}
+    insufficient_alone: [hyperlink, cooccurrence, toc_order]
+
+  used_for:
+    family: functional
+    description: Subject is used to perform or support object task.
+    subject_types: [concept, method, model, architecture, system]
+    object_types: [task]
+    symmetric: false
+    transitive: false
+    acyclic: false
+    minimum_evidence: {explicit_high_authority: 1, independent_standard_sources: 2}
+    insufficient_alone: [hyperlink, cooccurrence, category_membership]
+
+  solves:
+    family: functional
+    description: Subject is explicitly presented as solving object task.
+    subject_types: [method, model, system]
+    object_types: [task]
+    symmetric: false
+    transitive: false
+    acyclic: false
+    minimum_evidence: {explicit_high_authority: 1, independent_standard_sources: 2}
+    insufficient_alone: [hyperlink, cooccurrence, category_membership]
+
+  evaluated_by:
+    family: functional
+    description: Subject is evaluated using object metric.
+    subject_types: [task, model, system]
+    object_types: [metric]
+    symmetric: false
+    transitive: false
+    acyclic: false
+    minimum_evidence: {explicit_high_authority: 1, independent_standard_sources: 2}
+    insufficient_alone: [hyperlink, cooccurrence]
+
+  trained_on:
+    family: functional
+    description: Subject model is trained or fine-tuned on object dataset.
+    subject_types: [model]
+    object_types: [dataset]
+    symmetric: false
+    transitive: false
+    acyclic: false
+    qualifiers: [variant, time]
+    minimum_evidence: {explicit_high_authority: 1, independent_standard_sources: 2}
+    insufficient_alone: [hyperlink, cooccurrence]
+
+  optimizes:
+    family: functional
+    description: Subject method optimizes object loss or objective concept.
+    subject_types: [method]
+    object_types: [loss, concept]
+    symmetric: false
+    transitive: false
+    acyclic: false
+    minimum_evidence: {explicit_high_authority: 1, independent_standard_sources: 2}
+    insufficient_alone: [hyperlink, cooccurrence]
+
+  derived_from:
+    family: historical
+    description: Subject is explicitly derived, extended, or adapted from object.
+    subject_types: [concept, method, model, architecture, loss, system]
+    object_types: [concept, method, model, architecture, loss, system]
+    symmetric: false
+    transitive: false
+    acyclic: true
+    qualifiers: [time, variant]
+    minimum_evidence: {explicit_high_authority: 1, independent_standard_sources: 2}
+    insufficient_alone: [hyperlink, cooccurrence, chronological_order]
