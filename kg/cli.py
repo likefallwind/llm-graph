@@ -189,6 +189,37 @@ def cmd_mine(args):
     print(f"共 {len(lines)} 条" if lines else "无新发现")
 
 
+def cmd_pipeline(args):
+    from . import pipeline
+    conn = db.connect()
+    if args.action == "status":
+        print(json.dumps(pipeline.status(conn), ensure_ascii=False, indent=2))
+        return
+    required = {
+        "--file": args.file,
+        "--source": args.source,
+        "--topic": args.topic,
+    }
+    missing = [name for name, value in required.items() if not value]
+    if missing:
+        sys.exit("pipeline read 缺少参数: " + ", ".join(missing))
+    try:
+        authority = json.loads(args.authority)
+    except json.JSONDecodeError as exc:
+        sys.exit(f"--authority 不是合法 JSON: {exc}")
+    result = pipeline.read_file(
+        conn, args.file, source_slug=args.source,
+        source_name=args.source_name or args.source,
+        source_type=args.source_type,
+        independence_group=args.independence_group or args.source,
+        topic=args.topic, version=args.version, language=args.language,
+        authority_profile=authority,
+        observations_path=args.observations,
+        max_entities=args.max_entities, max_claims=args.max_claims,
+        verify_llm=not args.no_verify_llm)
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+
+
 def _signal_line(conn, item_type, item_id) -> str:
     """review_signals 里若有佐证（kg verify 产出），拼一行展示。"""
     sig = db.get_signals(conn, item_type, item_id)
@@ -585,6 +616,26 @@ def main():
                                         "（不带参数列出批次；条目退回 proposed 重新人工审）")
     s.add_argument("batch_id", nargs="?", help="批次号（verify --apply 输出里的 auto-...）")
     s.set_defaults(fn=cmd_rollback)
+
+    s = sub.add_parser(
+        "pipeline",
+        help="新语料流水线：Snapshot -> Observation -> Claim/Evidence -> Shadow 决策")
+    s.add_argument("action", choices=["read", "status"])
+    s.add_argument("--file", help="read: UTF-8 本地语料文件")
+    s.add_argument("--observations", help="read: 已有结构化 Observation JSON；缺省由 LLM 抽取")
+    s.add_argument("--source", help="read: 来源 slug")
+    s.add_argument("--source-name", help="read: 来源显示名")
+    s.add_argument("--source-type", default="document", help="read: textbook/paper/document/demo")
+    s.add_argument("--independence-group", help="read: 独立来源组；缺省等于 source slug")
+    s.add_argument("--authority", default="{}", help='read: 关系权威度 JSON，如 {"is_a":"high"}')
+    s.add_argument("--version", default="", help="read: 来源版本；缺省使用内容 hash")
+    s.add_argument("--language", default="", help="read: 原文语言")
+    s.add_argument("--topic", help="read: coverage topic id")
+    s.add_argument("--max-entities", type=int, default=20)
+    s.add_argument("--max-claims", type=int, default=30)
+    s.add_argument("--no-verify-llm", action="store_true",
+                   help="不调用 LLM 蕴含验证；Claim 将保持 needs_more_evidence 的 Shadow 结果")
+    s.set_defaults(fn=cmd_pipeline)
 
     args = p.parse_args()
     args.fn(args)
