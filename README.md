@@ -94,8 +94,8 @@ Shadow 结果。
 --topic ID
 --docs N
 --wiki N
---max-entities N
---max-claims N
+--max-entities N  # 每个文本块的实体上限；整章会跨块去重合并
+--max-claims N    # 每个文本块的 Claim 上限；整章会跨块去重合并
 --fetch
 --migrate
 --concurrency N

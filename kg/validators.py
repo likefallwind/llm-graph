@@ -13,6 +13,7 @@ ENTAILMENT_PROMPT = """你是有据 Claim 复核器。只能依据给出的 evid
 Claim：{subject} -{relation}-> {object}
 关系语义：{semantics}
 方向规则：{direction_rule}
+语义硬约束：{semantic_guard}
 Evidence：
 ---
 {excerpt}
@@ -20,7 +21,7 @@ Evidence：
 
 判断这段 evidence 是否支持该关系的类型和方向，并严格遵守方向规则。
 输出 JSON：
-{{"verdict":"supports|contradicts|insufficient","reason":"一句话理由"}}
+{output_schema}
 """
 
 STRONG_TYPES = {
@@ -58,6 +59,21 @@ def verify_entailment(conn, claim_id: int, *, force: bool = False) -> list[str]:
             "不得仅因 evidence 中两个端点的出现顺序相反而判定 contradicts。")
     else:
         direction_rule = "此关系是有向关系，必须检查 subject/object 方向。"
+    if claim.relation == "part_of":
+        semantic_guard = (
+            "part_of 只能在 evidence 明确表达 subject 是 object 的真实结构部件，"
+            "或 object 流程中明确列出的阶段时成立。用于、依赖、参与、帮助构建、"
+            "产生、输入/输出、属性、子类型、先后学习均不是 part_of。"
+            "请做反事实检查：移除 subject 后，object 是否缺少一个正文明确承认的"
+            "组成部分或阶段；仅仅改变构建方式或用途不算。")
+        output_schema = (
+            '{"verdict":"supports|contradicts|insufficient",'
+            '"composition_explicit":true|false,"reason":"一句话理由"}')
+    else:
+        semantic_guard = "按关系定义判断，不得把相邻概念强行归入该关系。"
+        output_schema = (
+            '{"verdict":"supports|contradicts|insufficient",'
+            '"reason":"一句话理由"}')
     lines = []
     for evidence in store.evidence_for_claim(conn, claim_id):
         if not evidence.mechanically_valid:
@@ -68,11 +84,20 @@ def verify_entailment(conn, claim_id: int, *, force: bool = False) -> list[str]:
             subject=subject.canonical_name, relation=claim.relation,
             object=object_.canonical_name, semantics=semantics,
             direction_rule=direction_rule,
+            semantic_guard=semantic_guard,
+            output_schema=output_schema,
             excerpt=evidence.excerpt)}])
         verdict = str(answer.get("verdict", "insufficient")).strip()
         if verdict not in {"supports", "contradicts", "insufficient"}:
             verdict = "insufficient"
         reason = str(answer.get("reason", ""))[:300]
+        if (claim.relation == "part_of" and verdict == "supports"
+                and answer.get("composition_explicit") is not True):
+            verdict = "insufficient"
+            reason = (
+                "未明确确认真实组成关系；"
+                + (reason or "模型未返回 composition_explicit=true")
+            )[:300]
         store.update_entailment(conn, evidence.id, verdict, reason=reason)
         lines.append(f"evidence {evidence.id}: {verdict}（{reason}）")
     return lines

@@ -689,8 +689,10 @@ def main():
                    help="batch: 本次处理的未读教材章节数")
     s.add_argument("--wiki-pages", type=int, default=1,
                    help="batch: 本次处理的未读 Wikipedia 页面数")
-    s.add_argument("--max-entities", type=int, default=20)
-    s.add_argument("--max-claims", type=int, default=30)
+    s.add_argument("--max-entities", type=int, default=20,
+                   help="每个文本块最多抽取的实体数（跨块去重后不再按全章截断）")
+    s.add_argument("--max-claims", type=int, default=30,
+                   help="每个文本块最多抽取的 Claim 数（跨块去重后不再按全章截断）")
     s.add_argument(
         "--alignment-limit", type=int, default=50,
         help="align-aliases: 本次最多复核的 proposed alias 数")

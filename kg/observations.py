@@ -14,14 +14,16 @@ EXTRACT_PROMPT = """你是有据抽取器。只允许依据给出的语料，不
 
 覆盖主题：{topic}
 允许的实体类型：{entity_types}
-允许的关系：{relations}
+允许的关系及限定字段契约：{relations}
 
 要求：
 1. 每个实体和 Claim 都必须附语料中的逐字摘录 evidence。
 2. 每个 Claim 的 subject 和 object 必须同时出现在 entities 中。
 3. 不确定时不输出；不得把超链接、共现或章节顺序直接当成类型化关系。
 4. evidence_type 只能描述证据实际表达的类型，不得夸大。
-5. 最多 {max_entities} 个实体、{max_claims} 个 Claim。
+5. prerequisite_of 必须按契约填写 kind 和 strength；scope 仅在语料明确限定课程、章节或学习阶段时填写。
+6. part_of 只表示真实结构部件或正文明确列出的流程阶段。“用于、依赖、参与、帮助构建、产生、输入/输出、属性、子类型”都不是 part_of；三种关系均不成立时不要建边。
+7. 本文本块最多 {max_entities} 个实体、{max_claims} 个 Claim。
 
 输出 JSON：
 {{
@@ -149,8 +151,13 @@ def parse_payload(payload: dict, source_text: str) -> ObservationBatch:
         if not left or not right:
             rejected.append(f"claim[{index}] 端点必须同时出现在有效 entities 中")
             continue
+        qualifiers = (
+            raw.get("qualifiers") if isinstance(raw.get("qualifiers"), dict) else {})
         try:
-            reg.validate_claim(left.entity_type, relation, right.entity_type)
+            reg.validate_claim(
+                left.entity_type, relation, right.entity_type, active_only=True)
+            reg.validate_qualifiers(
+                relation, qualifiers, require_required=True)
         except ValueError as exc:
             rejected.append(f"claim[{index}] {exc}")
             continue
@@ -159,7 +166,7 @@ def parse_payload(payload: dict, source_text: str) -> ObservationBatch:
             continue
         claims.append(ClaimObservation(
             subject=subject, relation=relation, object=object_,
-            qualifiers=raw.get("qualifiers") if isinstance(raw.get("qualifiers"), dict) else {},
+            qualifiers=qualifiers,
             evidence_type=str(raw.get("evidence_type", "cooccurrence")).strip(),
             evidence=evidence, location=str(raw.get("location", "")).strip(), raw=raw))
 
@@ -178,17 +185,20 @@ def parse_payload(payload: dict, source_text: str) -> ObservationBatch:
 
 def extract(source_text: str, topic: str, *, max_entities: int = 20,
             max_claims: int = 30) -> ObservationBatch:
+    """分块限额抽取，再跨块去重合并。
+
+    ``max_entities`` 和 ``max_claims`` 是单个文本块的上限，而不是整章
+    上限；长章节不应因为被拆分而丢失后半段已验证的候选。
+    """
     chunks = split_text(source_text)
-    entity_budget = max(1, (max_entities + len(chunks) - 1) // len(chunks))
-    claim_budget = max(1, (max_claims + len(chunks) - 1) // len(chunks))
     reg = registry()
 
     def extract_one(chunk: str) -> ObservationBatch:
         prompt = EXTRACT_PROMPT.format(
             topic=topic,
             entity_types="、".join(reg.entity_types),
-            relations="、".join(reg.relations),
-            max_entities=entity_budget, max_claims=claim_budget, text=chunk)
+            relations=reg.extraction_contract(),
+            max_entities=max_entities, max_claims=max_claims, text=chunk)
         payload = llm.chat_json([{"role": "user", "content": prompt}])
         if not isinstance(payload, dict):
             raise ValueError("抽取器必须返回 JSON object")
@@ -212,8 +222,8 @@ def extract(source_text: str, topic: str, *, max_entities: int = 20,
             targets.setdefault(item.query.casefold(), item)
         rejected.extend(batch.rejected)
     return ObservationBatch(
-        entities=tuple(list(entities.values())[:max_entities]),
-        claims=tuple(list(claims.values())[:max_claims]),
+        entities=tuple(entities.values()),
+        claims=tuple(claims.values()),
         next_reading_targets=tuple(targets.values()),
         rejected=tuple(rejected))
 

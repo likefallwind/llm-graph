@@ -93,7 +93,7 @@ class ValidatorEvidenceThresholdTests(unittest.TestCase):
         self.assertEqual(result.high_authority_supports, 0)
 
     def test_high_impact_relations_require_human_review(self):
-        for relation in ("is_a", "subfield_of", "prerequisite_of"):
+        for relation in ("is_a", "subfield_of", "part_of", "prerequisite_of"):
             with self.subTest(relation=relation):
                 conn = sqlite3.connect(":memory:")
                 conn.row_factory = sqlite3.Row
@@ -167,6 +167,40 @@ class EntailmentDirectionTests(unittest.TestCase):
 
         prompt = chat_json.call_args.args[0][0]["content"]
         self.assertIn("必须检查 subject/object 方向", prompt)
+
+    @patch("kg.validators.llm.chat_json")
+    def test_part_of_support_requires_explicit_composition_confirmation(
+            self, chat_json):
+        chat_json.return_value = {
+            "verdict": "supports",
+            "reason": "参与了构建过程",
+        }
+        claim, _ = self._unreviewed_evidence("part_of")
+
+        validators.verify_entailment(self.conn, claim.id)
+
+        prompt = chat_json.call_args.args[0][0]["content"]
+        self.assertIn("帮助构建", prompt)
+        self.assertEqual(
+            "insufficient",
+            store.evidence_for_claim(self.conn, claim.id)[0].entailment,
+        )
+
+    @patch("kg.validators.llm.chat_json")
+    def test_part_of_accepts_explicit_composition_confirmation(self, chat_json):
+        chat_json.return_value = {
+            "verdict": "supports",
+            "composition_explicit": True,
+            "reason": "正文明确说明是结构组成部分",
+        }
+        claim, _ = self._unreviewed_evidence("part_of")
+
+        validators.verify_entailment(self.conn, claim.id)
+
+        self.assertEqual(
+            "supports",
+            store.evidence_for_claim(self.conn, claim.id)[0].entailment,
+        )
 
     @patch("kg.validators.llm.chat_json")
     def test_force_rechecks_reviewed_evidence(self, chat_json):

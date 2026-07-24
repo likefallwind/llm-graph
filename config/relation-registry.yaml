@@ -1,4 +1,4 @@
-version: 1
+version: 3
 
 entity_types:
   field: {description: Recognized AI research or teaching field.}
@@ -15,10 +15,11 @@ entity_types:
 
 relations:
   is_a:
+    lifecycle: core
     family: taxonomy
     description: Subject is a more specific kind of object.
-    subject_types: [concept, method, task, model, architecture, dataset, metric, loss, system]
-    object_types: [concept, method, task, model, architecture, dataset, metric, loss, system]
+    subject_types: [field, concept, method, task, model, architecture, dataset, metric, loss, system]
+    object_types: [field, concept, method, task, model, architecture, dataset, metric, loss, system]
     symmetric: false
     transitive: true
     acyclic: true
@@ -27,6 +28,7 @@ relations:
     high_impact_review: true
 
   subfield_of:
+    lifecycle: experimental
     family: taxonomy
     description: Subject field is conventionally organized under object field.
     subject_types: [field]
@@ -39,30 +41,38 @@ relations:
     high_impact_review: true
 
   part_of:
+    lifecycle: core
     family: composition
-    description: Subject is a component, stage, or structural part of object.
+    description: Subject is an actual structural constituent or explicitly identified stage of object; usage, dependency, participation, construction, input/output, attributes, and subtype relations are not composition.
     subject_types: [concept, method, model, architecture, loss, system]
     object_types: [concept, method, model, architecture, system]
     symmetric: false
     transitive: contextual
     acyclic: true
     minimum_evidence: {explicit_high_authority: 1, independent_standard_sources: 2}
-    insufficient_alone: [hyperlink, cooccurrence, category_membership, toc_order]
+    insufficient_alone: [hyperlink, cooccurrence, category_membership, toc_order, usage, dependency, participation, construction, input_output]
+    high_impact_review: true
 
   prerequisite_of:
+    lifecycle: core
     family: educational
-    description: Understanding subject is materially required for object at the stated scope.
+    description: Subject should be learned before object because of a conceptual dependency, explicit derivation, or curriculum recommendation.
     subject_types: [field, concept, method]
     object_types: [field, concept, method, task]
     symmetric: false
     transitive: contextual
     acyclic: true
-    qualifiers: [scope, strength, inference]
+    qualifiers: [kind, strength, scope]
+    required_qualifiers: [kind, strength]
+    qualifier_values:
+      kind: [conceptual, derivational, curricular]
+      strength: [required, recommended]
     minimum_evidence: {explicit_high_authority: 1, independent_curriculum_sources: 2}
     insufficient_alone: [hyperlink, cooccurrence, toc_order]
     high_impact_review: true
 
   often_confused_with:
+    lifecycle: experimental
     family: educational
     description: Teaching material documents a common confusion.
     subject_types: [field, concept, method, task, model, architecture, metric, loss]
@@ -74,6 +84,7 @@ relations:
     insufficient_alone: [hyperlink, cooccurrence, toc_order]
 
   pedagogical_contrast_with:
+    lifecycle: experimental
     family: educational
     description: Teaching material explicitly compares the entities.
     subject_types: [field, concept, method, task, model, architecture, metric, loss]
@@ -85,6 +96,7 @@ relations:
     insufficient_alone: [hyperlink, cooccurrence, toc_order]
 
   alternative_to:
+    lifecycle: experimental
     family: functional
     description: Subject and object are explicit alternatives for substantially the same task or objective.
     subject_types: [method, model, architecture, system]
@@ -97,6 +109,7 @@ relations:
     insufficient_alone: [hyperlink, cooccurrence, category_membership]
 
   used_for:
+    lifecycle: experimental
     family: functional
     description: Subject is used to perform or support object task.
     subject_types: [concept, method, model, architecture, system]
@@ -108,6 +121,7 @@ relations:
     insufficient_alone: [hyperlink, cooccurrence, category_membership]
 
   solves:
+    lifecycle: experimental
     family: functional
     description: Subject is explicitly presented as solving object task.
     subject_types: [method, model, system]
@@ -119,6 +133,7 @@ relations:
     insufficient_alone: [hyperlink, cooccurrence, category_membership]
 
   evaluated_by:
+    lifecycle: experimental
     family: functional
     description: Subject is evaluated using object metric.
     subject_types: [task, model, system]
@@ -130,6 +145,7 @@ relations:
     insufficient_alone: [hyperlink, cooccurrence]
 
   trained_on:
+    lifecycle: experimental
     family: functional
     description: Subject model is trained or fine-tuned on object dataset.
     subject_types: [model]
@@ -142,6 +158,7 @@ relations:
     insufficient_alone: [hyperlink, cooccurrence]
 
   optimizes:
+    lifecycle: experimental
     family: functional
     description: Subject method optimizes object loss or objective concept.
     subject_types: [method]
@@ -153,6 +170,7 @@ relations:
     insufficient_alone: [hyperlink, cooccurrence]
 
   derived_from:
+    lifecycle: experimental
     family: historical
     description: Subject is explicitly derived, extended, or adapted from object.
     subject_types: [concept, method, model, architecture, loss, system]

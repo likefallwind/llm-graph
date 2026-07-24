@@ -6,9 +6,10 @@ import json
 from pathlib import Path
 
 from . import claims, coverage, decision, observations, store, validators
+from .ontology import registry
 
 
-ALGORITHM_VERSION = "grounded-pipeline-1"
+ALGORITHM_VERSION = "grounded-pipeline-3"
 
 
 def read_file(conn, path: str, *, source_slug: str, source_name: str,
@@ -54,8 +55,12 @@ def read_text(conn, text: str, *, source_slug: str, source_name: str,
         storage_ref=storage_ref, metadata=metadata)
     run_id = store.create_run(
         conn, "extraction", ALGORITHM_VERSION,
-        prompt_version="grounded-extract-1",
-        config={"topic": topic, "source_snapshot_id": snapshot.id})
+        prompt_version="grounded-extract-3",
+        config={
+            "topic": topic,
+            "source_snapshot_id": snapshot.id,
+            "relation_registry_version": registry().version,
+        })
     try:
         if observations_path:
             payload = json.loads(Path(observations_path).read_text(encoding="utf-8"))
@@ -105,9 +110,7 @@ def read_text(conn, text: str, *, source_slug: str, source_name: str,
 
 TEXTBOOK_AUTHORITY = {
     name: "high" for name in (
-        "is_a", "subfield_of", "part_of", "prerequisite_of",
-        "often_confused_with", "pedagogical_contrast_with", "alternative_to",
-        "used_for", "solves", "evaluated_by", "optimizes", "derived_from")
+        "is_a", "part_of", "prerequisite_of")
 }
 
 
