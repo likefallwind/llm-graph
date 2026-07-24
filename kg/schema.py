@@ -12,4 +12,6 @@ def ensure(conn) -> None:
     conn.executescript(SCHEMA_PATH.read_text(encoding="utf-8"))
     from .ontology import registry
     registry().sync(conn)
+    from . import coverage
+    coverage.sync(conn)
     conn.commit()

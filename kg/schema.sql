@@ -220,5 +220,48 @@ CREATE TABLE IF NOT EXISTS reading_tasks (
 CREATE INDEX IF NOT EXISTS idx_reading_tasks_queue
     ON reading_tasks(status, priority DESC);
 
+CREATE TABLE IF NOT EXISTS legacy_entity_map (
+    legacy_node_id INTEGER PRIMARY KEY,
+    entity_id      INTEGER NOT NULL REFERENCES entities(id),
+    migrated_at    REAL NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS legacy_claim_map (
+    legacy_edge_id INTEGER PRIMARY KEY,
+    claim_id       INTEGER NOT NULL REFERENCES claims(id),
+    migrated_at    REAL NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS migration_issues (
+    id              INTEGER PRIMARY KEY,
+    legacy_item_type TEXT NOT NULL CHECK(legacy_item_type IN ('node','edge')),
+    legacy_item_id  INTEGER NOT NULL,
+    reason          TEXT NOT NULL,
+    payload         TEXT NOT NULL,
+    status          TEXT NOT NULL DEFAULT 'pending'
+                    CHECK(status IN ('pending','resolved','ignored')),
+    created_at      REAL NOT NULL,
+    resolved_at     REAL,
+    UNIQUE(legacy_item_type, legacy_item_id)
+);
+
+CREATE TABLE IF NOT EXISTS pipeline_processed (
+    source_snapshot_id INTEGER NOT NULL REFERENCES source_snapshots(id),
+    coverage_topic_id  TEXT NOT NULL REFERENCES coverage_topics(id),
+    algorithm_version  TEXT NOT NULL,
+    run_id             INTEGER NOT NULL REFERENCES runs(id),
+    processed_at       REAL NOT NULL,
+    PRIMARY KEY(source_snapshot_id, coverage_topic_id, algorithm_version)
+);
+
 INSERT OR IGNORE INTO schema_migrations(version, name, applied_at)
 VALUES (1, 'claim_evidence_core', unixepoch());
+
+INSERT OR IGNORE INTO schema_migrations(version, name, applied_at)
+VALUES (2, 'legacy_migration_maps', unixepoch());
+
+INSERT OR IGNORE INTO schema_migrations(version, name, applied_at)
+VALUES (3, 'migration_issues', unixepoch());
+
+INSERT OR IGNORE INTO schema_migrations(version, name, applied_at)
+VALUES (4, 'pipeline_processed', unixepoch());

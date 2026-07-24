@@ -82,6 +82,18 @@ relations:
     minimum_evidence: {explicit_high_authority: 1, independent_standard_sources: 2}
     insufficient_alone: [hyperlink, cooccurrence, toc_order]
 
+  alternative_to:
+    family: functional
+    description: Subject and object are explicit alternatives for substantially the same task or objective.
+    subject_types: [method, model, architecture, system]
+    object_types: [method, model, architecture, system]
+    symmetric: true
+    transitive: false
+    acyclic: false
+    qualifiers: [scope, condition]
+    minimum_evidence: {explicit_high_authority: 1, independent_standard_sources: 2}
+    insufficient_alone: [hyperlink, cooccurrence, category_membership]
+
   used_for:
     family: functional
     description: Subject is used to perform or support object task.

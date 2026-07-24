@@ -190,10 +190,48 @@ def cmd_mine(args):
 
 
 def cmd_pipeline(args):
-    from . import pipeline
+    from . import legacy_migration, pipeline
     conn = db.connect()
     if args.action == "status":
         print(json.dumps(pipeline.status(conn), ensure_ascii=False, indent=2))
+        return
+    if args.action == "migrate":
+        if not args.apply:
+            result = legacy_migration.preview(conn)
+            result["next"] = "确认备份后加 --apply 执行；迁移幂等且所有非拒绝项保持 proposed"
+        else:
+            result = legacy_migration.apply(conn)
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return
+    if args.action == "batch":
+        if not args.topic:
+            sys.exit("pipeline batch 需要 --topic")
+        result = pipeline.batch(
+            conn, topic=args.topic, doc_limit=args.docs,
+            wiki_limit=args.wiki_pages, max_entities=args.max_entities,
+            max_claims=args.max_claims, verify_llm=not args.no_verify_llm)
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return
+    common = {
+        "topic": args.topic,
+        "observations_path": args.observations,
+        "max_entities": args.max_entities,
+        "max_claims": args.max_claims,
+        "verify_llm": not args.no_verify_llm,
+    }
+    if args.action == "doc":
+        if not args.book or not args.sec or not args.topic:
+            sys.exit("pipeline doc 需要 --book、--sec、--topic")
+        result = pipeline.read_doc_section(
+            conn, args.book, args.sec, **common)
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return
+    if args.action == "wiki":
+        if not args.lang or not args.title or not args.topic:
+            sys.exit("pipeline wiki 需要 --lang、--title、--topic")
+        result = pipeline.read_wiki_page(
+            conn, args.lang, args.title, **common)
+        print(json.dumps(result, ensure_ascii=False, indent=2))
         return
     required = {
         "--file": args.file,
@@ -566,7 +604,7 @@ def main():
     s.add_argument("--dry-run", action="store_true", help="只做假设+语料验证，不提取入库")
     s.set_defaults(fn=cmd_expand)
 
-    s = sub.add_parser("ingest", help="从语料库围绕已有节点提取知识（有据可查，主通道）")
+    s = sub.add_parser("ingest", help="[旧流水线] 从语料库围绕已有节点提取知识")
     s.add_argument("name", nargs="?", help="锚点节点名（须已存在于图谱）")
     s.add_argument("--batch", type=int, help="缺口驱动自动选 N 个锚点批量提取")
     s.add_argument("--limit", type=int, default=6, help="每个锚点最多提取的概念数")
@@ -599,7 +637,7 @@ def main():
     s.add_argument("--audit", type=int, help="抽检 N 条自动放行的条目")
     s.set_defaults(fn=cmd_review)
 
-    s = sub.add_parser("verify", help="复核 proposed 条目：结构佐证（零 LLM）+ LLM 判断题复核；"
+    s = sub.add_parser("verify", help="[旧流水线] 复核 proposed 条目：结构佐证 + LLM 判断；"
                                       "--apply 双重一致自动裁决")
     s.add_argument("--limit", type=int, default=10, help="本次 LLM 复核条数上限")
     s.add_argument("--no-llm", action="store_true", help="只算结构佐证")
@@ -620,7 +658,7 @@ def main():
     s = sub.add_parser(
         "pipeline",
         help="新语料流水线：Snapshot -> Observation -> Claim/Evidence -> Shadow 决策")
-    s.add_argument("action", choices=["read", "status"])
+    s.add_argument("action", choices=["read", "doc", "wiki", "batch", "migrate", "status"])
     s.add_argument("--file", help="read: UTF-8 本地语料文件")
     s.add_argument("--observations", help="read: 已有结构化 Observation JSON；缺省由 LLM 抽取")
     s.add_argument("--source", help="read: 来源 slug")
@@ -631,6 +669,16 @@ def main():
     s.add_argument("--version", default="", help="read: 来源版本；缺省使用内容 hash")
     s.add_argument("--language", default="", help="read: 原文语言")
     s.add_argument("--topic", help="read: coverage topic id")
+    s.add_argument("--book", help="doc: 教材 book slug")
+    s.add_argument("--sec", help="doc: 章节号")
+    s.add_argument("--lang", choices=["zh", "en"], help="wiki: 语料语言")
+    s.add_argument("--title", help="wiki: 本地 corpus 页面标题")
+    s.add_argument("--apply", action="store_true",
+                   help="migrate: 实际执行幂等迁移；缺省只预览")
+    s.add_argument("--docs", type=int, default=1,
+                   help="batch: 本次处理的未读教材章节数")
+    s.add_argument("--wiki-pages", type=int, default=1,
+                   help="batch: 本次处理的未读 Wikipedia 页面数")
     s.add_argument("--max-entities", type=int, default=20)
     s.add_argument("--max-claims", type=int, default=30)
     s.add_argument("--no-verify-llm", action="store_true",

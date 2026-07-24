@@ -1,6 +1,7 @@
 """从语料快照产生并校验结构化 Observation。"""
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass, field
 from typing import Any
@@ -177,13 +178,66 @@ def parse_payload(payload: dict, source_text: str) -> ObservationBatch:
 
 def extract(source_text: str, topic: str, *, max_entities: int = 20,
             max_claims: int = 30) -> ObservationBatch:
+    chunks = split_text(source_text)
+    entity_budget = max(1, (max_entities + len(chunks) - 1) // len(chunks))
+    claim_budget = max(1, (max_claims + len(chunks) - 1) // len(chunks))
     reg = registry()
-    prompt = EXTRACT_PROMPT.format(
-        topic=topic,
-        entity_types="、".join(reg.entity_types),
-        relations="、".join(reg.relations),
-        max_entities=max_entities, max_claims=max_claims, text=source_text)
-    payload = llm.chat_json([{"role": "user", "content": prompt}])
-    if not isinstance(payload, dict):
-        raise ValueError("抽取器必须返回 JSON object")
-    return parse_payload(payload, source_text)
+
+    def extract_one(chunk: str) -> ObservationBatch:
+        prompt = EXTRACT_PROMPT.format(
+            topic=topic,
+            entity_types="、".join(reg.entity_types),
+            relations="、".join(reg.relations),
+            max_entities=entity_budget, max_claims=claim_budget, text=chunk)
+        payload = llm.chat_json([{"role": "user", "content": prompt}])
+        if not isinstance(payload, dict):
+            raise ValueError("抽取器必须返回 JSON object")
+        return parse_payload(payload, chunk)
+
+    batches = llm.pmap(extract_one, chunks)
+    entities: dict[str, EntityObservation] = {}
+    claims: dict[str, ClaimObservation] = {}
+    targets: dict[str, ReadingTarget] = {}
+    rejected: list[str] = []
+    for batch in batches:
+        for item in batch.entities:
+            entities.setdefault(item.name.casefold(), item)
+        for item in batch.claims:
+            key = json.dumps(
+                [item.subject.casefold(), item.relation, item.object.casefold(),
+                 item.qualifiers],
+                ensure_ascii=False, sort_keys=True)
+            claims.setdefault(key, item)
+        for item in batch.next_reading_targets:
+            targets.setdefault(item.query.casefold(), item)
+        rejected.extend(batch.rejected)
+    return ObservationBatch(
+        entities=tuple(list(entities.values())[:max_entities]),
+        claims=tuple(list(claims.values())[:max_claims]),
+        next_reading_targets=tuple(targets.values()),
+        rejected=tuple(rejected))
+
+
+def split_text(text: str, limit: int = 12000) -> list[str]:
+    """按段落稳定分块；超长段硬切，避免整页超出模型上下文。"""
+    chunks: list[str] = []
+    current = ""
+    for paragraph in re.split(r"\n\s*\n", text):
+        paragraph = paragraph.strip()
+        if not paragraph:
+            continue
+        while len(paragraph) > limit:
+            if current:
+                chunks.append(current)
+                current = ""
+            chunks.append(paragraph[:limit])
+            paragraph = paragraph[limit:]
+        candidate = f"{current}\n\n{paragraph}" if current else paragraph
+        if len(candidate) > limit and current:
+            chunks.append(current)
+            current = paragraph
+        else:
+            current = candidate
+    if current:
+        chunks.append(current)
+    return chunks or [text]

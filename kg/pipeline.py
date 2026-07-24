@@ -5,7 +5,7 @@ import hashlib
 import json
 from pathlib import Path
 
-from . import claims, decision, observations, store, validators
+from . import claims, coverage, decision, observations, store, validators
 
 
 ALGORITHM_VERSION = "grounded-pipeline-1"
@@ -20,15 +20,38 @@ def read_file(conn, path: str, *, source_slug: str, source_name: str,
               verify_llm: bool = True) -> dict:
     file_path = Path(path)
     text = file_path.read_text(encoding="utf-8")
+    return read_text(
+        conn, text, source_slug=source_slug, source_name=source_name,
+        source_type=source_type, independence_group=independence_group,
+        topic=topic, version=version, language=language,
+        authority_profile=authority_profile, observations_path=observations_path,
+        max_entities=max_entities, max_claims=max_claims,
+        verify_llm=verify_llm, uri=str(file_path),
+        metadata={"local_path": str(file_path)})
+
+
+def read_text(conn, text: str, *, source_slug: str, source_name: str,
+              source_type: str, independence_group: str, topic: str,
+              version: str = "", language: str = "",
+              authority_profile: dict | None = None,
+              observations_path: str | None = None,
+              max_entities: int = 20, max_claims: int = 30,
+              verify_llm: bool = True, uri: str = "",
+              storage_ref: str = "", metadata: dict | None = None) -> dict:
+    if not coverage.exists(conn, topic):
+        raise ValueError(f"未知 coverage topic: {topic}")
+    if not text.strip():
+        raise ValueError("语料正文为空")
     digest = hashlib.sha256(text.encode("utf-8")).hexdigest()
     source_id = store.upsert_source(
         conn, source_slug, source_name, source_type,
         independence_group=independence_group,
         authority_profile=authority_profile or {},
-        metadata={"local_path": str(file_path)})
+        metadata=metadata or {})
     snapshot = store.add_source_snapshot(
         conn, source_id, version or digest[:12], content=text,
-        content_hash=digest, uri=str(file_path), original_language=language)
+        content_hash=digest, uri=uri, original_language=language,
+        storage_ref=storage_ref, metadata=metadata)
     run_id = store.create_run(
         conn, "extraction", ALGORITHM_VERSION,
         prompt_version="grounded-extract-1",
@@ -57,6 +80,12 @@ def read_file(conn, path: str, *, source_slug: str, source_name: str,
                 (topic, target.query, target.reason, topic))
         conn.commit()
         store.finish_run(conn, run_id, "completed")
+        conn.execute(
+            "INSERT OR REPLACE INTO pipeline_processed"
+            " (source_snapshot_id,coverage_topic_id,algorithm_version,run_id,processed_at)"
+            " VALUES (?,?,?,?,unixepoch())",
+            (snapshot.id, topic, ALGORITHM_VERSION, run_id))
+        conn.commit()
     except Exception:
         store.finish_run(conn, run_id, "failed")
         raise
@@ -74,6 +103,122 @@ def read_file(conn, path: str, *, source_slug: str, source_name: str,
     }
 
 
+TEXTBOOK_AUTHORITY = {
+    name: "high" for name in (
+        "is_a", "subfield_of", "part_of", "prerequisite_of",
+        "often_confused_with", "pedagogical_contrast_with", "alternative_to",
+        "used_for", "solves", "evaluated_by", "optimizes", "derived_from")
+}
+
+
+def read_doc_section(conn, book: str, sec_id: str, *, topic: str,
+                     observations_path: str | None = None,
+                     max_entities: int = 20, max_claims: int = 30,
+                     verify_llm: bool = True) -> dict:
+    from . import docs
+    sec = docs.get_section(conn, book, sec_id)
+    if not sec:
+        raise ValueError(f"教材章节不存在: {book} §{sec_id}")
+    sec = docs.ensure_text(conn, sec)
+    cfg = docs.load_book(book)
+    return read_text(
+        conn, sec["text"], source_slug=f"doc-{book}",
+        source_name=cfg["title"], source_type="textbook",
+        independence_group=f"book:{book}", topic=topic,
+        version=f"{sec_id}@{sec['content_hash']}", language="zh",
+        authority_profile=TEXTBOOK_AUTHORITY,
+        observations_path=observations_path,
+        max_entities=max_entities, max_claims=max_claims,
+        verify_llm=verify_llm, uri=docs.url_of(sec),
+        storage_ref=f"doc_sections:{sec['id']}",
+        metadata={
+            "book": book, "sec_id": sec_id, "title": sec["title"],
+            "original_language": sec["orig_lang"],
+            "translated": sec["orig_lang"] != "zh",
+        })
+
+
+def read_wiki_page(conn, lang: str, title: str, *, topic: str,
+                   observations_path: str | None = None,
+                   max_entities: int = 20, max_claims: int = 30,
+                   verify_llm: bool = True) -> dict:
+    from . import corpus
+    page = corpus.get_page(conn, lang, title)
+    if not page:
+        raise ValueError(f"本地 Wikipedia 语料页不存在: {lang}:{title}")
+    return read_text(
+        conn, page["text"], source_slug=f"wikipedia-{lang}",
+        source_name=f"Wikipedia {lang}", source_type="encyclopedia",
+        independence_group="wikipedia", topic=topic,
+        version=f"{title}@{page['revision_id']}", language=lang,
+        authority_profile={}, observations_path=observations_path,
+        max_entities=max_entities, max_claims=max_claims,
+        verify_llm=verify_llm, uri=corpus.url_of(page),
+        storage_ref=f"corpus:{page['id']}",
+        metadata={
+            "page_id": page["page_id"], "title": page["title"],
+            "revision_id": page["revision_id"],
+        })
+
+
+def batch(conn, *, topic: str, doc_limit: int = 1, wiki_limit: int = 1,
+          max_entities: int = 20, max_claims: int = 30,
+          verify_llm: bool = True) -> dict:
+    """选未被当前算法处理的本地教材节和已映射 Wikipedia 页面，各跑一个小批次。"""
+    if not coverage.exists(conn, topic):
+        raise ValueError(f"未知 coverage topic: {topic}")
+    docs_rows = conn.execute(
+        "SELECT d.book,d.sec_id,d.title FROM doc_sections d"
+        " WHERE d.text!='' AND NOT EXISTS ("
+        "   SELECT 1 FROM source_snapshots ss"
+        "   JOIN pipeline_processed pp ON pp.source_snapshot_id=ss.id"
+        "   WHERE ss.storage_ref='doc_sections:' || d.id"
+        "     AND pp.coverage_topic_id=? AND pp.algorithm_version=?"
+        " ) ORDER BY d.book,d.ord LIMIT ?",
+        (topic, ALGORITHM_VERSION, max(0, doc_limit))).fetchall()
+    wiki_rows = conn.execute(
+        "SELECT DISTINCT c.lang,c.title,n.id node_id FROM corpus c"
+        " JOIN node_page np ON np.lang=c.lang AND np.page_id=c.page_id"
+        " JOIN nodes n ON n.id=np.node_id"
+        " WHERE n.status IN ('seed','approved') AND NOT EXISTS ("
+        "   SELECT 1 FROM source_snapshots ss"
+        "   JOIN pipeline_processed pp ON pp.source_snapshot_id=ss.id"
+        "   WHERE ss.storage_ref='corpus:' || c.id"
+        "     AND pp.coverage_topic_id=? AND pp.algorithm_version=?"
+        " ) ORDER BY n.id LIMIT ?",
+        (topic, ALGORITHM_VERSION, max(0, wiki_limit))).fetchall()
+    results, failures = [], []
+    for row in docs_rows:
+        label = f"doc:{row['book']}:{row['sec_id']}"
+        try:
+            output = read_doc_section(
+                conn, row["book"], row["sec_id"], topic=topic,
+                max_entities=max_entities, max_claims=max_claims,
+                verify_llm=verify_llm)
+            results.append({"source": label, "result": output})
+        except Exception as exc:
+            failures.append({"source": label, "error": str(exc)})
+    for row in wiki_rows:
+        label = f"wiki:{row['lang']}:{row['title']}"
+        try:
+            output = read_wiki_page(
+                conn, row["lang"], row["title"], topic=topic,
+                max_entities=max_entities, max_claims=max_claims,
+                verify_llm=verify_llm)
+            results.append({"source": label, "result": output})
+        except Exception as exc:
+            failures.append({"source": label, "error": str(exc)})
+    return {
+        "topic": topic,
+        "selected": {
+            "docs": [f"{row['book']}:{row['sec_id']}" for row in docs_rows],
+            "wiki": [f"{row['lang']}:{row['title']}" for row in wiki_rows],
+        },
+        "completed": results,
+        "failed": failures,
+    }
+
+
 def status(conn) -> dict:
     tables = {
         "sources": "sources",
@@ -84,6 +229,10 @@ def status(conn) -> dict:
         "observations": "observations",
         "decisions": "decisions",
         "reading_tasks": "reading_tasks",
+        "legacy_entities": "legacy_entity_map",
+        "legacy_claims": "legacy_claim_map",
+        "migration_issues": "migration_issues",
+        "processed_sources": "pipeline_processed",
     }
     result = {}
     for key, table in tables.items():

@@ -1,132 +1,200 @@
-# llm-graph — 自进化 AI 知识图谱 MVP
+# llm-graph
 
-设计方案见 [plan.md](plan.md)，算法逻辑见 [algorithm.md](algorithm.md)。
+语料驱动的 AI 知识图谱。LLM 负责阅读、抽取、实体消歧、关系判断和复核，
+但 LLM 输出本身不是知识：所有 Entity 和 Claim 必须绑定可定位的来源快照与 Evidence。
+
+设计与开发约束：
+
+- [development-plan.md](development-plan.md)
+- [design/ontology.md](design/ontology.md)
+- [design/evidence-policy.md](design/evidence-policy.md)
+- [config/relation-registry.yaml](config/relation-registry.yaml)
+- [config/ai-coverage-taxonomy.yaml](config/ai-coverage-taxonomy.yaml)
 
 ## 安装
 
 ```bash
 python3 -m venv .venv
 .venv/bin/pip install -r requirements.txt
-export MINIMAX_API_KEY=...   # MiniMax M3 + embo-01
+export MINIMAX_API_KEY=...
 ```
 
-## 首次使用：导入种子图
+数据库缺省为 `data/kg.db`。开发或试跑时使用 `KG_DB` 指向副本：
 
 ```bash
-python -m kg seed seeds/ai_core.yaml   # 109 节点 / 177 边，自动算 embedding + 跑守卫
+KG_DB=/tmp/kg-test.db .venv/bin/python -m kg pipeline status
 ```
 
-## 日常进化循环
+## 当前主流程
 
-每次开终端先激活环境（或者直接用 `.venv/bin/python` 代替 `python`）：
+### 1. 查看状态
 
 ```bash
-cd ~/code/llm-graph
-source .venv/bin/activate
+.venv/bin/python -m kg pipeline status
 ```
 
-然后跑进化循环（详细算法见 algorithm.md §10）：
+### 2. 预览历史数据迁移
 
 ```bash
-# 1. 语料：把生效节点的维基页面抓进本地语料库（增量，抓过的不重抓）
-python -m kg corpus crawl
-python -m kg corpus grow --limit 10    # 可选：沿内链把被引最多的页面扩进语料
-
-# 1b. 教材语料（教学性关系的富矿；英文源自动翻译成中文入库）
-python -m kg docs add sources/d2l-zh.yaml   # 首次登记源（sources/ 下已有 4 个）
-python -m kg docs fetch d2l-zh --limit 20   # 增量抓章节
-python -m kg docs translate cs231n --limit 3  # 可选：预翻译英文源（不跑则用到时才翻）
-
-# 2. 结构挖掘（零 LLM、免费）：重定向→别名，分类→候选边，Wikidata 关系→候选边
-python -m kg mine aliases
-python -m kg mine categories
-python -m kg mine wikidata
-
-# 3. 提取（主通道）：语料分级 教材(high) > 维基(mid)，批量优先走教材
-python -m kg ingest --batch 3 --doc        # 教材缺口驱动批量（high 级语料，优先）
-python -m kg ingest --batch 3              # 维基缺口驱动批量（mid 级，覆盖面兜底）
-python -m kg ingest 卷积神经网络            # 指定锚点
-python -m kg ingest 卷积神经网络 --dry-run  # 只看结果不入库
-python -m kg ingest 线性回归 --doc d2l-zh   # 教材通道指定锚点+书
-
-# 4. 假设生成器（辅助）：LLM 提缺口名字 -> 语料验证 -> 有据提取
-python -m kg expand
-
-# 5. 复核：结构佐证（零 LLM，含教材目录序信号）+ LLM 判断题复核；--apply 自动裁决
-python -m kg verify --limit 20 --apply
-python -m kg verify --limit 20 --apply --dry-run  # 影子裁决（burn-in）：只记结论不动状态
-
-# 6. 人工审核剩余队列：按信号分层排序（冲突项在前），逐条裁决；节点批准后就地裁决关联边
-python -m kg review
-python -m kg review --audit 5   # 抽检自动放行的条目（跑过 --apply 后定期做）
-python -m kg rollback           # 抽检发现坏批次时：列出批次，kg rollback <batch_id> 整批撤销
-
-# 7. 守卫 + 校准 + 看图
-python -m kg check
-python -m kg calibrate   # 各通道×佐证组合的裁决 precision，指导自动裁决松紧
-python -m kg viz    # 生成 out/graph.html，浏览器打开
+.venv/bin/python -m kg pipeline migrate
 ```
 
-注意点：
-
-- `ingest` 的锚点必须是图里已有的节点名（或别名），新知识要挂在骨架上。
-- 所有提取产物都带来源 `wiki:语言:页面@版本号` 或 `doc:教材:章节@内容hash`，审核时可溯源；语料在本地，同版本可复现。
-- 英文教材翻译入库即快照（evidence 对中文译文校验）；PDF 源需要 `pdftotext`（`sudo apt install poppler-utils`）。
-- 一次 M3 提取要 1~3 分钟（reasoning 模型思考久），批量时耐心等。
-- viz 图里虚线黄色的是 proposed 待审核内容，实线是已生效的。
-- `verify --apply` 的自动裁决很保守：边要 LLM 复核与结构佐证双重一致（无环类型还要
-  模拟加边不成环）；节点只自动批准（LLM 判「独立概念」+ 名字精确命中语料页 +
-  语料页与图谱邻居有重叠），拒绝/降级 facet 一律留人工；low 级语料一律不自动裁决。
-  每次运行一个批次号：自动放行后用 `review --audit N` 抽检兜底，
-  发现坏批次 `kg rollback <batch_id>` 整批撤销。放开自动裁决前建议先跑
-  `--apply --dry-run` 影子模式（只记结论不动状态），人工审完后 `kg calibrate`
-  看影子 vs 人工一致率（burn-in），一致率够高再真 `--apply`。
-
-## 全部命令
+正式迁移前先备份：
 
 ```bash
-# 图谱数据
-python -m kg seed seeds/ai_core.yaml   # 导入种子 YAML（--no-embed 跳过 embedding）
-python -m kg stats                     # 节点/边统计（按状态、类型分布）+ 裁决日志汇总
-python -m kg check                     # 一致性守卫：先修/is_a/part_of 环 / 先修传递冗余 / 正反向同型边 / 孤儿 / facet 重名
-python -m kg viz                       # 生成 out/graph.html（--out 路径，--approved-only 只看生效子图）
-python -m kg export 神经网络           # 教学接口：定义/facets/误区/先修链/讲解资源 JSON
-python -m kg embed                     # 补齐缺失的 embedding
-
-# 语料库（维基）
-python -m kg corpus crawl              # 抓生效节点的维基页面（增量；--limit 限页数）
-python -m kg corpus grow --limit 10    # 沿内链把被引最多的页面扩进语料
-python -m kg corpus stats              # 语料库统计与节点覆盖率
-
-# 语料库（教材，sources/*.yaml 声明式源：d2l-zh / cs231n / cs229 / sutton-barto）
-python -m kg docs add sources/<book>.yaml   # 登记源（章节元数据入库）
-python -m kg docs fetch <book>              # 抓章节正文（--limit 限节数，--sec 指定章节强制重抓）
-python -m kg docs translate <book>          # 翻译英文源为中文（--limit / --sec；minimax-m2.7）
-python -m kg docs stats                     # 各书抓取/翻译进度
-
-# 结构挖掘（零 LLM）
-python -m kg mine aliases              # 重定向 → 别名
-python -m kg mine categories           # 分类 → part_of 候选边
-python -m kg mine wikidata             # Wikidata QID 关系 → 候选边 + 同 QID 疑似同概念仲裁
-
-# 提取与扩展（LLM）
-python -m kg ingest --batch 3 --doc    # 教材缺口驱动批量提取（high 级语料，优先；--doc 可带 book）
-python -m kg ingest --batch 3          # 维基缺口驱动批量提取（mid 级，覆盖面兜底）
-python -m kg ingest <锚点名>           # 指定锚点（--limit 每锚点概念数上限，--dry-run 不入库）
-python -m kg ingest <锚点名> --doc [BOOK]  # 教材通道（缺省在所有书里找锚点章节）
-python -m kg expand                    # 假设生成器（--node 指定节点，--count 前沿节点数，
-                                       #   --limit 每节点提议数上限，--dry-run 只验证不提取）
-
-# 复核与审核
-python -m kg verify --limit 20         # 结构佐证 + LLM 判断题复核（--no-llm 只跑结构佐证，
-                                       #   --redo 重跑已有结论，--apply 双重一致自动裁决，
-                                       #   --apply --dry-run 影子裁决：burn-in 校准用）
-python -m kg review                    # 人工审核队列：节点 a批准/r拒绝/m合并/d降级facet/s跳过/q退出，
-                                       #   边 a/r/f翻转方向/t改类型/s/q；节点批准后就地裁决关联边
-python -m kg review --audit 5          # 抽检 N 条自动放行的条目
-python -m kg rollback [batch_id]       # 整批撤销一次自动裁决（不带参数列出批次）
-python -m kg calibrate                 # 裁决 precision（通道×类型×佐证组合）+ 抽检推翻率
-                                       #   + burn-in 影子裁决 vs 人工一致率
+cp data/kg.db data/kg.db.bak
+.venv/bin/python -m kg pipeline migrate --apply
 ```
 
-数据库在 `data/kg.db`（SQLite），可用 `KG_DB` 环境变量指向测试库以免污染真实数据。
+迁移具有幂等性：
+
+- 旧节点转为 proposed Entity；
+- 旧边转为 proposed Claim；
+- 来源和理由转为 Evidence；
+- 无法安全判断的旧关系进入 `migration_issues`；
+- 不会因为旧状态直接发布新 Claim。
+
+### 3. 自动读取本地语料批次
+
+```bash
+.venv/bin/python -m kg pipeline batch \
+  --topic ai \
+  --docs 1 \
+  --wiki-pages 1
+```
+
+Pipeline 会：
+
+```text
+Source Snapshot
+  -> LLM Grounded Observation
+  -> Evidence 机械校验
+  -> Entity 消歧
+  -> Claim 聚合
+  -> LLM Evidence 蕴含复核
+  -> 关系专用验证
+  -> Shadow Decision
+```
+
+每个来源快照只由同一算法和 coverage topic 处理一次。扩大批次前先看状态和
+Shadow 结果。
+
+### 4. 日常入口
+
+```bash
+./evolve.sh --fast
+./evolve.sh --migrate --topic ai --docs 1 --wiki 1
+```
+
+`--fast` 不调用 LLM，只显示迁移预览和 Pipeline 状态。
+
+常用参数：
+
+```text
+--topic ID
+--docs N
+--wiki N
+--max-entities N
+--max-claims N
+--fetch
+--migrate
+--concurrency N
+```
+
+所有新决策当前保持 Shadow，不会自动发布。
+
+## 指定语料
+
+### 教材章节
+
+```bash
+.venv/bin/python -m kg pipeline doc \
+  --book cs229 \
+  --sec 1 \
+  --topic supervised_learning
+```
+
+### 本地 Wikipedia 页面
+
+```bash
+.venv/bin/python -m kg pipeline wiki \
+  --lang zh \
+  --title 人工智能 \
+  --topic ai
+```
+
+页面必须已经存在于本地 `corpus` 表。
+
+### 任意 UTF-8 本地文本
+
+```bash
+.venv/bin/python -m kg pipeline read \
+  --file /path/to/source.txt \
+  --source source-slug \
+  --source-name "Source Name" \
+  --source-type textbook \
+  --independence-group book-source \
+  --authority '{"is_a":"high","prerequisite_of":"high"}' \
+  --topic supervised_learning \
+  --language zh
+```
+
+缺省由 LLM 抽取。也可以通过 `--observations observations.json` 导入已有结构化
+Observation；Evidence 仍必须能在原文中机械定位。
+
+`--no-verify-llm` 会跳过 LLM 蕴含复核，Claim 的 Shadow 结果应停留在
+`needs_more_evidence`，适合无网络管线测试。
+
+## 语料采集
+
+教材：
+
+```bash
+.venv/bin/python -m kg docs add sources/d2l-zh.yaml
+.venv/bin/python -m kg docs fetch d2l-zh
+.venv/bin/python -m kg docs translate cs229 --limit 1
+```
+
+Wikipedia：
+
+```bash
+.venv/bin/python -m kg corpus crawl
+.venv/bin/python -m kg corpus grow --limit 10
+```
+
+采集层暂时继续复用现有 `docs` 和 `corpus` 实现。
+
+## 兼容命令
+
+以下命令仍操作旧 `nodes/edges`，仅用于迁移期间对照，不属于当前主流程：
+
+```text
+seed
+ingest
+expand
+mine
+verify
+review
+rollback
+check
+calibrate
+viz
+stats
+export
+embed
+```
+
+当前 `viz` 和 `review` 尚未切换到 Entity/Claim/Evidence 模型。查看新核心请使用：
+
+```bash
+.venv/bin/python -m kg pipeline status
+```
+
+## 安全原则
+
+- 不允许没有 Source Snapshot 的正式知识。
+- Evidence 必须能在快照中机械定位。
+- 同一 Claim 可以积累多个支持、反对和不确定 Evidence。
+- 同一模型的多次调用不算独立来源。
+- 缺证据是 `needs_more_evidence`，不是自动拒绝。
+- 自动规则先运行 Shadow，达到关系级校准门槛后才能启用。

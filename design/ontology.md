@@ -59,6 +59,8 @@ a prerequisite.
 
 ### Functional
 
+- `alternative_to`: subject and object are alternative methods, models, or
+  systems for substantially the same task or objective.
 - `used_for`: subject supports or performs object task.
 - `solves`: subject is explicitly presented as solving object task.
 - `evaluated_by`: subject is evaluated using object metric.
