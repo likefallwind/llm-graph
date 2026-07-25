@@ -84,40 +84,49 @@ do not maintain parallel v1/v2 packages or databases.
 
 ### 4.1 Storage
 
-Initial core tables:
+Current core tables:
 
 ```text
 sources
 source_snapshots
-source_independence_groups
 
 entities
 aliases
+entity_type_assertions
+entity_resolution_events
+entity_alignment_candidates
+entity_alignment_evidence
 entity_external_ids
 
 claims
 evidence
 observations
 
-extraction_runs
-verification_runs
+runs
 decisions
 merge_events
+model_queue_reviews
 
 relation_definitions
 coverage_topics
-coverage_expectations
 reading_tasks
 
-gold_examples
-evaluation_runs
+legacy_entity_map
+legacy_claim_map
+migration_issues
+pipeline_processed
 ```
+
+Source independence is represented by the `sources.independence_group` field,
+not by counting excerpts or repeated model judgments. Extraction and
+verification share the versioned `runs` table.
 
 ### 4.2 Entity Types
 
-Initial entity types:
+Current entity types:
 
 ```text
+field
 concept
 method
 task
@@ -126,33 +135,37 @@ architecture
 dataset
 metric
 loss
+system
 resource
 ```
 
 Entity types are not cosmetic. They constrain which relations may connect two
 entities.
 
-### 4.3 Initial Relation Registry
+### 4.3 Relation Registry v3
 
-Taxonomy and structure:
+The first production-oriented graph intentionally exposes only three core
+relations:
 
 ```text
 is_a
-subfield_of
 part_of
+prerequisite_of
 ```
 
-Educational:
+This small registry is deliberate. The first graph version is primarily meant
+to recover knowledge structure and learning order. Relations that are difficult
+to distinguish at scale should be merged into these core semantics where that
+is valid, or omitted until a later version.
+
+The following relations remain registered as `experimental` and are not
+available to the grounded extraction path:
 
 ```text
-prerequisite_of
+subfield_of
 often_confused_with
 pedagogical_contrast_with
-```
-
-Functional and historical:
-
-```text
+alternative_to
 used_for
 solves
 evaluated_by
@@ -160,6 +173,9 @@ trained_on
 optimizes
 derived_from
 ```
+
+Experimental registration preserves design options without allowing them to
+inflate the current graph or blur the educational structure.
 
 Each relation definition must specify:
 
@@ -264,18 +280,43 @@ domain and type compatibility
 neighborhood compatibility
 ```
 
-Decision classes:
+Resolution outcomes:
 
 ```text
 same_entity
-different_entity
-facet_of
+type_conflict
+suspected_same_entity
+created
 ambiguous
 ```
 
-Automatic merge requires a high-precision rule, such as a shared reliable
-external identifier or a calibrated combination that meets the merge quality
-gate. Ambiguous cases remain separate and enter targeted review.
+Resolution order:
+
+```text
+deterministically normalized name
+  -> exact canonical-name match
+  -> exact verified-alias match
+  -> limited candidate retrieval
+  -> grounded LLM classification
+  -> deterministic safety gate or suspected-alignment queue
+```
+
+Each entity has one canonical normalized name and may have multiple sourced
+aliases. Exact canonical and verified-alias matches are the fast path. Fuzzy
+string similarity is candidate retrieval only and never proves identity.
+
+High-confidence direct translations and strict name variants may be verified
+when the LLM classification also passes deterministic string checks. Examples
+include Chinese/English term pairs and category-word variants such as
+`分类`/`分类问题` or `Softmax 函数`/`softmax运算`. Abbreviations, symbols,
+semantic aliases, and composite names are not automatically merged from one
+model judgment.
+
+Other likely matches enter `entity_alignment_candidates` as
+`suspected_same_entity`. Evidence accumulates by independent source group.
+Repeated judgments by MiniMax M3 are audit evidence, not additional independent
+knowledge sources. Model queue reviews are stored separately in
+`model_queue_reviews`.
 
 All merges are stored as reversible events. Aliases retain language, source, and
 history.
@@ -317,17 +358,15 @@ Generic hyperlinks and co-occurrence cannot prove typed relations.
 - direction consistency;
 - conflict with existing taxonomy.
 
-`subfield_of` validation:
-
-- recognized domain hierarchy;
-- curriculum or classification support;
-- distinction from `is_a` and `part_of`.
-
 `part_of` validation:
 
-- explicit composition evidence;
-- rejection of category-membership-only evidence;
-- distinction from taxonomy and topical membership.
+- explicit evidence that the subject is an actual structural component or an
+  explicitly identified process stage;
+- rejection of usage, dependency, participation, construction, input/output,
+  attribute, subtype, category-membership, and topical-membership evidence;
+- explicit composition confirmation from the entailment judge before evidence
+  can count as supporting;
+- human review for high-impact claims.
 
 `prerequisite_of` validation:
 
@@ -340,11 +379,9 @@ Generic hyperlinks and co-occurrence cannot prove typed relations.
 Textbook order alone is weak evidence and cannot independently approve a
 prerequisite claim.
 
-Functional relations:
-
-- enforce subject and object types;
-- require text that entails the specific functional relationship;
-- reject generic co-occurrence.
+Experimental relations are not extracted in the current vertical slice. Before
+any one becomes core, it must receive endpoint rules, evidence contracts,
+confusion tests, validators, migration analysis, and benchmark coverage.
 
 ### 5.6 LLM Verification Roles
 
@@ -510,7 +547,57 @@ Targets can be revised through documented benchmark evidence, not convenience.
 
 ## 7. Implementation Phases
 
-## Phase 0: Baseline
+### Current Status Snapshot — 2026-07-25
+
+The redesigned grounded pipeline is operational on `develop` for a bounded
+vertical slice. This is not yet approval to run unbounded expansion or publish
+claims automatically.
+
+Current database state:
+
+```text
+sources: 3
+source snapshots: 9
+entities: 90
+claims: 40
+evidence records: 164
+observations: 193
+decisions: 64
+reading tasks: 30
+processed source/topic pairs: 11
+```
+
+Current resolution and review state:
+
+```text
+aliases: 86 verified, 7 proposed, 2 rejected
+alignment candidates: 39 verified, 3 suspected
+observations: 181 resolved, 4 pending, 8 rejected
+type conflicts: 17, all with MiniMax M3 queue reviews
+model queue reviews: 21
+```
+
+The four review queues were processed in this order:
+
+1. proposed aliases;
+2. suspected entity alignments;
+3. pending Observation replay;
+4. entity type conflicts.
+
+MiniMax M3 reviewed all four queues. Its conclusions were stored as evidence,
+not treated as independent sources. Safe direct aliases were promoted through
+deterministic gates. Pending replay reduced the queue from eight to four and
+restored grounded evidence for the `二分类 is_a 分类` and
+`多类分类 is_a 分类` claims. No entity primary type was changed solely from
+the model's recommendation.
+
+The full test suite currently contains 42 passing tests. Mechanical graph checks
+report no cycles, reverse duplicate typed edges, or invalid endpoint types.
+Existing soft warnings include prerequisite shortcuts, orphan nodes, and
+facet/entity duplication; these remain quality work rather than hard schema
+failures.
+
+### Phase 0: Baseline — Partial
 
 Tasks:
 
@@ -531,7 +618,7 @@ Exit criteria:
 - the current baseline can be reproduced and compared with the redesign;
 - database changes have a reversible migration path.
 
-## Phase 1: Ontology, Evidence Policy, and Benchmark
+### Phase 1: Ontology, Evidence Policy, and Benchmark — Partial
 
 Tasks:
 
@@ -546,16 +633,20 @@ Deliverables:
 
 - `design/ontology.md`;
 - `design/evidence-policy.md`;
-- `config/relation-registry-v1.yaml`;
-- `config/ai-coverage-taxonomy-v1.yaml`;
-- `benchmarks/gold-v1.jsonl`.
+- `config/relation-registry.yaml`;
+- `config/ai-coverage-taxonomy.yaml`;
+- `benchmarks/gold.jsonl`.
 
 Exit criteria:
 
 - every relation has unambiguous semantics and validation rules;
 - benchmark examples exercise every relation and major failure mode.
 
-## Phase 2: Storage Foundation
+Current note: ontology, evidence policy, relation registry v3, coverage taxonomy,
+and the benchmark schema exist. The gold dataset is still only a seed and is far
+below the 300-example quality gate.
+
+### Phase 2: Storage Foundation — Implemented
 
 Tasks:
 
@@ -566,14 +657,14 @@ Tasks:
 - implement immutable run records and reversible decisions;
 - implement storage-level constraints and reversible migrations.
 
-Proposed modules:
+Implemented modules:
 
 ```text
 kg/models.py
 kg/store.py
-kg/sources.py
+kg/schema.py
+kg/schema.sql
 kg/ontology.py
-kg/runs.py
 ```
 
 Exit criteria:
@@ -582,7 +673,7 @@ Exit criteria:
 - later evidence is never silently discarded;
 - every decision is reproducible and reversible.
 
-## Phase 3: First Vertical Slice
+### Phase 3: First Vertical Slice — Operational, Not Yet Calibrated
 
 Scope:
 
@@ -601,16 +692,16 @@ Tasks:
 - implement relation-specific validators;
 - generate a shadow decision report.
 
-Proposed modules:
+Implemented modules:
 
 ```text
 kg/observations.py
-kg/extract.py
 kg/entity_resolution.py
 kg/claims.py
-kg/validators/
+kg/validators.py
 kg/decision.py
 kg/pipeline.py
+kg/review_queues.py
 ```
 
 Exit criteria:
@@ -620,7 +711,13 @@ Exit criteria:
 - results can be evaluated against the gold set;
 - no real automatic decisions are required.
 
-## Phase 4: Grounded Reading Agent
+Current note: the redesigned pipeline runs end to end for supervised-learning
+foundations, uses the three core relations, preserves evidence separately from
+claims, performs relation-specific entailment validation, and emits shadow
+decisions. It still needs broader independent-source coverage and benchmark
+evaluation before this phase is considered complete.
+
+### Phase 4: Grounded Reading Agent — Foundation Implemented
 
 Tasks:
 
@@ -637,7 +734,12 @@ Exit criteria:
   knowledge;
 - every expansion path is traceable from coverage task to source to claim.
 
-## Phase 5: Automated Verification and Active Review
+Current note: document and Wikipedia readers, reading tasks, source snapshots,
+source independence groups, per-chunk extraction limits, and processed-source
+tracking are implemented. Repeated-loop control and coverage-driven scheduling
+still need production evaluation.
+
+### Phase 5: Automated Verification and Active Review — In Progress
 
 Tasks:
 
@@ -654,7 +756,12 @@ Exit criteria:
 - conflicts and ambiguous merges are routed to humans;
 - routine review workload falls without reducing measured precision.
 
-## Phase 6: Coverage Planner
+Current note: grounded entailment, shadow decisions, entity-alignment queues,
+model review audit records, pending Observation replay, and type-conflict
+triage are implemented. Adversarial critique, calibrated active-review
+prioritization, and stratified audits remain incomplete.
+
+### Phase 6: Coverage Planner — Early Foundation
 
 Tasks:
 
@@ -670,7 +777,7 @@ Exit criteria:
 - expansion is not dominated by link popularity or current graph proximity;
 - coverage progress is measurable over time.
 
-## Phase 7: Legacy Data Migration and Comparative Evaluation
+### Phase 7: Legacy Data Migration and Comparative Evaluation — Code Ready, Not Run
 
 Tasks:
 
@@ -687,7 +794,11 @@ Exit criteria:
 - every migrated claim receives complete provenance and validation state;
 - the redesign outperforms the baseline on agreed quality metrics.
 
-## Phase 8: Cutover and Cleanup
+Current note: migration tables and preview/apply code exist, but the current
+database has no migrated legacy entities or claims. Comparative evaluation has
+not started.
+
+### Phase 8: Cutover and Cleanup — Pending
 
 Tasks:
 
@@ -703,53 +814,82 @@ Exit criteria:
 - the old system remains reproducible from its archive;
 - rollback and recovery procedures are documented.
 
-## 8. First Development Iteration
+## 8. Current Development Iteration
 
-The first implementation iteration should not attempt full AI coverage.
+The next iteration should prepare a controlled expansion, not immediately run
+unbounded full-graph growth.
 
-Produce:
+### 8.1 Close the High-Impact Human Queue
 
-1. `design/ontology.md`
-2. `design/evidence-policy.md`
-3. `config/relation-registry-v1.yaml`
-4. `config/ai-coverage-taxonomy-v1.yaml`
-5. `benchmarks/gold-v1.jsonl`
-6. `kg/schema.sql`
+Human confirmation should focus on the small set where model evidence is not
+sufficient:
 
-Then implement one vertical slice:
+- alignment:
+  - `牛顿-拉弗森法` versus `牛顿法`;
+  - `平方误差函数` versus `平方损失`;
+  - `softmax-交叉熵损失` versus `交叉熵损失`;
+- type:
+  - whether `单层神经网络` should change from `model` to `architecture`;
+  - whether `线性代数` and `微积分` should change from `concept` to `field`;
+  - whether `人工神经网络` is best represented as `method`, `model`, or
+    `architecture`;
+- remaining proposed abbreviations and semantic aliases, including `ce`,
+  `minibatch SGD`, and `稠密层`.
 
-```text
-coverage task
-  -> two source snapshots
-  -> grounded observations
-  -> entity resolution
-  -> canonical claims
-  -> multiple evidence records
-  -> relation-specific validation
-  -> shadow decision report
-```
+The four pending observations depend on unresolved alignment for
+`牛顿-拉弗森法` and `平方误差函数`; replay them after human decisions.
 
-Do not implement broad automatic expansion before this slice passes the first
-benchmark.
+### 8.2 Add Independent Evidence
 
-## 9. Decision Points Requiring User Approval
+- read at least one genuinely independent authoritative source for the current
+  core claims;
+- prioritize `is_a` and `prerequisite_of` claims with only one source group;
+- do not count translations, repeated chapters from the same book family, or
+  repeated MiniMax M3 reviews as independent;
+- use relation-specific authority: textbooks and curricula are usually stronger
+  for learning order, while Wikipedia remains supplementary rather than
+  globally inferior or superior.
 
-Confirm before implementation:
+### 8.3 Build the Calibration Set
 
-1. Whether the graph remains education-first or also models papers, products,
-   organizations, and rapidly changing research artifacts.
-2. The initial entity types and relation registry.
-3. The first vertical-slice domain.
-4. The quality threshold required before activating automatic approval.
-5. Whether different LLM models should be used for extraction and verification,
-   or one model should be used with source diversity as the main independence
-   mechanism.
+- expand `benchmarks/gold.jsonl` from its seed state toward at least 300 reviewed
+  examples;
+- include multilingual aliases, abbreviations, semantic aliases, composite
+  names, wrong directions, type conflicts, and hard `part_of` negatives;
+- report precision by policy bucket instead of one aggregate number;
+- keep every automatic policy in shadow mode until its lower confidence bound
+  reaches the quality gate.
 
-Recommended defaults:
+### 8.4 Run Controlled Expansion
 
-- education-first, while modeling methods, tasks, models, datasets, and metrics;
-- supervised-learning foundations as the first vertical slice;
-- one primary LLM initially, with strict corpus grounding and independent source
-  evidence;
-- shadow mode until automatic approval precision is at least 98% in each
-  enabled policy bucket.
+After the human queue and first calibration batch are complete:
+
+1. process a bounded batch of authoritative textbook sections;
+2. process supplementary Wikipedia pages for terminology and coverage gaps;
+3. run alias review, alignment review, pending replay, and type review after
+   each batch;
+4. run relation entailment validation and graph guards;
+5. compare queue growth, orphan rate, evidence independence, and audit quality;
+6. increase batch size only when review debt stays bounded.
+
+The extraction limits are per text chunk, not global per document. They protect
+model output quality without truncating the rest of a long chapter.
+
+## 9. Decisions Now Fixed
+
+The following choices are no longer open design questions:
+
+1. The graph is education-first.
+2. The first vertical slice is supervised-learning foundations.
+3. The core relation set is `is_a`, `part_of`, and `prerequisite_of`.
+4. Knowledge-structure and learning-order accuracy take priority over broad
+   functional or analogy relations.
+5. MiniMax M3 may extract, translate, normalize, and review, but a model judgment
+   is never an independent source.
+6. Exact canonical or verified-alias matches are the entity-resolution fast
+   path; fuzzy matching only retrieves candidates.
+7. Automatic publication remains in shadow mode until benchmarked policy
+   buckets meet the quality threshold.
+
+Future ontology expansion, activation of experimental relations, and automatic
+main-type changes still require explicit review and migration analysis.

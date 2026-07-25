@@ -45,6 +45,16 @@ def _claim(row) -> models.Claim:
         metadata=_load(row["metadata"]))
 
 
+def _evidence(row) -> models.Evidence:
+    return models.Evidence(
+        id=row["id"], entity_id=row["entity_id"], claim_id=row["claim_id"],
+        source_snapshot_id=row["source_snapshot_id"], polarity=row["polarity"],
+        evidence_type=row["evidence_type"], excerpt=row["excerpt"],
+        location=row["location"], mechanically_valid=bool(row["mechanically_valid"]),
+        entailment=row["entailment"], metadata=_load(row["metadata"]),
+        current_entailment_review_id=row["current_entailment_review_id"])
+
+
 def create_run(conn, run_type: str, algorithm_version: str, *, model: str = "",
                prompt_version: str = "", config: dict | None = None) -> int:
     cur = conn.execute(
@@ -193,6 +203,23 @@ def update_alias_classification(conn, alias_id: int, *, status: str,
     conn.commit()
 
 
+def add_model_queue_review(
+        conn, *, queue_type: str, item_id: int, model: str, verdict: str,
+        confidence: float, reason: str = "", payload: dict | None = None,
+        policy_version: str) -> int:
+    if queue_type not in {"entity_alignment", "type_conflict"}:
+        raise ValueError(f"非法模型复核队列: {queue_type}")
+    confidence = min(1.0, max(0.0, float(confidence)))
+    cur = conn.execute(
+        "INSERT INTO model_queue_reviews"
+        " (queue_type,item_id,model,verdict,confidence,reason,payload,"
+        "  policy_version,created_at) VALUES (?,?,?,?,?,?,?,?,?)",
+        (queue_type, item_id, model, verdict, confidence, reason,
+         _json(payload or {}), policy_version, time.time()))
+    conn.commit()
+    return cur.lastrowid
+
+
 def add_external_id(conn, entity_id: int, provider: str, external_id: str) -> int:
     conn.execute(
         "INSERT OR IGNORE INTO entity_external_ids(entity_id,provider,external_id,created_at)"
@@ -270,17 +297,13 @@ def add_evidence(conn, source_snapshot_id: int, excerpt: str, evidence_type: str
         " AND excerpt_hash=? AND polarity=?",
         (target_key, source_snapshot_id, digest, polarity)).fetchone()
     conn.commit()
-    return models.Evidence(
-        id=row["id"], entity_id=row["entity_id"], claim_id=row["claim_id"],
-        source_snapshot_id=row["source_snapshot_id"], polarity=row["polarity"],
-        evidence_type=row["evidence_type"], excerpt=row["excerpt"],
-        location=row["location"], mechanically_valid=bool(row["mechanically_valid"]),
-        entailment=row["entailment"], metadata=_load(row["metadata"]))
+    return _evidence(row)
 
 
 def decide(conn, target_type: str, target_id: int, outcome: str, *,
            decided_by: str, policy_version: str = "", reason: str = "",
-           evidence_ids: list[int] | None = None, batch_id: str = "") -> models.Decision:
+           evidence_ids: list[int] | None = None, batch_id: str = "",
+           evidence_reviews: list[tuple[int, int | None]] | None = None) -> models.Decision:
     if target_type not in {"entity", "claim", "merge"}:
         raise ValueError(f"非法裁决目标: {target_type}")
     if decided_by not in {"human", "auto", "shadow"}:
@@ -293,12 +316,17 @@ def decide(conn, target_type: str, target_id: int, outcome: str, *,
         raise ValueError(f"非法裁决结果: {outcome}")
     target_key = f"{target_type}:{target_id}"
     evidence_snapshot = list(evidence_ids or [])
+    review_snapshot = [
+        {"evidence_id": evidence_id, "entailment_review_id": review_id}
+        for evidence_id, review_id in (evidence_reviews or [])]
     cur = conn.execute(
         "INSERT INTO decisions"
         " (target_key,target_type,target_id,outcome,decided_by,policy_version,reason,"
-        "  evidence_snapshot,batch_id,created_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+        "  evidence_snapshot,evidence_review_snapshot,batch_id,created_at)"
+        " VALUES (?,?,?,?,?,?,?,?,?,?,?)",
         (target_key, target_type, target_id, outcome, decided_by, policy_version,
-         reason, _json(evidence_snapshot), batch_id, time.time()))
+         reason, _json(evidence_snapshot), _json(review_snapshot), batch_id,
+         time.time()))
     if decided_by != "shadow" and target_type in {"entity", "claim"}:
         status = {
             "approve": "published", "auto_approve": "published",
@@ -316,7 +344,8 @@ def decide(conn, target_type: str, target_id: int, outcome: str, *,
     return models.Decision(
         id=cur.lastrowid, target_type=target_type, target_id=target_id,
         outcome=outcome, decided_by=decided_by, policy_version=policy_version,
-        reason=reason, evidence_snapshot=evidence_snapshot, batch_id=batch_id)
+        reason=reason, evidence_snapshot=evidence_snapshot, batch_id=batch_id,
+        evidence_review_snapshot=review_snapshot)
 
 
 def find_canonical_entity(conn, name: str) -> models.Entity | None:
@@ -488,25 +517,56 @@ def resolve_observation(conn, observation_id: int, accepted: bool) -> None:
 def evidence_for_claim(conn, claim_id: int) -> list[models.Evidence]:
     rows = conn.execute(
         "SELECT * FROM evidence WHERE claim_id=? ORDER BY id", (claim_id,)).fetchall()
-    return [models.Evidence(
-        id=row["id"], entity_id=row["entity_id"], claim_id=row["claim_id"],
-        source_snapshot_id=row["source_snapshot_id"], polarity=row["polarity"],
-        evidence_type=row["evidence_type"], excerpt=row["excerpt"],
-        location=row["location"], mechanically_valid=bool(row["mechanically_valid"]),
-        entailment=row["entailment"], metadata=_load(row["metadata"]))
-        for row in rows]
+    return [_evidence(row) for row in rows]
+
+
+ENTAILMENT_VERDICTS = ("supports", "contradicts", "insufficient")
+
+
+def add_entailment_review(conn, evidence_id: int, verdict: str, *,
+                          run_id: int | None = None, reason: str = "",
+                          raw_output: dict | None = None) -> models.EntailmentReview:
+    """追加一条蕴含判定记录，并把它设为该证据的当前结果。
+
+    历史记录只增不改：同一条证据被重判多少次，就有多少行 review，
+    evidence.entailment 只是最后一次的缓存。
+    """
+    if verdict not in set(ENTAILMENT_VERDICTS):
+        raise ValueError(f"非法 entailment: {verdict}")
+    row = conn.execute(
+        "SELECT metadata FROM evidence WHERE id=?", (evidence_id,)).fetchone()
+    if not row:
+        raise ValueError(f"Evidence 不存在: {evidence_id}")
+    cur = conn.execute(
+        "INSERT INTO entailment_reviews"
+        " (evidence_id,run_id,verdict,reason,raw_output,created_at)"
+        " VALUES (?,?,?,?,?,?)",
+        (evidence_id, run_id, verdict, reason, _json(raw_output or {}), time.time()))
+    review_id = cur.lastrowid
+    metadata = _load(row["metadata"])
+    if reason:
+        metadata["entailment_reason"] = reason
+    conn.execute(
+        "UPDATE evidence SET entailment=?, current_entailment_review_id=?, metadata=?"
+        " WHERE id=?", (verdict, review_id, _json(metadata), evidence_id))
+    conn.commit()
+    return models.EntailmentReview(
+        id=review_id, evidence_id=evidence_id, run_id=run_id, verdict=verdict,
+        reason=reason, raw_output=raw_output or {})
+
+
+def entailment_reviews(conn, evidence_id: int) -> list[models.EntailmentReview]:
+    """按时间正序返回某条证据的全部判定历史。"""
+    rows = conn.execute(
+        "SELECT * FROM entailment_reviews WHERE evidence_id=? ORDER BY id",
+        (evidence_id,)).fetchall()
+    return [models.EntailmentReview(
+        id=row["id"], evidence_id=row["evidence_id"], run_id=row["run_id"],
+        verdict=row["verdict"], reason=row["reason"],
+        raw_output=_load(row["raw_output"])) for row in rows]
 
 
 def update_entailment(conn, evidence_id: int, entailment: str,
                       *, reason: str = "") -> None:
-    if entailment not in {"supports", "contradicts", "insufficient"}:
-        raise ValueError(f"非法 entailment: {entailment}")
-    row = conn.execute("SELECT metadata FROM evidence WHERE id=?", (evidence_id,)).fetchone()
-    if not row:
-        raise ValueError(f"Evidence 不存在: {evidence_id}")
-    metadata = _load(row["metadata"])
-    if reason:
-        metadata["entailment_reason"] = reason
-    conn.execute("UPDATE evidence SET entailment=?, metadata=? WHERE id=?",
-                 (entailment, _json(metadata), evidence_id))
-    conn.commit()
+    """兼容入口：等价于一次没有 run 归属的 add_entailment_review。"""
+    add_entailment_review(conn, evidence_id, entailment, reason=reason)

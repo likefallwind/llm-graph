@@ -190,7 +190,8 @@ def cmd_mine(args):
 
 
 def cmd_pipeline(args):
-    from . import entity_resolution, legacy_migration, pipeline
+    from . import claims, decision, entity_resolution, legacy_migration, pipeline
+    from . import review_queues, validators
     conn = db.connect()
     if args.action == "status":
         print(json.dumps(pipeline.status(conn), ensure_ascii=False, indent=2))
@@ -205,6 +206,49 @@ def cmd_pipeline(args):
         return
     if args.action == "align-aliases":
         result = entity_resolution.review_proposed_aliases(
+            conn, limit=args.alignment_limit)
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return
+    if args.action == "review-alignments":
+        result = entity_resolution.review_suspected_alignments(
+            conn, limit=args.alignment_limit)
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return
+    if args.action == "replay-pending":
+        result = claims.replay_pending(conn, limit=args.alignment_limit)
+        entailment = validators.verify_entailment_batch(
+            conn, result["resolved_claims"])
+        shadows = [decision.shadow_claim(conn, claim_id)
+                   for claim_id in result["resolved_claims"]]
+        result["entailment"] = entailment
+        result["shadow_decisions"] = shadows
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return
+    if args.action == "survey":
+        from . import targeting
+        result = targeting.survey(conn, limit=args.limit, passages=args.passages)
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return
+    if args.action == "target":
+        from . import targeting
+        result = targeting.run(
+            conn, limit=args.limit, passages=args.passages,
+            verify_llm=not args.no_verify_llm)
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return
+    if args.action == "duplicates":
+        result = entity_resolution.find_duplicate_candidates(
+            conn, limit=args.limit or 50)
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return
+    if args.action == "reshadow":
+        result = pipeline.reshadow(
+            conn, force_entailment=args.force_entailment,
+            only_stale=args.only_stale, limit=args.limit)
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return
+    if args.action == "review-type-conflicts":
+        result = review_queues.review_type_conflicts(
             conn, limit=args.alignment_limit)
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return
@@ -666,8 +710,10 @@ def main():
     s.add_argument(
         "action",
         choices=[
-            "read", "doc", "wiki", "batch", "migrate", "status",
-            "align-aliases",
+            "read", "doc", "wiki", "batch", "migrate", "status", "reshadow",
+            "survey", "target", "duplicates",
+            "align-aliases", "review-alignments", "replay-pending",
+            "review-type-conflicts",
         ])
     s.add_argument("--file", help="read: UTF-8 本地语料文件")
     s.add_argument("--observations", help="read: 已有结构化 Observation JSON；缺省由 LLM 抽取")
@@ -695,9 +741,17 @@ def main():
                    help="每个文本块最多抽取的 Claim 数（跨块去重后不再按全章截断）")
     s.add_argument(
         "--alignment-limit", type=int, default=50,
-        help="align-aliases: 本次最多复核的 proposed alias 数")
+        help="队列动作本次最多处理的条目数")
     s.add_argument("--no-verify-llm", action="store_true",
                    help="不调用 LLM 蕴含验证；Claim 将保持 needs_more_evidence 的 Shadow 结果")
+    s.add_argument("--force-entailment", action="store_true",
+                   help="reshadow: 重判全部证据的蕴含（走 LLM）")
+    s.add_argument("--only-stale", action="store_true",
+                   help="reshadow: 只重判判定版本落后于当前 validator/prompt 的证据")
+    s.add_argument("--limit", type=int,
+                   help="reshadow/survey/target: claim 数上限；duplicates: 报告条数")
+    s.add_argument("--passages", type=int, default=2,
+                   help="survey/target: 每条 claim 最多探查的候选段落数")
     s.set_defaults(fn=cmd_pipeline)
 
     args = p.parse_args()

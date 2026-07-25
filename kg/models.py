@@ -1,7 +1,7 @@
 """知识核心的只读数据对象。"""
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any
 
 
@@ -54,6 +54,17 @@ class Evidence:
     mechanically_valid: bool
     entailment: str
     metadata: dict[str, Any]
+    current_entailment_review_id: int | None = None
+
+
+@dataclass(frozen=True)
+class EntailmentReview:
+    id: int
+    evidence_id: int
+    run_id: int | None
+    verdict: str
+    reason: str
+    raw_output: dict[str, Any]
 
 
 @dataclass(frozen=True)
@@ -67,3 +78,4 @@ class Decision:
     reason: str
     evidence_snapshot: list[int]
     batch_id: str
+    evidence_review_snapshot: list[dict[str, Any]] = field(default_factory=list)

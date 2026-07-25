@@ -13,7 +13,8 @@ def shadow_claim(conn, claim_id: int) -> dict:
         conn, "claim", claim_id, result.outcome,
         decided_by="shadow", policy_version=POLICY_VERSION,
         reason="；".join(result.reasons),
-        evidence_ids=list(result.evidence_ids))
+        evidence_ids=list(result.evidence_ids),
+        evidence_reviews=list(result.evidence_reviews))
     return {
         "claim_id": claim_id,
         "decision_id": decision.id,

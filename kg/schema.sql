@@ -136,6 +136,22 @@ CREATE TABLE IF NOT EXISTS entity_alignment_evidence (
 CREATE INDEX IF NOT EXISTS idx_entity_alignment_evidence_candidate
     ON entity_alignment_evidence(candidate_id);
 
+CREATE TABLE IF NOT EXISTS model_queue_reviews (
+    id                 INTEGER PRIMARY KEY,
+    queue_type         TEXT NOT NULL
+                       CHECK(queue_type IN ('entity_alignment','type_conflict')),
+    item_id            INTEGER NOT NULL,
+    model              TEXT NOT NULL,
+    verdict            TEXT NOT NULL,
+    confidence         REAL NOT NULL CHECK(confidence >= 0.0 AND confidence <= 1.0),
+    reason             TEXT NOT NULL DEFAULT '',
+    payload            TEXT NOT NULL DEFAULT '{}',
+    policy_version     TEXT NOT NULL,
+    created_at         REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_model_queue_reviews_item
+    ON model_queue_reviews(queue_type, item_id, created_at DESC);
+
 CREATE TABLE IF NOT EXISTS entity_external_ids (
     id          INTEGER PRIMARY KEY,
     entity_id   INTEGER NOT NULL REFERENCES entities(id),
@@ -225,6 +241,7 @@ CREATE TABLE IF NOT EXISTS evidence (
     entailment         TEXT NOT NULL DEFAULT 'unreviewed'
                        CHECK(entailment IN ('unreviewed','supports','contradicts','insufficient')),
     extraction_run_id  INTEGER REFERENCES runs(id),
+    current_entailment_review_id INTEGER REFERENCES entailment_reviews(id),
     metadata           TEXT NOT NULL DEFAULT '{}',
     created_at         REAL NOT NULL,
     CHECK((entity_id IS NOT NULL AND claim_id IS NULL)
@@ -236,6 +253,22 @@ CREATE INDEX IF NOT EXISTS idx_evidence_claim
 CREATE INDEX IF NOT EXISTS idx_evidence_entity
     ON evidence(entity_id);
 
+-- 蕴含判定的历史审核记录。只追加，不覆盖：evidence.entailment 只是当前结果的
+-- 缓存，真正可复现的依据是这里的某一行。run_id 为空表示该判定早于留痕机制，
+-- 来源不可考，reshadow --only-stale 会把它当作过期项重判。
+CREATE TABLE IF NOT EXISTS entailment_reviews (
+    id           INTEGER PRIMARY KEY,
+    evidence_id  INTEGER NOT NULL REFERENCES evidence(id),
+    run_id       INTEGER REFERENCES runs(id),
+    verdict      TEXT NOT NULL
+                 CHECK(verdict IN ('supports','contradicts','insufficient')),
+    reason       TEXT NOT NULL DEFAULT '',
+    raw_output   TEXT NOT NULL DEFAULT '{}',
+    created_at   REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_entailment_reviews_evidence
+    ON entailment_reviews(evidence_id, id);
+
 CREATE TABLE IF NOT EXISTS decisions (
     id                INTEGER PRIMARY KEY,
     target_key        TEXT NOT NULL,
@@ -246,6 +279,9 @@ CREATE TABLE IF NOT EXISTS decisions (
     policy_version    TEXT NOT NULL DEFAULT '',
     reason            TEXT NOT NULL DEFAULT '',
     evidence_snapshot TEXT NOT NULL DEFAULT '[]',
+    -- [{"evidence_id":E,"entailment_review_id":R}]，裁决当时每条证据用的是哪次
+    -- 蕴含判定。只存 evidence_id 不够：verdict 被重判后旧裁决就无法复现。
+    evidence_review_snapshot TEXT NOT NULL DEFAULT '[]',
     batch_id          TEXT NOT NULL DEFAULT '',
     created_at        REAL NOT NULL
 );
@@ -263,6 +299,20 @@ CREATE TABLE IF NOT EXISTS merge_events (
     created_at        REAL NOT NULL,
     updated_at        REAL NOT NULL,
     CHECK(source_entity_id != target_entity_id)
+);
+
+-- 定向补证探查过的（Claim, 段落）。模型说「这段没有陈述该关系」也是结论，
+-- 记下来避免下一轮重复问同一段。content_hash 变了才值得重问。
+CREATE TABLE IF NOT EXISTS targeting_probes (
+    id           INTEGER PRIMARY KEY,
+    claim_id     INTEGER NOT NULL REFERENCES claims(id),
+    ref          TEXT NOT NULL,
+    content_hash TEXT NOT NULL,
+    run_id       INTEGER REFERENCES runs(id),
+    result       TEXT NOT NULL CHECK(result IN ('evidence','no_relation','failed')),
+    reason       TEXT NOT NULL DEFAULT '',
+    created_at   REAL NOT NULL,
+    UNIQUE(claim_id, ref, content_hash)
 );
 
 CREATE TABLE IF NOT EXISTS coverage_topics (
@@ -337,3 +387,6 @@ VALUES (3, 'migration_issues', unixepoch());
 
 INSERT OR IGNORE INTO schema_migrations(version, name, applied_at)
 VALUES (4, 'pipeline_processed', unixepoch());
+
+INSERT OR IGNORE INTO schema_migrations(version, name, applied_at)
+VALUES (7, 'model_queue_reviews', unixepoch());

@@ -72,8 +72,8 @@ def read_text(conn, text: str, *, source_slug: str, source_name: str,
             conn, batch, source_snapshot_id=snapshot.id, run_id=run_id)
         entailment_lines = []
         if verify_llm:
-            for claim_id in materialized.claim_ids:
-                entailment_lines.extend(validators.verify_entailment(conn, claim_id))
+            entailment_lines = validators.verify_entailment_batch(
+                conn, materialized.claim_ids)
         shadows = [decision.shadow_claim(conn, claim_id)
                    for claim_id in materialized.claim_ids]
         for target in batch.next_reading_targets:
@@ -222,6 +222,52 @@ def batch(conn, *, topic: str, doc_limit: int = 1, wiki_limit: int = 1,
     }
 
 
+def reshadow(conn, *, force_entailment: bool = False, only_stale: bool = False,
+             limit: int | None = None) -> dict:
+    """按当前策略重算 Shadow 决策。
+
+    默认零 LLM，只用已存的 verdict 重算阈值。``force_entailment`` 重判全部
+    证据；``only_stale`` 只重判判定版本落后于当前 validator/prompt 的那些。
+    """
+    if force_entailment and only_stale:
+        raise ValueError("--force-entailment 与 --only-stale 不能同时使用")
+    rows = conn.execute(
+        "SELECT id FROM claims ORDER BY id"
+        + (" LIMIT ?" if limit else ""),
+        (limit,) if limit else ()).fetchall()
+    claim_ids = [row["id"] for row in rows]
+    run_id = None
+    entailment_lines: list[str] = []
+    failures: list[dict] = []
+    shadows: list[dict] = []
+    if force_entailment or only_stale:
+        # 先把全部 claim 的蕴含一次批完，再逐条重算裁决。
+        run_id = validators.create_entailment_run(conn)
+        entailment_lines = validators.verify_entailment_batch(
+            conn, claim_ids, force=force_entailment, only_stale=only_stale,
+            run_id=run_id)
+    for claim_id in claim_ids:
+        try:
+            shadows.append(decision.shadow_claim(conn, claim_id))
+        except Exception as exc:
+            failures.append({"claim_id": claim_id, "error": str(exc)})
+    if run_id is not None:
+        store.finish_run(conn, run_id, "failed" if failures else "completed")
+    outcomes: dict[str, int] = {}
+    for item in shadows:
+        outcomes[item["outcome"]] = outcomes.get(item["outcome"], 0) + 1
+    return {
+        "entailment_run_id": run_id,
+        "policy_version": decision.POLICY_VERSION,
+        "validator_version": validators.VALIDATOR_VERSION,
+        "examined_claims": len(claim_ids),
+        "reverified_evidence": len(entailment_lines),
+        "entailment": entailment_lines,
+        "outcomes": outcomes,
+        "failed": failures,
+    }
+
+
 def status(conn) -> dict:
     tables = {
         "sources": "sources",
@@ -236,6 +282,7 @@ def status(conn) -> dict:
         "legacy_claims": "legacy_claim_map",
         "migration_issues": "migration_issues",
         "processed_sources": "pipeline_processed",
+        "model_queue_reviews": "model_queue_reviews",
     }
     result = {}
     for key, table in tables.items():
@@ -246,6 +293,9 @@ def status(conn) -> dict:
     result["aliases_by_status"] = {
         row["status"]: row["n"] for row in conn.execute(
             "SELECT status,COUNT(*) n FROM aliases GROUP BY status")}
+    result["observations_by_status"] = {
+        row["status"]: row["n"] for row in conn.execute(
+            "SELECT status,COUNT(*) n FROM observations GROUP BY status")}
     result["entity_resolution"] = {
         "events": conn.execute(
             "SELECT COUNT(*) FROM entity_resolution_events").fetchone()[0],
@@ -257,6 +307,9 @@ def status(conn) -> dict:
                 "SELECT status,COUNT(*) n FROM entity_alignment_candidates"
                 " GROUP BY status")
         },
+        "model_reviewed_type_conflicts": conn.execute(
+            "SELECT COUNT(DISTINCT item_id) FROM model_queue_reviews"
+            " WHERE queue_type='type_conflict'").fetchone()[0],
     }
     result["latest_shadow"] = [
         dict(row) for row in conn.execute(

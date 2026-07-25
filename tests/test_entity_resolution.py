@@ -2,7 +2,7 @@ import sqlite3
 import unittest
 from unittest.mock import patch
 
-from kg import claims, entity_resolution, schema, store
+from kg import claims, entity_resolution, review_queues, schema, store
 from kg.observations import (
     ClaimObservation,
     EntityObservation,
@@ -231,7 +231,8 @@ class EntityResolutionTests(unittest.TestCase):
         self.assertEqual("verified", alias["status"])
         self.assertEqual("name_variant", alias["alias_type"])
 
-    def test_low_confidence_llm_does_not_merge_or_create(self):
+    def test_new_entity_is_created_above_the_creation_threshold(self):
+        # 新建判错只是多一个 proposed 实体，门槛低于合并；见 LLM_NEW_ENTITY_CONFIDENCE。
         result = entity_resolution.resolve(
             self.conn, observation("全新术语"),
             llm_normalizer=lambda _observation, _candidates: {
@@ -241,8 +242,38 @@ class EntityResolutionTests(unittest.TestCase):
                 "reason": "可能是新概念",
             })
 
+        self.assertIsNotNone(result.entity_id)
+        created = store.find_canonical_entity(self.conn, "全新术语")
+        self.assertEqual(created.status, "proposed")
+        self.assertTrue(created.metadata["below_auto_link_confidence"])
+
+    def test_new_entity_is_dropped_below_the_creation_threshold(self):
+        result = entity_resolution.resolve(
+            self.conn, observation("全新术语"),
+            llm_normalizer=lambda _observation, _candidates: {
+                "decision": "new",
+                "canonical_name": "全新术语",
+                "confidence": 0.5,
+                "reason": "不确定",
+            })
+
         self.assertIsNone(result.entity_id)
         self.assertIsNone(store.find_canonical_entity(self.conn, "全新术语"))
+
+    def test_low_confidence_llm_does_not_merge(self):
+        existing = store.add_entity(self.conn, "监督学习", "method")
+
+        result = entity_resolution.resolve(
+            self.conn, observation("有监督学习", "method"),
+            llm_normalizer=lambda _observation, _candidates: {
+                "decision": "existing",
+                "candidate_id": existing.id,
+                "canonical_name": "监督学习",
+                "confidence": 0.5,
+                "reason": "拿不准",
+            })
+
+        self.assertIsNone(result.entity_id)
 
     def test_llm_ambiguous_does_not_merge_despite_existing_canonical_name(self):
         store.add_entity(self.conn, "监督学习", "method")
@@ -570,6 +601,114 @@ class ProposedAliasReviewTests(unittest.TestCase):
         by_alias = {item["alias"]: item for item in results}
         self.assertEqual("proposed", by_alias["Gradient ascent"]["status"])
         self.assertEqual("verified", by_alias["Newton's method"]["status"])
+
+
+class QueueProcessingTests(unittest.TestCase):
+    def setUp(self):
+        self.conn = sqlite3.connect(":memory:")
+        self.conn.row_factory = sqlite3.Row
+        schema.ensure(self.conn)
+        source_id = store.upsert_source(
+            self.conn, "book-a", "book-a", "textbook",
+            independence_group="book:a")
+        self.snapshot = store.add_source_snapshot(
+            self.conn, source_id, "v1", content="分类材料")
+        self.run_id = store.create_run(self.conn, "test", "test-version")
+
+    def tearDown(self):
+        self.conn.close()
+
+    def test_suspected_name_variant_review_is_verified_but_model_review_is_not_source(self):
+        entity = store.add_entity(self.conn, "Softmax 函数", "concept")
+        store.add_alias(
+            self.conn, entity.id, "softmax运算",
+            source_snapshot_id=self.snapshot.id, status="proposed")
+        store.add_alignment_evidence(
+            self.conn, observed_name="softmax运算", entity_id=entity.id,
+            confidence=0.88, policy_version="test",
+            resolver_version="test", source_snapshot_id=self.snapshot.id)
+
+        with patch(
+                "kg.entity_resolution._review_alignment_with_llm",
+                return_value={
+                    "verdict": "same",
+                    "match_type": "name_variant",
+                    "confidence": 0.98,
+                    "reason": "仅类别词不同",
+                }):
+            result = entity_resolution.review_suspected_alignments(
+                self.conn, limit=10)
+
+        self.assertTrue(result[0]["auto_verified"])
+        candidate = self.conn.execute(
+            "SELECT * FROM entity_alignment_candidates").fetchone()
+        self.assertEqual("verified", candidate["status"])
+        self.assertEqual(1, candidate["independent_sources"])
+        review = self.conn.execute(
+            "SELECT * FROM model_queue_reviews").fetchone()
+        self.assertEqual("entity_alignment", review["queue_type"])
+
+    def test_pending_observations_replay_idempotently_after_alias_verification(self):
+        category = store.add_entity(self.conn, "分类问题", "task")
+        binary = store.add_entity(self.conn, "二分类", "task")
+        store.add_alias(
+            self.conn, category.id, "分类",
+            source_snapshot_id=self.snapshot.id, status="verified")
+        entity_observation_id = store.add_observation(
+            self.conn, self.run_id, self.snapshot.id,
+            subject_text="分类", subject_type="task",
+            excerpt="教材明确讨论了分类。", payload={
+                "name": "分类", "entity_type": "task", "aliases": []})
+        claim_observation_id = store.add_observation(
+            self.conn, self.run_id, self.snapshot.id,
+            subject_text="二分类", relation="is_a", object_text="分类",
+            excerpt="二分类属于分类。", payload={
+                "subject": "二分类", "relation": "is_a", "object": "分类",
+                "qualifiers": {}, "evidence_type": "explicit_taxonomy"})
+
+        first = claims.replay_pending(self.conn)
+        second = claims.replay_pending(self.conn)
+
+        self.assertEqual([category.id], first["resolved_entities"])
+        self.assertEqual(1, len(first["resolved_claims"]))
+        self.assertEqual(0, second["examined"])
+        self.assertEqual(
+            ["resolved", "resolved"],
+            [row["status"] for row in self.conn.execute(
+                "SELECT status FROM observations WHERE id IN (?,?) ORDER BY id",
+                (entity_observation_id, claim_observation_id))])
+        self.assertEqual(
+            1, self.conn.execute("SELECT COUNT(*) FROM claims").fetchone()[0])
+        self.assertEqual(binary.id, self.conn.execute(
+            "SELECT subject_id FROM claims").fetchone()[0])
+
+    def test_type_conflict_review_records_evidence_without_changing_primary_type(self):
+        entity = store.add_entity(self.conn, "损失函数", "loss")
+        observation_id = store.add_observation(
+            self.conn, self.run_id, self.snapshot.id,
+            subject_text="损失函数", subject_type="concept",
+            excerpt="教材讨论损失函数。")
+        store.add_type_assertion(
+            self.conn, entity.id, "concept",
+            source_snapshot_id=self.snapshot.id,
+            observation_id=observation_id, status="conflict")
+
+        with patch(
+                "kg.review_queues._review_type_with_llm",
+                return_value={
+                    "verdict": "keep_primary",
+                    "suggested_type": "loss",
+                    "confidence": 0.99,
+                    "reason": "loss 比 concept 更具体",
+                }):
+            result = review_queues.review_type_conflicts(self.conn)
+
+        self.assertEqual("loss", result[0]["suggested_type"])
+        self.assertFalse(result[0]["auto_changed"])
+        self.assertEqual("loss", store.get_entity(self.conn, entity.id).entity_type)
+        review = self.conn.execute(
+            "SELECT * FROM model_queue_reviews").fetchone()
+        self.assertEqual("type_conflict", review["queue_type"])
 
 
 if __name__ == "__main__":

@@ -15,6 +15,9 @@ RESOLVER_VERSION = "entity-resolver-5"
 ALIGNMENT_POLICY_VERSION = "entity-alignment-policy-3"
 LLM_SUSPECT_CONFIDENCE = 0.80
 LLM_AUTO_LINK_CONFIDENCE = 0.95
+# 新建实体与合并到已有实体的风险不对称：合并判错会污染图谱，新建判错只是多一个
+# proposed 实体，由重复清扫和对齐队列兜底。所以新建用较低的门槛。
+LLM_NEW_ENTITY_CONFIDENCE = LLM_SUSPECT_CONFIDENCE
 MAX_CANDIDATES = 5
 SAFE_DIRECT_MATCH_TYPES = {"translation_alias", "name_variant"}
 MATCH_TYPES = {
@@ -22,7 +25,7 @@ MATCH_TYPES = {
     "composite", "semantic_alias", "none",
 }
 NAME_VARIANT_SUFFIXES = (
-    "问题", "方法", "算法", "模型", "函数", "任务", "估计",
+    "问题", "方法", "算法", "模型", "函数", "运算", "任务", "估计",
     "problem", "method", "algorithm", "model", "function", "task",
     "estimation",
 )
@@ -107,6 +110,68 @@ def _candidate_rows(conn, name: str, limit: int = MAX_CANDIDATES) -> list[dict]:
     ranked = sorted(
         by_entity.values(), key=lambda item: (-item["score"], item["id"]))
     return ranked[:limit]
+
+
+# 中文短词的 SequenceMatcher 比值偏低（感知机/感知器只有 0.667），阈值按中文调。
+DUPLICATE_SCAN_THRESHOLD = 0.6
+
+
+def find_duplicate_candidates(conn, *, threshold: float = DUPLICATE_SCAN_THRESHOLD,
+                              limit: int = 50) -> list[dict]:
+    """机械扫描已有实体里的疑似重复对（零 LLM，只报告不改数据）。
+
+    降低新建门槛之后重复实体会变多，而 entity_alignment_candidates 只在 resolve
+    时由 LLM 提议才产生，不会回头看已有实体。这个扫描补上那一半。
+    """
+    rows = conn.execute(
+        "SELECT id,canonical_name,normalized_name,entity_type,definition,metadata"
+        " FROM entities WHERE status!='rejected' ORDER BY id").fetchall()
+    aliases: dict[int, set[str]] = {}
+    for row in conn.execute(
+            "SELECT entity_id,normalized_name FROM aliases WHERE status!='rejected'"):
+        aliases.setdefault(row["entity_id"], set()).add(row["normalized_name"])
+    known = {
+        (item["observed_name"], item["entity_id"]) for item in conn.execute(
+            "SELECT observed_name,entity_id FROM entity_alignment_candidates")
+    }
+    pairs = []
+    for index, left in enumerate(rows):
+        for right in rows[index + 1:]:
+            names_left = {left["normalized_name"]} | aliases.get(left["id"], set())
+            names_right = {right["normalized_name"]} | aliases.get(right["id"], set())
+            shared = names_left & names_right
+            score = max(
+                (SequenceMatcher(None, a, b).ratio()
+                 for a in names_left for b in names_right), default=0.0)
+            # 一个名字完全包含另一个（回归/线性回归）也是常见的重复来源。
+            contained = any(
+                a != b and (a in b or b in a)
+                for a in names_left for b in names_right)
+            if not shared and not contained and score < threshold:
+                continue
+            metadata_left = json.loads(left["metadata"] or "{}")
+            metadata_right = json.loads(right["metadata"] or "{}")
+            pairs.append({
+                "left_id": left["id"], "left": left["canonical_name"],
+                "left_type": left["entity_type"],
+                "right_id": right["id"], "right": right["canonical_name"],
+                "right_type": right["entity_type"],
+                "score": round(score, 3),
+                "shared_names": sorted(shared),
+                "name_contained": contained,
+                "same_type": left["entity_type"] == right["entity_type"],
+                # 低置信度新建的实体重复风险更高，排前面。
+                "low_confidence_creation": bool(
+                    metadata_left.get("below_auto_link_confidence")
+                    or metadata_right.get("below_auto_link_confidence")),
+                "already_queued": bool(
+                    (right["canonical_name"], left["id"]) in known
+                    or (left["canonical_name"], right["id"]) in known),
+            })
+    pairs.sort(key=lambda item: (
+        not item["low_confidence_creation"], not item["shared_names"],
+        -item["score"]))
+    return pairs[:limit]
 
 
 def _llm_normalize(observation: EntityObservation,
@@ -324,11 +389,17 @@ def resolve(conn, observation: EntityObservation, *,
             conn, observation, result, source_snapshot_id=source_snapshot_id,
             observation_id=observation_id)
 
-    if decision == "new" and canonical_name and confidence >= LLM_AUTO_LINK_CONFIDENCE:
+    if decision == "new" and canonical_name and confidence >= LLM_NEW_ENTITY_CONFIDENCE:
         entity = store.add_entity(
             conn, canonical_name, observation.entity_type,
             definition=observation.definition, status="proposed",
-            metadata={"created_from": "llm_normalized_grounded_observation"})
+            metadata={
+                "created_from": "llm_normalized_grounded_observation",
+                "creation_confidence": confidence,
+                # 低于合并门槛建出来的实体重复风险更高，标出来供重复清扫优先看。
+                "below_auto_link_confidence":
+                    confidence < LLM_AUTO_LINK_CONFIDENCE,
+            })
         if store.normalize_name(observation.name) != entity.normalized_name:
             store.add_alias(
                 conn, entity.id, observation.name,
@@ -426,6 +497,129 @@ def review_proposed_aliases(conn, limit: int = 50) -> list[dict]:
             "match_type": match_type,
             "confidence": confidence,
             "status": status,
+            "reason": reason,
+        })
+    return results
+
+
+def _review_alignment_with_llm(row: dict) -> dict:
+    prompt = f"""你在复核一个知识图谱的疑似同实体候选。
+
+观察名称：{row['observed_name']}
+目标规范名：{row['canonical_name']}
+目标类型：{row['entity_type']}
+目标定义：{row['definition']}
+已有来源证据：
+{json.dumps(row['evidence'], ensure_ascii=False)}
+
+严格规则：
+1. 只有指向完全同一概念才是 same；相关、上下位、组成关系都是 different。
+2. 中英文直接互译可标 translation_alias。
+3. 仅增加或省略“问题、方法、算法、模型、函数、运算、任务”等类别词，
+   且含义不变，可标 name_variant。
+4. 缩写、符号、语义别名、组合概念分别如实标注，不得伪装成直接译名或名称变体。
+5. 证据不足必须 uncertain。
+
+只输出 JSON：
+{{
+  "verdict": "same|different|uncertain",
+  "match_type": "translation_alias|name_variant|abbreviation|symbol|composite|semantic_alias|none",
+  "confidence": 0.0,
+  "reason": "简短理由"
+}}"""
+    payload = llm.chat_json([{"role": "user", "content": prompt}])
+    if not isinstance(payload, dict):
+        raise ValueError("实体对齐复核器必须返回 JSON object")
+    return payload
+
+
+def review_suspected_alignments(conn, limit: int = 50) -> list[dict]:
+    """复核 suspected 对齐；M3 结论留痕，仅确定性可验证的直接别名自动升级。"""
+    rows = conn.execute(
+        "SELECT ac.id,ac.observed_name,ac.entity_id,ac.score,"
+        " e.canonical_name,e.entity_type,e.definition"
+        " FROM entity_alignment_candidates ac"
+        " JOIN entities e ON e.id=ac.entity_id"
+        " WHERE ac.status='suspected' ORDER BY ac.score DESC,ac.id"
+        " LIMIT ?", (max(1, limit),)).fetchall()
+    items = []
+    for source_row in rows:
+        row = dict(source_row)
+        row["evidence"] = [
+            dict(evidence) for evidence in conn.execute(
+                "SELECT ae.source_snapshot_id,ae.confidence,ae.reason,"
+                " s.slug source_slug,s.independence_group"
+                " FROM entity_alignment_evidence ae"
+                " LEFT JOIN source_snapshots ss ON ss.id=ae.source_snapshot_id"
+                " LEFT JOIN sources s ON s.id=ss.source_id"
+                " WHERE ae.candidate_id=? ORDER BY ae.id", (row["id"],))]
+        items.append(row)
+
+    def classify(row):
+        try:
+            return _review_alignment_with_llm(row)
+        except Exception as exc:
+            return {
+                "verdict": "error", "match_type": "none", "confidence": 0.0,
+                "reason": f"LLM 疑似对齐复核失败：{exc}",
+            }
+
+    outputs = llm.pmap(classify, items)
+    results = []
+    for row, output in zip(items, outputs):
+        verdict = str(output.get("verdict", "uncertain")).strip()
+        if verdict not in {"same", "different", "uncertain", "error"}:
+            verdict = "uncertain"
+        match_type = str(output.get("match_type", "none")).strip()
+        if match_type not in MATCH_TYPES:
+            match_type = "none"
+        try:
+            confidence = min(1.0, max(0.0, float(output.get("confidence", 0.0))))
+        except (TypeError, ValueError):
+            confidence = 0.0
+        reason = str(output.get("reason", "")).strip()
+        direct_match_type = _validated_direct_match_type(
+            row["observed_name"], row["canonical_name"], match_type)
+        safe = (
+            verdict == "same"
+            and direct_match_type in SAFE_DIRECT_MATCH_TYPES
+            and confidence >= LLM_AUTO_LINK_CONFIDENCE)
+        if safe:
+            match_type = direct_match_type
+            source_snapshot_id = next(
+                (item["source_snapshot_id"] for item in row["evidence"]
+                 if item["source_snapshot_id"] is not None), None)
+            store.add_alignment_evidence(
+                conn, observed_name=row["observed_name"],
+                entity_id=row["entity_id"], confidence=confidence,
+                policy_version=ALIGNMENT_POLICY_VERSION,
+                resolver_version=RESOLVER_VERSION,
+                reason=f"[{match_type}] M3 queue review: {reason}",
+                source_snapshot_id=source_snapshot_id, direct_verify=True)
+            alias = conn.execute(
+                "SELECT id FROM aliases WHERE entity_id=? AND normalized_name=?"
+                " AND status!='rejected'",
+                (row["entity_id"], store.normalize_name(row["observed_name"]))).fetchone()
+            if alias:
+                store.update_alias_classification(
+                    conn, alias["id"], status="verified", alias_type=match_type)
+        store.add_model_queue_review(
+            conn, queue_type="entity_alignment", item_id=row["id"],
+            model=llm.CHAT_MODEL, verdict=verdict, confidence=confidence,
+            reason=reason, payload={"match_type": match_type, "safe": safe},
+            policy_version=ALIGNMENT_POLICY_VERSION)
+        current = conn.execute(
+            "SELECT status FROM entity_alignment_candidates WHERE id=?",
+            (row["id"],)).fetchone()["status"]
+        results.append({
+            "candidate_id": row["id"],
+            "observed_name": row["observed_name"],
+            "entity": row["canonical_name"],
+            "verdict": verdict,
+            "match_type": match_type,
+            "confidence": confidence,
+            "status": current,
+            "auto_verified": safe,
             "reason": reason,
         })
     return results

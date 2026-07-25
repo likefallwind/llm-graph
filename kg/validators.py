@@ -24,6 +24,9 @@ Evidence：
 {output_schema}
 """
 
+VALIDATOR_VERSION = "entailment-validator-1"
+ENTAILMENT_PROMPT_VERSION = "entailment-judge-1"
+
 STRONG_TYPES = {
     "explicit_definition",
     "explicit_taxonomy",
@@ -43,16 +46,35 @@ class Validation:
     evidence_ids: tuple[int, ...]
     independent_supports: int
     high_authority_supports: int
+    evidence_reviews: tuple[tuple[int, int | None], ...] = ()
 
 
-def verify_entailment(conn, claim_id: int, *, force: bool = False) -> list[str]:
-    claim = store.get_claim(conn, claim_id)
-    if not claim:
-        raise ValueError(f"Claim 不存在: {claim_id}")
-    subject = store.get_entity(conn, claim.subject_id)
-    object_ = store.get_entity(conn, claim.object_id)
+def create_entailment_run(conn) -> int:
+    """每轮蕴含复核建一条 run，记下判定用的模型、prompt 与注册表版本。"""
+    return store.create_run(
+        conn, "entailment_verification", VALIDATOR_VERSION,
+        model=llm.CHAT_MODEL, prompt_version=ENTAILMENT_PROMPT_VERSION,
+        config={"relation_registry_version": registry().version})
+
+
+def stale_evidence_ids(conn, claim_id: int) -> set[int]:
+    """当前判定不是本版 validator/prompt 产出的证据。
+
+    包含三类：从未判过、判定早于留痕机制（run_id 为空）、判定来自旧版本。
+    """
+    rows = conn.execute(
+        "SELECT e.id FROM evidence e"
+        " LEFT JOIN entailment_reviews r ON r.id=e.current_entailment_review_id"
+        " LEFT JOIN runs run ON run.id=r.run_id"
+        " WHERE e.claim_id=? AND e.mechanically_valid=1"
+        "   AND (e.current_entailment_review_id IS NULL OR run.id IS NULL"
+        "        OR run.algorithm_version!=? OR run.prompt_version!=?)",
+        (claim_id, VALIDATOR_VERSION, ENTAILMENT_PROMPT_VERSION)).fetchall()
+    return {row["id"] for row in rows}
+
+
+def _prompt_context(claim, subject, object_) -> dict:
     policy = registry().relation(claim.relation)
-    semantics = policy["description"]
     if policy["symmetric"]:
         direction_rule = (
             "此关系是对称关系，交换 subject/object 不改变含义；"
@@ -74,33 +96,94 @@ def verify_entailment(conn, claim_id: int, *, force: bool = False) -> list[str]:
         output_schema = (
             '{"verdict":"supports|contradicts|insufficient",'
             '"reason":"一句话理由"}')
+    return {
+        "subject": subject.canonical_name, "relation": claim.relation,
+        "object": object_.canonical_name, "semantics": policy["description"],
+        "direction_rule": direction_rule, "semantic_guard": semantic_guard,
+        "output_schema": output_schema,
+    }
+
+
+def _judge_batch(prompts: list[str]) -> list:
+    """并行调 M3 判断题；单项失败返回异常对象，不杀整批。"""
+    def call(prompt):
+        try:
+            return llm.chat_json([{"role": "user", "content": prompt}])
+        except (RuntimeError, ValueError) as exc:
+            return exc
+    return llm.pmap(call, prompts)
+
+
+def _interpret(answer: dict, relation: str) -> tuple[str, str]:
+    verdict = str(answer.get("verdict", "insufficient")).strip()
+    if verdict not in {"supports", "contradicts", "insufficient"}:
+        verdict = "insufficient"
+    reason = str(answer.get("reason", ""))[:300]
+    if (relation == "part_of" and verdict == "supports"
+            and answer.get("composition_explicit") is not True):
+        verdict = "insufficient"
+        reason = (
+            "未明确确认真实组成关系；"
+            + (reason or "模型未返回 composition_explicit=true")
+        )[:300]
+    return verdict, reason
+
+
+def verify_entailment_batch(conn, claim_ids, *, force: bool = False,
+                            only_stale: bool = False,
+                            run_id: int | None = None) -> list[str]:
+    """跨 claim 批量复核蕴含。
+
+    分三段：串行读库拼 prompt、并行调 LLM、串行落库。并发只发生在 HTTP 请求上，
+    数据库始终单线程写——``llm.pmap`` 的 fn 不得触碰 sqlite 连接。
+    """
+    targets = []
+    for claim_id in claim_ids:
+        claim = store.get_claim(conn, claim_id)
+        if not claim:
+            raise ValueError(f"Claim 不存在: {claim_id}")
+        context = _prompt_context(
+            claim, store.get_entity(conn, claim.subject_id),
+            store.get_entity(conn, claim.object_id))
+        stale = stale_evidence_ids(conn, claim_id) if only_stale else set()
+        for evidence in store.evidence_for_claim(conn, claim_id):
+            if not evidence.mechanically_valid:
+                continue
+            if only_stale:
+                if evidence.id not in stale:
+                    continue
+            elif not force and evidence.entailment != "unreviewed":
+                continue
+            targets.append((claim.relation, evidence, ENTAILMENT_PROMPT.format(
+                excerpt=evidence.excerpt, **context)))
+    if not targets:
+        return []
+
+    own_run = run_id is None
+    if own_run:
+        run_id = create_entailment_run(conn)
+    answers = _judge_batch([prompt for _, _, prompt in targets])
+
     lines = []
-    for evidence in store.evidence_for_claim(conn, claim_id):
-        if not evidence.mechanically_valid:
+    for (relation, evidence, _), answer in zip(targets, answers):
+        if isinstance(answer, Exception) or not isinstance(answer, dict):
+            detail = answer if isinstance(answer, Exception) else "返回非 JSON object"
+            lines.append(f"evidence {evidence.id}: 复核失败（{detail}）")
             continue
-        if not force and evidence.entailment != "unreviewed":
-            continue
-        answer = llm.chat_json([{"role": "user", "content": ENTAILMENT_PROMPT.format(
-            subject=subject.canonical_name, relation=claim.relation,
-            object=object_.canonical_name, semantics=semantics,
-            direction_rule=direction_rule,
-            semantic_guard=semantic_guard,
-            output_schema=output_schema,
-            excerpt=evidence.excerpt)}])
-        verdict = str(answer.get("verdict", "insufficient")).strip()
-        if verdict not in {"supports", "contradicts", "insufficient"}:
-            verdict = "insufficient"
-        reason = str(answer.get("reason", ""))[:300]
-        if (claim.relation == "part_of" and verdict == "supports"
-                and answer.get("composition_explicit") is not True):
-            verdict = "insufficient"
-            reason = (
-                "未明确确认真实组成关系；"
-                + (reason or "模型未返回 composition_explicit=true")
-            )[:300]
-        store.update_entailment(conn, evidence.id, verdict, reason=reason)
+        verdict, reason = _interpret(answer, relation)
+        store.add_entailment_review(
+            conn, evidence.id, verdict, run_id=run_id, reason=reason,
+            raw_output=answer)
         lines.append(f"evidence {evidence.id}: {verdict}（{reason}）")
+    if own_run:
+        store.finish_run(conn, run_id, "completed")
     return lines
+
+
+def verify_entailment(conn, claim_id: int, *, force: bool = False,
+                      only_stale: bool = False, run_id: int | None = None) -> list[str]:
+    return verify_entailment_batch(
+        conn, [claim_id], force=force, only_stale=only_stale, run_id=run_id)
 
 
 def _would_cycle(conn, claim) -> bool:
@@ -138,20 +221,23 @@ def evaluate(conn, claim_id: int) -> Validation:
     supports = [item for item in valid if item.entailment == "supports"]
     opposes = [item for item in valid if item.entailment == "contradicts"]
     reasons: list[str] = []
+    evidence_ids = tuple(item.id for item in valid)
+    # 裁决依据的是「这些证据的这一次判定」，重判之后旧裁决才复现得出来。
+    reviews = tuple(
+        (item.id, item.current_entailment_review_id) for item in valid)
 
     if _would_cycle(conn, claim):
         return Validation(
             "human_review", ("批准会引入无环关系环路",),
-            tuple(item.id for item in valid), 0, 0)
+            evidence_ids, 0, 0, reviews)
     if opposes:
         reasons.append(f"存在 {len(opposes)} 条反对证据")
         return Validation(
-            "human_review", tuple(reasons),
-            tuple(item.id for item in valid), 0, 0)
+            "human_review", tuple(reasons), evidence_ids, 0, 0, reviews)
     if not supports:
         return Validation(
             "needs_more_evidence", ("没有通过蕴含验证的支持证据",),
-            tuple(item.id for item in valid), 0, 0)
+            evidence_ids, 0, 0, reviews)
 
     rows = conn.execute(
         "SELECT e.id,e.evidence_type,s.independence_group,s.authority_profile"
@@ -194,4 +280,4 @@ def evaluate(conn, claim_id: int) -> Validation:
             f"高权威支持 {high}/{required_high}")
         outcome = "needs_more_evidence"
     return Validation(
-        outcome, tuple(reasons), tuple(item.id for item in valid), independent, high)
+        outcome, tuple(reasons), evidence_ids, independent, high, reviews)
