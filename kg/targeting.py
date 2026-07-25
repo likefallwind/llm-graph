@@ -11,7 +11,7 @@ import re
 import time
 from dataclasses import dataclass
 
-from . import llm, store, validators
+from . import llm, local_corpus, store, validators
 from .observations import evidence_in_text
 from .ontology import registry
 
@@ -100,22 +100,6 @@ def _closest_gap(text: str, left: set[str], right: set[str]) -> int | None:
     return best
 
 
-def _local_passages(conn) -> list[tuple[str, str, str, str, str]]:
-    """(ref, kind, key, text, independence_group)"""
-    items = []
-    for row in conn.execute(
-            "SELECT book,sec_id,title,text FROM doc_sections WHERE text!=''"):
-        items.append((
-            f"doc:{row['book']}:{row['sec_id']}", "doc",
-            f"{row['book']}|{row['sec_id']}", row["text"], f"book:{row['book']}"))
-    for row in conn.execute(
-            "SELECT lang,title,text FROM corpus WHERE text!=''"):
-        items.append((
-            f"wiki:{row['lang']}:{row['title']}", "wiki",
-            f"{row['lang']}|{row['title']}", row["text"], "wikipedia"))
-    return items
-
-
 def supporting_groups(conn, claim_id: int) -> set[str]:
     return {row["g"] for row in conn.execute(
         "SELECT DISTINCT src.independence_group g FROM evidence e"
@@ -155,15 +139,17 @@ def find_passages(conn, claim_id: int, *, window: int = WINDOW,
     known = supporting_groups(conn, claim_id) if exclude_known_groups else set()
     seen = _probed(conn, claim_id) if skip_probed else set()
     found = []
-    for ref, kind, key, text, group in _local_passages(conn):
-        if group in known:
+    for item in local_corpus.passages(conn):
+        if item.independence_group in known:
             continue
-        if (ref, _hash(text)) in seen:
+        if (item.ref, _hash(item.text)) in seen:
             continue
-        gap = _closest_gap(text, left, right)
+        gap = _closest_gap(item.text, left, right)
         if gap is None or gap > window:
             continue
-        found.append(Passage(ref, kind, key, text, group, gap))
+        found.append(Passage(
+            item.ref, item.kind, item.key, item.text,
+            item.independence_group, gap))
     found.sort(key=lambda item: (item.gap, item.ref))
     return found[:limit]
 
@@ -203,48 +189,24 @@ def survey(conn, *, limit: int | None = None, window: int = WINDOW,
     }
 
 
-def _snapshot_for(conn, passage: Passage):
-    """复用该段落已有的快照；content_hash 相同不会重复建。"""
-    if passage.kind == "doc":
-        from . import docs
-        book, sec_id = passage.key.split("|", 1)
-        section = docs.get_section(conn, book, sec_id)
-        cfg = docs.load_book(book)
-        source_id = store.upsert_source(
-            conn, f"doc-{book}", cfg["title"], "textbook",
-            independence_group=f"book:{book}",
-            authority_profile={
-                name: "high" for name in ("is_a", "part_of", "prerequisite_of")})
-        return store.add_source_snapshot(
-            conn, source_id, f"{sec_id}@{section['content_hash']}",
-            content=passage.text, uri=docs.url_of(section),
-            original_language="zh", storage_ref=f"doc_sections:{section['id']}")
-    from . import corpus
-    lang, title = passage.key.split("|", 1)
-    page = corpus.get_page(conn, lang, title)
-    source_id = store.upsert_source(
-        conn, f"wikipedia-{lang}", f"Wikipedia {lang}", "encyclopedia",
-        independence_group="wikipedia", authority_profile={})
-    return store.add_source_snapshot(
-        conn, source_id, f"{title}@{page['revision_id']}", content=passage.text,
-        uri=corpus.url_of(page), original_language=lang,
-        storage_ref=f"corpus:{page['id']}")
-
-
 def _extract_one(payload: dict, passage_text: str, subject, object_) -> dict | None:
     """把模型回答校验成一条可入库的 Claim 观察；不合格返回 None。"""
     relation = str(payload.get("relation", "none")).strip()
     if relation in {"", "none"}:
         return None
-    subject_name = str(payload.get("subject", "")).strip()
-    object_name = str(payload.get("object", "")).strip()
-    pair = {subject.canonical_name, object_.canonical_name}
+    # 端点比对走 normalized_name，不做裸字符串相等。
+    subject_name = store.normalize_name(str(payload.get("subject", "")))
+    object_name = store.normalize_name(str(payload.get("object", "")))
+    pair = {
+        store.normalize_name(subject.canonical_name),
+        store.normalize_name(object_.canonical_name),
+    }
     if {subject_name, object_name} != pair:
         return None
     evidence = str(payload.get("evidence", "")).strip()
     if not evidence_in_text(evidence, passage_text):
         return None
-    if subject_name == subject.canonical_name:
+    if subject_name == store.normalize_name(subject.canonical_name):
         subject_id, object_id = subject.id, object_.id
         subject_type, object_type = subject.entity_type, object_.entity_type
     else:
@@ -327,7 +289,8 @@ def run(conn, *, limit: int | None = None, window: int = WINDOW,
             skipped.append({
                 "claim_id": claim.id, "ref": passage.ref, "reason": reason})
             continue
-        snapshot = _snapshot_for(conn, passage)
+        snapshot = local_corpus.snapshot_for(
+            conn, passage.kind, passage.key, passage.text)
         try:
             new_claim = store.add_claim(
                 conn, parsed["subject_id"], parsed["relation"], parsed["object_id"],

@@ -268,6 +268,57 @@ def reshadow(conn, *, force_entailment: bool = False, only_stale: bool = False,
     }
 
 
+def identity_report(conn, *, limit: int = 200) -> dict:
+    """检查每条 claim evidence 是否按身份名（normalized_name）提到两端。
+
+    只读报告。现在不拒收：proposed 别名里有真别名（线性分类模型 / 线性分类器），
+    转 verified 之后这些告警会自然消失，先看清规模再决定收紧到哪一步。
+    """
+    rows = conn.execute(
+        "SELECT e.*, c.relation, se.canonical_name subject_name,"
+        " oe.canonical_name object_name, src.independence_group,"
+        " r.run_type FROM evidence e"
+        " JOIN claims c ON c.id=e.claim_id"
+        " JOIN entities se ON se.id=c.subject_id"
+        " JOIN entities oe ON oe.id=c.object_id"
+        " JOIN source_snapshots ss ON ss.id=e.source_snapshot_id"
+        " JOIN sources src ON src.id=ss.source_id"
+        " LEFT JOIN runs r ON r.id=e.extraction_run_id"
+        " WHERE e.claim_id IS NOT NULL ORDER BY e.id").fetchall()
+    missing = []
+    by_run: dict[str, int] = {}
+    for row in rows:
+        mentions = store.evidence_endpoint_mentions(conn, row)
+        if mentions.get("subject") and mentions.get("object"):
+            continue
+        gaps = []
+        if not mentions.get("subject"):
+            gaps.append(f"subject「{row['subject_name']}」")
+        if not mentions.get("object"):
+            gaps.append(f"object「{row['object_name']}」")
+        source = row["run_type"] or "unknown"
+        by_run[source] = by_run.get(source, 0) + 1
+        missing.append({
+            "evidence_id": row["id"], "claim_id": row["claim_id"],
+            "claim": f"{row['subject_name']} -{row['relation']}-> {row['object_name']}",
+            "missing": gaps, "entailment": row["entailment"],
+            "counts_as_strong": row["evidence_type"] in validators.STRONG_TYPES,
+            "extracted_by": source,
+            "independence_group": row["independence_group"],
+            "excerpt": row["excerpt"][:160],
+        })
+    return {
+        "claim_evidence": len(rows),
+        "missing_identity_mention": len(missing),
+        "by_extraction_run": by_run,
+        "strong_but_unmentioned": sum(
+            1 for item in missing if item["counts_as_strong"]),
+        "supports_but_unmentioned": sum(
+            1 for item in missing if item["entailment"] == "supports"),
+        "items": missing[:limit],
+    }
+
+
 def status(conn) -> dict:
     tables = {
         "sources": "sources",

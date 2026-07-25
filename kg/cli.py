@@ -236,6 +236,15 @@ def cmd_pipeline(args):
             verify_llm=not args.no_verify_llm)
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return
+    if args.action == "alias-declarations":
+        from . import alias_evidence
+        result = alias_evidence.scan(conn, limit=args.limit)
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return
+    if args.action == "identity":
+        result = pipeline.identity_report(conn)
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return
     if args.action == "duplicates":
         result = entity_resolution.find_duplicate_candidates(
             conn, limit=args.limit or 50)
@@ -711,7 +720,7 @@ def main():
         "action",
         choices=[
             "read", "doc", "wiki", "batch", "migrate", "status", "reshadow",
-            "survey", "target", "duplicates",
+            "survey", "target", "duplicates", "identity", "alias-declarations",
             "align-aliases", "review-alignments", "replay-pending",
             "review-type-conflicts",
         ])

@@ -348,6 +348,52 @@ def decide(conn, target_type: str, target_id: int, outcome: str, *,
         evidence_review_snapshot=review_snapshot)
 
 
+def identity_names(conn, entity_id: int) -> set[str]:
+    """实体的身份名集合，全部是 normalized_name。
+
+    只含 canonical 与 status='verified' 的别名。proposed 别名是待核的候选，
+    不构成身份——正文里出现「SVM」不等于正文在讲「支持向量机」。
+    """
+    row = conn.execute(
+        "SELECT normalized_name FROM entities WHERE id=?", (entity_id,)).fetchone()
+    names = {row["normalized_name"]} if row else set()
+    for alias in conn.execute(
+            "SELECT normalized_name FROM aliases"
+            " WHERE entity_id=? AND status='verified'", (entity_id,)):
+        names.add(alias["normalized_name"])
+    return {name for name in names if name}
+
+
+def mentions_identity(excerpt: str, names: set[str]) -> bool:
+    """正文里是否出现了这些身份名之一（两边都归一化后比对）。"""
+    if not names:
+        return False
+    haystack = re.sub(r"\s+", "", normalize_name(excerpt))
+    return any(re.sub(r"\s+", "", name) in haystack for name in names)
+
+
+def evidence_endpoint_mentions(conn, evidence_row) -> dict:
+    """这条 claim evidence 有没有按身份名提到两端。
+
+    结果不入库：别名会从 proposed 转 verified，存下来的标记会过期，
+    每次现算才反映当前的身份定义。
+    """
+    claim_id = evidence_row["claim_id"]
+    if claim_id is None:
+        return {}
+    claim = conn.execute(
+        "SELECT subject_id,object_id FROM claims WHERE id=?", (claim_id,)).fetchone()
+    if not claim:
+        return {}
+    excerpt = evidence_row["excerpt"]
+    return {
+        "subject": mentions_identity(
+            excerpt, identity_names(conn, claim["subject_id"])),
+        "object": mentions_identity(
+            excerpt, identity_names(conn, claim["object_id"])),
+    }
+
+
 def find_canonical_entity(conn, name: str) -> models.Entity | None:
     """只查规范名。规范名全局唯一，是实体解析的最高优先级。"""
     normalized = normalize_name(name)

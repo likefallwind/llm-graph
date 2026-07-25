@@ -7,7 +7,7 @@ from dataclasses import dataclass
 from difflib import SequenceMatcher
 from typing import Callable
 
-from . import llm, store
+from . import alias_evidence, llm, store
 from .observations import EntityObservation
 
 
@@ -72,7 +72,11 @@ def _has_cjk(value: str) -> bool:
 
 def _validated_direct_match_type(alias: str, canonical: str,
                                  claimed_type: str) -> str | None:
-    """LLM 只能提议快捷类型；最终资格由确定性字符串规则确认。"""
+    """LLM 只能提议快捷类型；最终资格由确定性字符串规则确认。
+
+    这是**充分条件**：命中即可判定同名。命中不了不代表不同名——那种情况走
+    alias_evidence 的语料声明累计，不要当成否定结论。
+    """
     if _name_variant_roots(alias) & _name_variant_roots(canonical):
         return "name_variant"
     if (claimed_type == "translation_alias"
@@ -480,6 +484,7 @@ def review_proposed_aliases(conn, limit: int = 50) -> list[dict]:
         status = "verified" if safe else "rejected" if rejected else "proposed"
         store.update_alias_classification(
             conn, row["alias_id"], status=status, alias_type=match_type)
+        corpus_evidence = None
         if safe:
             store.add_alignment_evidence(
                 conn, observed_name=row["name"], entity_id=row["entity_id"],
@@ -489,6 +494,14 @@ def review_proposed_aliases(conn, limit: int = 50) -> list[dict]:
                 reason=f"[{match_type}] {reason}",
                 source_snapshot_id=row["source_snapshot_id"],
                 direct_verify=True)
+        elif status == "proposed":
+            # 走不了确定性快路不等于不是别名。看语料有没有显式声明，
+            # 跨够独立来源组由累计逻辑转正。
+            corpus_evidence = alias_evidence.record(
+                conn, row["alias_id"],
+                policy_version=ALIGNMENT_POLICY_VERSION,
+                resolver_version=RESOLVER_VERSION)
+            status = corpus_evidence["status"]
         results.append({
             "alias_id": row["alias_id"],
             "alias": row["name"],
@@ -498,6 +511,7 @@ def review_proposed_aliases(conn, limit: int = 50) -> list[dict]:
             "confidence": confidence,
             "status": status,
             "reason": reason,
+            "corpus_declarations": corpus_evidence,
         })
     return results
 
