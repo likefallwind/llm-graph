@@ -16,18 +16,30 @@ class OntologyError(ValueError):
     pass
 
 
+REQUIRED_RELATION_FIELDS = (
+    "lifecycle", "family", "description", "subject_types", "object_types",
+    "symmetric", "transitive", "acyclic", "accepted_evidence_types",
+    "minimum_evidence", "validator_version",
+)
+
+
 class Registry:
     def __init__(self, data: dict):
         self.version = int(data["version"])
         self.entity_types = data["entity_types"]
+        self.evidence_types = data["evidence_types"]
         self.relations = data["relations"]
         self._validate_definition()
 
     def _validate_definition(self) -> None:
         known = set(self.entity_types)
+        known_evidence = set(self.evidence_types)
+        for name, spec in self.evidence_types.items():
+            if spec.get("strength") not in {"strong", "weak"}:
+                raise OntologyError(
+                    f"证据类型 {name} 的 strength 非法: {spec.get('strength')}")
         for name, policy in self.relations.items():
-            for field in ("lifecycle", "family", "description", "subject_types", "object_types",
-                          "symmetric", "transitive", "acyclic"):
+            for field in REQUIRED_RELATION_FIELDS:
                 if field not in policy:
                     raise OntologyError(f"关系 {name} 缺少字段 {field}")
             if policy["lifecycle"] not in {"core", "experimental"}:
@@ -36,6 +48,16 @@ class Registry:
             unknown = (set(policy["subject_types"]) | set(policy["object_types"])) - known
             if unknown:
                 raise OntologyError(f"关系 {name} 使用未知实体类型: {sorted(unknown)}")
+            accepted = set(policy["accepted_evidence_types"])
+            unknown_evidence = accepted - known_evidence
+            if unknown_evidence:
+                raise OntologyError(
+                    f"关系 {name} 使用未知证据类型: {sorted(unknown_evidence)}")
+            weak = {item for item in accepted
+                    if self.evidence_types[item]["strength"] != "strong"}
+            if weak:
+                raise OntologyError(
+                    f"关系 {name} 把弱证据列为可接受: {sorted(weak)}")
             qualifiers = set(policy.get("qualifiers", []))
             required = set(policy.get("required_qualifiers", []))
             value_keys = set(policy.get("qualifier_values", {}))
@@ -55,6 +77,26 @@ class Registry:
             name: policy for name, policy in self.relations.items()
             if policy["lifecycle"] == "core"
         }
+
+    def evidence_type_names(self) -> list[str]:
+        """抽取器允许输出的证据类型；提示词的可选值从这里生成。"""
+        return list(self.evidence_types)
+
+    def validate_evidence_type(self, evidence_type: str) -> None:
+        if evidence_type not in self.evidence_types:
+            raise OntologyError(f"未知证据类型: {evidence_type}")
+
+    def is_strong_evidence(self, relation: str, evidence_type: str) -> bool:
+        """该证据类型能否作为这个关系的强支持。
+
+        强弱是**按关系**判定的，不是全局的：explicit_function 对 used_for 是强
+        证据，对 part_of 则恰好是 description 排除的语义。
+        """
+        return evidence_type in set(self.relation(relation)["accepted_evidence_types"])
+
+    def validator_versions(self) -> dict[str, str]:
+        return {name: policy["validator_version"]
+                for name, policy in self.relations.items()}
 
     def validate_entity_type(self, entity_type: str) -> None:
         if entity_type not in self.entity_types:

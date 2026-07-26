@@ -82,6 +82,86 @@ class PassageSearchTests(unittest.TestCase):
 
         self.assertEqual(targeting.find_passages(self.conn, claim.id), [])
 
+    def test_prompt_text_is_scoped_to_the_cooccurrence(self):
+        _, _, claim = _pair(self.conn)
+        noise = "无关内容。" * 2000
+        _section(self.conn, "cs229", "1", noise + "线性回归是一种回归方法。" + noise)
+
+        hit = targeting.find_passages(self.conn, claim.id)[0]
+
+        # 送模型的文本必须远小于整节，否则共现窗口只是筛选，管不住模型看哪里。
+        self.assertIn("线性回归是一种回归方法。", hit.text)
+        self.assertLess(len(hit.text), 1000)
+        self.assertEqual(len(hit.section_text), len(noise) * 2 + 12)
+
+    def test_window_is_verbatim_slice_of_the_section(self):
+        _, _, claim = _pair(self.conn)
+        text = "前文。" * 200 + "线性回归是一种回归方法。" + "后文。" * 200
+        _section(self.conn, "cs229", "1", text)
+
+        hit = targeting.find_passages(self.conn, claim.id)[0]
+
+        self.assertIn(hit.text, hit.section_text)
+        self.assertEqual(
+            hit.section_text[hit.offset:hit.offset + len(hit.text)], hit.text)
+
+    def test_each_cooccurrence_is_its_own_candidate(self):
+        _, _, claim = _pair(self.conn)
+        filler = "无关内容。" * 300
+        _section(self.conn, "cs229", "1",
+                 "线性回归是一种回归方法。" + filler + "回归里最简单的是线性回归。")
+
+        hits = targeting.find_passages(self.conn, claim.id)
+
+        # 只取最近的一处会漏掉同一节里别处更明确的陈述。
+        self.assertEqual(len(hits), 2)
+        self.assertIn("线性回归是一种回归方法。", hits[0].text + hits[1].text)
+        self.assertIn("回归里最简单的是线性回归。", hits[0].text + hits[1].text)
+
+    def test_overlapping_cooccurrences_are_not_sent_twice(self):
+        _, _, claim = _pair(self.conn)
+        _section(self.conn, "cs229", "1",
+                 "线性回归是一种回归方法，线性回归也叫回归分析。")
+
+        hits = targeting.find_passages(self.conn, claim.id)
+
+        self.assertEqual(len(hits), 1)
+
+    def test_window_does_not_start_mid_sentence(self):
+        _, _, claim = _pair(self.conn)
+        _section(self.conn, "cs229", "1",
+                 "开头。" * 200 + "这句讲线性回归也讲回归。" + "结尾。" * 200)
+
+        hit = targeting.find_passages(self.conn, claim.id)[0]
+
+        self.assertTrue(hit.text.startswith("开头。"))
+
+    def test_window_keeps_surrounding_context_not_just_the_hit(self):
+        _, _, claim = _pair(self.conn)
+        _section(self.conn, "cs229", "1",
+                 "前一段讲的是别的内容。\n"
+                 "线性回归是一种回归方法。它假设目标是输入的线性函数。\n"
+                 "后一段接着讲参数估计。")
+
+        hit = targeting.find_passages(self.conn, claim.id)[0]
+
+        # 孤立一句看不出是定义还是举例，判断关系需要上下文。
+        self.assertIn("前一段讲的是别的内容。", hit.text)
+        self.assertIn("后一段接着讲参数估计。", hit.text)
+
+    def test_window_starts_at_a_paragraph_boundary(self):
+        _, _, claim = _pair(self.conn)
+        # 命中点前 300 字落在「铺垫」这一段里，段首在 SNAP_LIMIT 之内，
+        # 就该对齐到段首，而不是从段落中间某个句号后面开始。
+        _section(self.conn, "cs229", "1",
+                 "无关段。" * 20 + "\n" + "铺垫。" * 100
+                 + "线性回归是一种回归方法。" + "收尾。" * 50)
+
+        hit = targeting.find_passages(self.conn, claim.id)[0]
+
+        self.assertTrue(hit.text.startswith("铺垫。"))
+        self.assertNotIn("无关段", hit.text)
+
     def test_alias_widens_the_search(self):
         subject, _, claim = _pair(self.conn)
         store.add_alias(self.conn, subject.id, "linear regression", status="verified")
@@ -105,7 +185,7 @@ class NeutralExtractionTests(unittest.TestCase):
         subject, object_, _ = _pair(self.conn)
         prompt = targeting.TARGET_PROMPT.format(
             left=subject.canonical_name, right=object_.canonical_name,
-            relations="{}", passage="正文")
+            relations="{}", evidence_types="explicit_taxonomy", passage="正文")
 
         # 提示里不能出现「is_a」这个待验证结论，否则就是诱导性提问。
         self.assertNotIn("is_a", prompt)

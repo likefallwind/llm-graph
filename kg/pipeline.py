@@ -179,16 +179,15 @@ def batch(conn, *, topic: str, doc_limit: int = 1, wiki_limit: int = 1,
         "     AND pp.coverage_topic_id=? AND pp.algorithm_version=?"
         " ) ORDER BY d.book,d.ord LIMIT ?",
         (topic, ALGORITHM_VERSION, max(0, doc_limit))).fetchall()
+    # 选维基页只看本地语料本身，不再经过旧核心的 nodes/node_page。
     wiki_rows = conn.execute(
-        "SELECT DISTINCT c.lang,c.title,n.id node_id FROM corpus c"
-        " JOIN node_page np ON np.lang=c.lang AND np.page_id=c.page_id"
-        " JOIN nodes n ON n.id=np.node_id"
-        " WHERE n.status IN ('seed','approved') AND NOT EXISTS ("
+        "SELECT c.lang,c.title FROM corpus c"
+        " WHERE c.text!='' AND NOT EXISTS ("
         "   SELECT 1 FROM source_snapshots ss"
         "   JOIN pipeline_processed pp ON pp.source_snapshot_id=ss.id"
         "   WHERE ss.storage_ref='corpus:' || c.id"
         "     AND pp.coverage_topic_id=? AND pp.algorithm_version=?"
-        " ) ORDER BY n.id LIMIT ?",
+        " ) ORDER BY LENGTH(c.text) DESC, c.id LIMIT ?",
         (topic, ALGORITHM_VERSION, max(0, wiki_limit))).fetchall()
     results, failures = [], []
     for row in docs_rows:
@@ -302,7 +301,8 @@ def identity_report(conn, *, limit: int = 200) -> dict:
             "evidence_id": row["id"], "claim_id": row["claim_id"],
             "claim": f"{row['subject_name']} -{row['relation']}-> {row['object_name']}",
             "missing": gaps, "entailment": row["entailment"],
-            "counts_as_strong": row["evidence_type"] in validators.STRONG_TYPES,
+            "counts_as_strong": registry().is_strong_evidence(
+                row["relation"], row["evidence_type"]),
             "extracted_by": source,
             "independence_group": row["independence_group"],
             "excerpt": row["excerpt"][:160],

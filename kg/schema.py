@@ -112,3 +112,14 @@ def _migrate_entailment_reviews(conn) -> None:
         "INSERT OR IGNORE INTO schema_migrations(version,name,applied_at)"
         " VALUES (9,'targeting_probes',?)",
         (time.time(),))
+    merge_columns = {
+        row["name"] for row in conn.execute("PRAGMA table_info(merge_events)")
+    }
+    if "payload" not in merge_columns:
+        # 记下合并搬动了哪些行，撤销时才有依据。
+        conn.execute(
+            "ALTER TABLE merge_events ADD COLUMN payload TEXT NOT NULL DEFAULT '{}'")
+    conn.execute(
+        "INSERT OR IGNORE INTO schema_migrations(version,name,applied_at)"
+        " VALUES (10,'reversible_entity_merge',?)",
+        (time.time(),))

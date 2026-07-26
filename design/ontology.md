@@ -27,10 +27,22 @@ An item is a first-class entity when an authoritative source discusses it
 independently, it participates in a typed relation, it is a meaningful teaching
 destination, or it needs independent provenance and history.
 
-An item is a facet only when it is a local descriptive aspect that does not need
-its own evidence or relations. A facet must be promoted when it acquires
-independent sources, aliases, relations, conflicts, or learner evidence.
-Promotion and demotion are reversible decisions, not destructive merges.
+The new core has no facet type and no promotion or demotion mechanism. The
+legacy core stored sub-aspects as facet nodes, including misconceptions under
+the `误区:` name prefix; that representation is not carried forward. In the new
+core there are only entities, so an item that does not clear the first-class bar
+above is simply not stored, and one that does is an ordinary entity with its own
+evidence, aliases, and provenance.
+
+A misconception is therefore an entity in its own right, related to what it is
+confused with by `often_confused_with`. That relation is currently
+`experimental` in the registry and unavailable to the extraction path, so
+misconceptions cannot yet be captured. Activating it requires the same evidence
+and validator work as any other relation promotion.
+
+Merging two entities that turn out to be the same thing is a separate
+mechanism — `store.merge_entities`, reversible through `merge_events.payload`.
+It is not facet promotion.
 
 ## Relation Semantics
 

@@ -1,4 +1,43 @@
-version: 3
+# 关系与实体类型的机器权威。kg/ontology.py 加载并强制执行。
+#
+# 规则：这里只放有消费者的字段。没有代码读的字段不要加——死配置会让人以为
+# 某条规则在生效，实际没有。新增关系必须补齐 ontology._validate_definition
+# 要求的全部字段，缺一个就加载失败。
+version: 4
+
+# 抽取器允许输出的全部证据类型。提示词里的可选值和强弱判定都从这里生成，
+# 不在这张表里的值一律不合法。
+evidence_types:
+  explicit_definition:
+    strength: strong
+    description: 正文给出定义，且定义本身包含待验证的关系。
+  explicit_taxonomy:
+    strength: strong
+    description: 正文明确表述种属或分类归属。
+  explicit_composition:
+    strength: strong
+    description: 正文明确表述结构组成或流程阶段。
+  explicit_function:
+    strength: strong
+    description: 正文明确表述用途、功能或作用对象。
+  explicit_prerequisite:
+    strength: strong
+    description: 正文明确表述学习顺序或概念依赖。
+  explicit_comparison:
+    strength: strong
+    description: 正文明确对比两者或指出二者可互相替代。
+  explicit_derivation:
+    strength: strong
+    description: 正文明确表述推导、扩展或改编自。
+  toc_order:
+    strength: weak
+    description: 目录或章节编号顺序。
+  hyperlink:
+    strength: weak
+    description: 超链接指向。
+  cooccurrence:
+    strength: weak
+    description: 仅在同一段落出现。
 
 entity_types:
   field: {description: Recognized AI research or teaching field.}
@@ -23,21 +62,9 @@ relations:
     symmetric: false
     transitive: true
     acyclic: true
+    accepted_evidence_types: [explicit_taxonomy, explicit_definition]
     minimum_evidence: {explicit_high_authority: 1, independent_standard_sources: 2}
-    insufficient_alone: [hyperlink, cooccurrence, category_membership, toc_order]
-    high_impact_review: true
-
-  subfield_of:
-    lifecycle: experimental
-    family: taxonomy
-    description: Subject field is conventionally organized under object field.
-    subject_types: [field]
-    object_types: [field]
-    symmetric: false
-    transitive: true
-    acyclic: true
-    minimum_evidence: {explicit_high_authority: 1, independent_standard_sources: 2}
-    insufficient_alone: [hyperlink, cooccurrence, toc_order]
+    validator_version: entailment-validator-1
     high_impact_review: true
 
   part_of:
@@ -49,8 +76,11 @@ relations:
     symmetric: false
     transitive: contextual
     acyclic: true
+    # 只有明确的组成表述算数。explicit_function（用于/作用）恰恰是 description
+    # 里点名排除的那类语义，不能计入。
+    accepted_evidence_types: [explicit_composition]
     minimum_evidence: {explicit_high_authority: 1, independent_standard_sources: 2}
-    insufficient_alone: [hyperlink, cooccurrence, category_membership, toc_order, usage, dependency, participation, construction, input_output]
+    validator_version: part-of-validator-1
     high_impact_review: true
 
   prerequisite_of:
@@ -67,8 +97,23 @@ relations:
     qualifier_values:
       kind: [conceptual, derivational, curricular]
       strength: [required, recommended]
+    accepted_evidence_types: [explicit_prerequisite, explicit_derivation]
     minimum_evidence: {explicit_high_authority: 1, independent_curriculum_sources: 2}
-    insufficient_alone: [hyperlink, cooccurrence, toc_order]
+    validator_version: entailment-validator-1
+    high_impact_review: true
+
+  subfield_of:
+    lifecycle: experimental
+    family: taxonomy
+    description: Subject field is conventionally organized under object field.
+    subject_types: [field]
+    object_types: [field]
+    symmetric: false
+    transitive: true
+    acyclic: true
+    accepted_evidence_types: [explicit_taxonomy, explicit_definition]
+    minimum_evidence: {explicit_high_authority: 1, independent_standard_sources: 2}
+    validator_version: entailment-validator-1
     high_impact_review: true
 
   often_confused_with:
@@ -80,8 +125,9 @@ relations:
     symmetric: true
     transitive: false
     acyclic: false
+    accepted_evidence_types: [explicit_comparison]
     minimum_evidence: {explicit_high_authority: 1, independent_standard_sources: 2}
-    insufficient_alone: [hyperlink, cooccurrence, toc_order]
+    validator_version: entailment-validator-1
 
   pedagogical_contrast_with:
     lifecycle: experimental
@@ -92,8 +138,9 @@ relations:
     symmetric: true
     transitive: false
     acyclic: false
+    accepted_evidence_types: [explicit_comparison]
     minimum_evidence: {explicit_high_authority: 1, independent_standard_sources: 2}
-    insufficient_alone: [hyperlink, cooccurrence, toc_order]
+    validator_version: entailment-validator-1
 
   alternative_to:
     lifecycle: experimental
@@ -105,8 +152,9 @@ relations:
     transitive: false
     acyclic: false
     qualifiers: [scope, condition]
+    accepted_evidence_types: [explicit_comparison]
     minimum_evidence: {explicit_high_authority: 1, independent_standard_sources: 2}
-    insufficient_alone: [hyperlink, cooccurrence, category_membership]
+    validator_version: entailment-validator-1
 
   used_for:
     lifecycle: experimental
@@ -117,8 +165,9 @@ relations:
     symmetric: false
     transitive: false
     acyclic: false
+    accepted_evidence_types: [explicit_function]
     minimum_evidence: {explicit_high_authority: 1, independent_standard_sources: 2}
-    insufficient_alone: [hyperlink, cooccurrence, category_membership]
+    validator_version: entailment-validator-1
 
   solves:
     lifecycle: experimental
@@ -129,8 +178,9 @@ relations:
     symmetric: false
     transitive: false
     acyclic: false
+    accepted_evidence_types: [explicit_function]
     minimum_evidence: {explicit_high_authority: 1, independent_standard_sources: 2}
-    insufficient_alone: [hyperlink, cooccurrence, category_membership]
+    validator_version: entailment-validator-1
 
   evaluated_by:
     lifecycle: experimental
@@ -141,8 +191,9 @@ relations:
     symmetric: false
     transitive: false
     acyclic: false
+    accepted_evidence_types: [explicit_function]
     minimum_evidence: {explicit_high_authority: 1, independent_standard_sources: 2}
-    insufficient_alone: [hyperlink, cooccurrence]
+    validator_version: entailment-validator-1
 
   trained_on:
     lifecycle: experimental
@@ -154,8 +205,9 @@ relations:
     transitive: false
     acyclic: false
     qualifiers: [variant, time]
+    accepted_evidence_types: [explicit_function]
     minimum_evidence: {explicit_high_authority: 1, independent_standard_sources: 2}
-    insufficient_alone: [hyperlink, cooccurrence]
+    validator_version: entailment-validator-1
 
   optimizes:
     lifecycle: experimental
@@ -166,8 +218,9 @@ relations:
     symmetric: false
     transitive: false
     acyclic: false
+    accepted_evidence_types: [explicit_function]
     minimum_evidence: {explicit_high_authority: 1, independent_standard_sources: 2}
-    insufficient_alone: [hyperlink, cooccurrence]
+    validator_version: entailment-validator-1
 
   derived_from:
     lifecycle: experimental
@@ -179,5 +232,6 @@ relations:
     transitive: false
     acyclic: true
     qualifiers: [time, variant]
+    accepted_evidence_types: [explicit_derivation]
     minimum_evidence: {explicit_high_authority: 1, independent_standard_sources: 2}
-    insufficient_alone: [hyperlink, cooccurrence, chronological_order]
+    validator_version: entailment-validator-1

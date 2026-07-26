@@ -191,7 +191,7 @@ def cmd_mine(args):
 
 def cmd_pipeline(args):
     from . import claims, decision, entity_resolution, legacy_migration, pipeline
-    from . import review_queues, validators
+    from . import review_queues, store, validators
     conn = db.connect()
     if args.action == "status":
         print(json.dumps(pipeline.status(conn), ensure_ascii=False, indent=2))
@@ -244,6 +244,19 @@ def cmd_pipeline(args):
     if args.action == "identity":
         result = pipeline.identity_report(conn)
         print(json.dumps(result, ensure_ascii=False, indent=2))
+        return
+    if args.action == "merge":
+        if not args.source_entity or not args.target_entity:
+            sys.exit("pipeline merge 需要 --source-entity 和 --target-entity")
+        result = store.merge_entities(
+            conn, args.source_entity, args.target_entity, reason=args.reason)
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return
+    if args.action == "revert-merge":
+        if not args.merge_event:
+            sys.exit("pipeline revert-merge 需要 --merge-event")
+        print(json.dumps(store.revert_merge(conn, args.merge_event),
+                         ensure_ascii=False, indent=2))
         return
     if args.action == "duplicates":
         result = entity_resolution.find_duplicate_candidates(
@@ -721,6 +734,7 @@ def main():
         choices=[
             "read", "doc", "wiki", "batch", "migrate", "status", "reshadow",
             "survey", "target", "duplicates", "identity", "alias-declarations",
+            "merge", "revert-merge",
             "align-aliases", "review-alignments", "replay-pending",
             "review-type-conflicts",
         ])
@@ -761,6 +775,10 @@ def main():
                    help="reshadow/survey/target: claim 数上限；duplicates: 报告条数")
     s.add_argument("--passages", type=int, default=2,
                    help="survey/target: 每条 claim 最多探查的候选段落数")
+    s.add_argument("--source-entity", type=int, help="merge: 被并入的实体 id")
+    s.add_argument("--target-entity", type=int, help="merge: 保留的实体 id")
+    s.add_argument("--reason", default="", help="merge: 合并理由")
+    s.add_argument("--merge-event", type=int, help="revert-merge: 合并事件 id")
     s.set_defaults(fn=cmd_pipeline)
 
     args = p.parse_args()

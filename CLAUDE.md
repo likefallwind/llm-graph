@@ -10,14 +10,16 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 `develop` 分支在重建知识表示层。**同一个 `data/kg.db` 里并存两套核心**：
 
-| | 新核心（主流程） | 旧核心（迁移期对照） |
+| | 新核心（唯一在写的） | 旧核心（已冻结，只读） |
 |---|---|---|
-| 表 | `sources / source_snapshots / entities / aliases / claims / evidence / observations / decisions / runs / coverage_topics / reading_tasks` | `nodes / edges / corpus / doc_sections / review_log` |
+| 表 | `sources / source_snapshots / entities / aliases / claims / evidence / entailment_reviews / observations / decisions / runs / merge_events / targeting_probes / coverage_topics / reading_tasks` | `nodes / edges / corpus / doc_sections / review_log` |
 | schema | `kg/schema.sql`（+ `kg/schema.py` 装载与迁移） | `db.SCHEMA`（+ `db._migrate`） |
 | 入口 | `kg pipeline` | `ingest / verify / review / viz / export / check / stats / calibrate` |
 | 发布 | **全部停在 Shadow，不自动发布** | proposed → approved 工作流 |
 
-新工作都落在新核心；不要给旧核心加新算法能力。两套之间的桥是 `kg/legacy_migration.py`（Phase 7，代码就绪但尚未跑过）。
+**新工作全部落在新核心，旧核心不加任何算法能力。** 两者不再有代码依赖，`tests/test_core_isolation.py` 强制这一点。桥只有 `kg/legacy_migration.py`（Phase 7，代码就绪但尚未跑过）。
+
+碰到新旧语义冲突时按新逻辑改，不要往回兼容——旧核心的表述（facet、`related_to`、`误区:` 前缀、全局证据强度）都已经不成立。
 
 ### 文档权威顺序
 
@@ -25,7 +27,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 2. `development-plan.md` — 现行计划：目标、10 条不变式、目标架构、阶段状态、下一步迭代（含状态快照）
 3. `agent.md` — agent 工作守则（下面第二节是它的提炼）
 4. `design/ontology.md`、`design/evidence-policy.md` — 实体/关系语义、证据强度、独立性、自动裁决策略（人读版）
-5. `config/relation-registry.yaml` — 关系与实体类型的**机器权威**，`kg/ontology.py` 加载并强制执行；`config/ai-coverage-taxonomy.yaml` — 覆盖主题树
+5. `config/relation-registry.yaml`（当前 v4）— 关系、实体类型、**证据类型词表与强弱**的机器权威，`kg/ontology.py` 加载并强制执行；`config/ai-coverage-taxonomy.yaml` — 覆盖主题树
 6. `plan.md`、`algorithm.md` — **只描述旧核心**，且早于重构。改旧核心算法时同步 `algorithm.md`；改新核心不必动它们
 7. 本文件 — 曾经在重构期间停更了两周多。**发现它和代码不一致时，以代码为准，并顺手改它**
 
@@ -75,6 +77,11 @@ venv 在项目根目录；调 LLM 的命令需要 `MINIMAX_API_KEY`。数据库�
 | `wiki --lang zh --title 人工智能 --topic T` | 指定本地 `corpus` 页面（须已抓过） |
 | `read --file F --source SLUG --topic T` | 任意 UTF-8 本地文本；另有 `--source-type --independence-group --authority --version --language`；`--observations` 可导入已有结构化 Observation（仍走 evidence 机械校验） |
 | `align-aliases` / `review-alignments` / `replay-pending` / `review-type-conflicts` | 四条复核队列，顺序即此；`--alignment-limit N` |
+| `reshadow` | 按当前策略重判全部 claim，只写 Shadow decision。默认零 LLM；`--force-entailment` 重判全部证据的蕴含，`--only-stale` 只重判判定版本落后于当前 validator/prompt 的那些 |
+| `survey` / `target` | 定向取证：`survey` 列出卡在证据门槛下的 claim 及本地语料里的候选段落（零 LLM）；`target` 对这些段落跑抽取，只找已有 claim 的新独立来源。`--limit N` `--passages N` |
+| `identity` | 报告哪些 evidence 的摘录里没出现端点的身份名（规范名或 verified alias）——数据质量体检，不改库 |
+| `duplicates` / `alias-declarations` | 前者按名字相似度列疑似重复实体；后者零 LLM 扫语料里的别名声明句式（括号注释、又称），累计进对齐候选 |
+| `merge --source-entity A --target-entity B --reason R` / `revert-merge --merge-event N` | 人工确认后的实体合并与撤销 |
 
 通用：`--max-entities` / `--max-claims` 是**每个文本块**的上限；`--no-verify-llm` 跳过 LLM 蕴含复核（Claim 会停在 `needs_more_evidence`，适合无网络管线测试）。
 
@@ -101,27 +108,42 @@ sources/*.yaml + Wikipedia
   → validators.py（关系专用蕴含复核 + 无环/端点类型/证据门槛评估）
   → decision.py（只写 Shadow Decision）
   → cli pipeline 队列复核（alias / alignment / pending replay / type conflict）
+
+第二条入口是定向取证，方向相反——不是读新文本产生新 claim，而是给已有 claim 补独立来源：
+
+targeting.survey（找卡在门槛下的 claim → local_corpus 里按共现+邻近召回候选段落，零 LLM）
+  → targeting.run（只对这些段落跑抽取，端点按规范名比对；探测过程记入 targeting_probes）
+  → claims.py / validators.py / decision.py（与主流程同一套，不走捷径）
 ```
 
 模块分层：
 
 - **采集与工具（新旧共用）**：`wiki.py`（API 客户端，≥1s 节流 + 429 退避，含 Wikidata 接口）、`corpus.py`、`docs.py`、`htmltext.py`、`quality.py`、`llm.py`（MiniMax M3 + embo-01 + `pmap` 并发）
-- **新核心**：`schema.sql` + `schema.py`、`models.py`、`store.py`（唯一写入口）、`ontology.py`、`coverage.py`、`observations.py`、`entity_resolution.py`、`claims.py`、`validators.py`、`decision.py`、`pipeline.py`、`review_queues.py`、`legacy_migration.py`
+- **新核心**：`schema.sql` + `schema.py`、`models.py`、`store.py`（唯一写入口）、`ontology.py`、`coverage.py`、`observations.py`、`entity_resolution.py`、`claims.py`、`validators.py`、`decision.py`、`pipeline.py`、`review_queues.py`、`targeting.py`（定向取证）、`alias_evidence.py`（零 LLM 别名声明扫描）、`local_corpus.py`（本地语料段落读取，两套表都容忍缺失）、`legacy_migration.py`
 - **旧核心**：`db.py`、`ingest.py`、`dedup.py`、`verify.py`、`expand.py`、`mine.py`、`wikidata.py`、`guards.py`、`calibrate.py`、`export.py`、`viz.py`、`seed.py`
 
 `db.connect()` 会同时装两套 schema（`db.SCHEMA` + `db._migrate`，然后 `schema.ensure` 执行 `schema.sql`、补迁移、把关系注册表和覆盖分类同步进库）。
 
-**已知过渡耦合**：`pipeline batch` 选维基页时依赖旧核心的 `node_page` 映射和 seed/approved 节点；`reading_tasks` 目前只入库无人消费，`batch` 是按 `doc_sections.ord` 顺序选章节的，不看覆盖优先级（Phase 6 未接上）。
+**新旧核心的隔离是测试强制的**：`tests/test_core_isolation.py` 用 AST 扫新核心的每个模块，import 了旧核心模块、或 SQL 里出现 `nodes / edges / review_log`，测试直接失败。最后一处耦合已经拆掉——`pipeline batch` 选维基页原先要 `JOIN node_page` 并要求 `nodes.status IN ('seed','approved')`，现在只看 `corpus`。
+
+剩下的共用是有意的：`db.connect()` 同时装两套 schema，采集与工具层（`wiki / corpus / docs / htmltext / quality / llm`）两边都用——它们是工具，不是知识表示。`local_corpus.py` 读 `doc_sections` / `corpus` 时先查 `sqlite_master`，表不在也不崩，所以新核心不硬依赖旧表。
+
+**尚未接上的**：`reading_tasks` 只入库无人消费，`batch` 按 `doc_sections.ord` 顺序选章节，不看覆盖优先级（Phase 6）。
 
 ## 五、关键不变式（新核心）
 
 - **Evidence 机械可定位**：`observations.evidence_in_text` 只容忍空白差异和 `...`/`…` 分段，定位不上整条丢弃；Claim 的 subject/object 必须同时出现在本批有效 entities 里；`next_reading_targets` 必须在正文出现才登记为 `reading_tasks`。
 - **Claim 与 Evidence 分离**：canonical claim 由 `(subject_id, relation, object_id, qualifiers_hash)` 唯一确定，可累计多条 `support / oppose / uncertain` 证据；后来的证据既不覆盖也不丢弃。Evidence 必须且只能绑定一个 entity 或 claim。
 - **独立性来自 `sources.independence_group`**，不是摘录条数、不是同一模型的多次判断；翻译、镜像、同一本书的不同章节都不算独立来源。
-- **关系注册表是硬约束**：当前 v3 的核心关系只有 `is_a / part_of / prerequisite_of`（`lifecycle: core`），抽取路径用 `validate_claim(..., active_only=True)` 只放行 core；其余 10 个是 `experimental`，登记但不参与抽取。注意 `active_only` 目前只在 `observations.parse_payload` 一处生效，`store.add_claim` 与 `validators.evaluate` 不查 lifecycle——改这些路径时留意。
-- **关系语义细节**：`prerequisite_of` 必填 qualifiers `kind`(conceptual|derivational|curricular) + `strength`(required|recommended)，`scope` 仅在语料明确限定时填；`part_of` 有额外语义硬闸——用于/依赖/参与/帮助构建/输入输出/属性/子类型都不是 part_of，蕴含复核必须返回 `composition_explicit=true` 才算支持。教材目录序、超链接、共现、分类归属都是弱证据，不能单独批准类型化关系（各关系的 `insufficient_alone` 字段）。
+- **关系注册表是唯一事实来源**（`config/relation-registry.yaml`，当前 `version: 4`）。核心关系只有 `is_a / part_of / prerequisite_of`（`lifecycle: core`），抽取路径用 `validate_claim(..., active_only=True)` 只放行 core；其余 10 个是 `experimental`，登记但不参与抽取。注意 `active_only` 目前只在 `observations.parse_payload` 一处生效，`store.add_claim` 与 `validators.evaluate` 不查 lifecycle——改这些路径时留意。
+- **证据类型词表也在注册表里**：顶层 `evidence_types` 定义全部取值和各自 `strength`。强类型 7 个（`explicit_definition / explicit_taxonomy / explicit_composition / explicit_function / explicit_prerequisite / explicit_comparison / explicit_derivation`），弱类型 3 个（`toc_order / hyperlink / cooccurrence`）。抽取提示词的可选值由 `registry().evidence_type_names()` 生成，代码里不得再写第二份词表（`tests/test_core_isolation.py` 会抓）。
+- **强弱是按关系判的，不是全局的**：每个关系的 `accepted_evidence_types` 决定哪些类型能计入门槛，`validators.evaluate` 走 `registry().is_strong_evidence(relation, type)`。`explicit_function` 对 `used_for` 是强证据，对 `part_of` 明确排除——「A 用于 B」正是 part_of 定义要排掉的读法。不在白名单里的类型不是降级为弱，是完全不计。
+- **注册表里不放没有消费者的字段**：`tests/test_core_isolation.py` 会遍历注册表字段，找不到读它的代码就失败。死配置比缺配置更危险，它让人以为某条规则在生效。
+- **关系语义细节**：`prerequisite_of` 必填 qualifiers `kind`(conceptual|derivational|curricular) + `strength`(required|recommended)，`scope` 仅在语料明确限定时填；`part_of` 有额外语义硬闸——用于/依赖/参与/帮助构建/输入输出/属性/子类型都不是 part_of，蕴含复核必须返回 `composition_explicit=true` 才算支持。
 - **一切裁决先 Shadow**：`decision.shadow_claim` 只往 `decisions` 写 `decided_by='shadow'`，不改 claim 状态。三个核心关系当前都是 `high_impact_review: true`，即使证据达标也判 `human_review`。`store.decide` 是唯一会改 entity/claim 状态的地方。缺证据是 `needs_more_evidence`，不是自动拒绝。
-- **实体消歧快路是确定性的**：规范名精确命中 → 唯一 verified alias 精确命中；字符串相似度只做候选召回，永远不证明同一性。LLM 判同实体只有在 `translation_alias`/`name_variant` 且 confidence ≥ `LLM_AUTO_LINK_CONFIDENCE`(0.95) 时自动 verified；其余进 `entity_alignment_candidates` 累计，需跨 ≥2 个独立来源组、合成分 ≥0.95 且无竞争候选才升级。缩写、符号、语义别名、复合名不靠一次模型判断合并。所有合并可逆（`entity_resolution_events` / `entity_alignment_evidence` / `merge_events` 留痕）。
+- **蕴含判定只追加不覆盖**：每次判定往 `entailment_reviews` 插一行并挂上产生它的 `runs` 记录，`evidence.current_entailment_review_id` 指向最新一条；`decisions.evidence_review_snapshot` 记下这次裁决是基于哪些判定做的，所以回读一条旧裁决不用假设当前判定就是它当时看到的。改 `validators.VALIDATOR_VERSION` 或 `ENTAILMENT_PROMPT_VERSION` 后，`pipeline reshadow --stale-only` 只重判版本落后的证据。历史遗留的判定补了 review 行但 `run_id` 为 NULL——那些的模型和 prompt 版本已不可考，不伪造版本号。
+- **实体消歧快路是确定性的**：规范名精确命中 → 唯一 verified alias 精确命中；字符串相似度只做候选召回，永远不证明同一性。LLM 判同实体只有在 `translation_alias`/`name_variant` 且 confidence ≥ `LLM_AUTO_LINK_CONFIDENCE`(0.95) 时自动 verified；其余进 `entity_alignment_candidates` 累计，需跨 ≥2 个独立来源组、合成分 ≥0.95 且无竞争候选才升级。缩写、符号、语义别名、复合名不靠一次模型判断合并。
+- **实体合并可逆**：`store.merge_entities` 把 alias / evidence / claim 搬到目标实体，源实体转 `merged` 且原规范名留作 verified alias；搬动的行 id 全部写进 `merge_events.payload`，`store.revert_merge` 按它回滚。合并后自指的 claim 和撞唯一键的重复 claim 标 rejected，撤销时一并恢复。已合并的实体不能再次作为合并源，同一个 merge_event 不能撤销两次。
 - **模型队列结论只留痕不改主类型**：`review_queues.review_type_conflicts` 把判断写进 `model_queue_reviews`（`auto_changed` 恒为 False），实体主类型变更走人工。
 - **抽取限额是每个文本块的**：`observations.split_text` 按段落切 12000 字符块，限额平摊到块、跨块去重合并，不做全章截断——长章节后半段不能因为分块被丢掉。
 - **重复处理防护**：每个 `(source_snapshot, coverage_topic, algorithm_version)` 只处理一次（`pipeline_processed`）；改算法要动 `pipeline.ALGORITHM_VERSION` 才会重跑。抽取与复核都建 `runs` 记录算法版本、prompt 版本和配置。
@@ -139,9 +161,13 @@ sources/*.yaml + Wikipedia
 - 高影响的分类学与先修 claim，在校准数据足够前保持更严策略或人工审核
 - 不允许靠极小抽样样本就启用某条自动策略
 
-`benchmarks/gold.jsonl` 目前只是种子（远未达到 300 例目标），所以现在没有任何策略具备开闸依据。修改门槛需要有记录的基准证据，不是为了方便。
+`benchmarks/gold.jsonl` 目前只有 3 条人工判过的负例（目标 300），所以现在没有任何策略具备开闸依据。修改门槛需要有记录的基准证据，不是为了方便。判错的 claim 归档到 `data/archive/` 并导出成 gold 负例再删——错误比正确的例子更能测出策略漏洞，不要直接删掉了事。
 
-## 七、旧核心（只在维护旧命令时需要）
+## 七、旧核心（已冻结，只在维护旧命令时需要）
+
+**2026-07-26 起旧核心冻结**：现有读命令继续可用，但不再加任何算法能力，新核心也不再依赖它。发现新旧概念混用时按新逻辑改，不要往回兼容。
+
+新核心里没有 facet：任何值得命名的东西就是一个 entity，不值得命名的就不存。旧核心的 `误区:` 前缀 facet 不迁移——误区在新核心是普通实体，靠 `often_confused_with` 关联，而那条关系目前是 `experimental`，要用得先按正常流程转正。
 
 完整算法见 `algorithm.md`。当前仍成立的骨架：
 
@@ -151,4 +177,4 @@ sources/*.yaml + Wikipedia
 - **守卫** `guards.py`：`cycles` / `prereq_cycles` / `prereq_redundant` / `mutual_edges` / `bad_edge_endpoints` / `orphans` / `facet_shadows`。这些是必要检查，但**不构成语义质量的证据**（`agent.md`）。
 - 旧核心的 evidence 校验是 `ingest.evidence_in_text`，来源格式 `wiki:<lang>:<title>@<revision_id>` / `doc:<book>:<sec_id>@<content_hash>` / `mine:category:<lang>` / `wikidata:<属性>`。
 
-⚠️ `legacy_migration.RELATED_MAP` 把旧 `related_to` 边映射到 `alternative_to` / `derived_from` / `pedagogical_contrast_with`，这三个在 v3 里都是 `experimental`。跑 Phase 7 迁移前需要先决定怎么处理。
+⚠️ `legacy_migration.RELATED_MAP` 把旧 `related_to` 边映射到 `alternative_to` / `derived_from` / `pedagogical_contrast_with`，这三个在注册表里都是 `experimental`，抽取路径不放行。跑 Phase 7 迁移前必须先决定：要么先把这三条关系按正常流程转正，要么迁移时直接丢弃这批边。不要为了迁移开后门绕过 `active_only`。

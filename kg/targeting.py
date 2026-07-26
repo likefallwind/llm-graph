@@ -3,6 +3,10 @@
 读整章碰运气的命中率很低——两本教材讲同一个概念，很少写出同一个三元组。
 这里反过来：给定一条证据不足的 Claim，在本地语料里找同时提到两端概念的段落，
 只对这些段落做抽取。检索全程零 LLM。
+
+送进 prompt 的是共现点附近的邻域，不是整节。共现窗口是检索的筛选条件，
+如果把整节正文都给模型，它会从与命中位置无关的地方摘句子——筛选条件就没有
+约束住作用域。快照登记的仍是整节原文，证据的出处不因截窗口而变。
 """
 from __future__ import annotations
 
@@ -24,6 +28,8 @@ TARGET_PROMPT = """下面是一段本地语料正文。请判断它是否明确�
 2. 方向由你根据正文判断，不要假设哪个是 subject。
 3. evidence 必须是正文的逐字摘录。
 4. evidence_type 只能描述证据实际表达的类型，不得夸大。
+5. part_of 只表示真实结构部件或正文明确列出的流程阶段。“用于、依赖、参与、
+   帮助构建、产生、输入/输出、属性、子类型”都不是 part_of；不成立时返回 none。
 
 允许的关系及限定字段契约：{relations}
 
@@ -33,7 +39,7 @@ TARGET_PROMPT = """下面是一段本地语料正文。请判断它是否明确�
   "subject": "{left} 或 {right}",
   "object": "另一个",
   "qualifiers": {{}},
-  "evidence_type": "explicit_definition|explicit_taxonomy|explicit_composition|explicit_prerequisite|toc_order|hyperlink|cooccurrence",
+  "evidence_type": "{evidence_types}",
   "evidence": "逐字摘录",
   "reason": "一句话理由"
 }}
@@ -44,8 +50,11 @@ TARGET_PROMPT = """下面是一段本地语料正文。请判断它是否明确�
 ---"""
 
 WINDOW = 600
-PROMPT_VERSION = "claim-targeted-1"
-ALGORITHM_VERSION = "claim-targeting-1"
+CONTEXT = 300
+SENTENCE_END = "。！？；!?;"
+SNAP_LIMIT = 400
+PROMPT_VERSION = "claim-targeted-2"
+ALGORITHM_VERSION = "claim-targeting-2"
 
 
 def _hash(text: str) -> str:
@@ -58,8 +67,12 @@ class Passage:
     kind: str
     key: str
     text: str
+    """只送进 prompt 的邻域文本，两端命中都在其中。"""
+    section_text: str
+    """整节原文，登记 source_snapshot 用；证据的出处仍是整节。"""
     independence_group: str
     gap: int
+    offset: int
 
 
 def _entity_names(conn, entity_id: int) -> set[str]:
@@ -79,25 +92,67 @@ def _spans(text: str, names: set[str]) -> list[tuple[int, int]]:
         for name in names for match in re.finditer(re.escape(name), text))
 
 
-def _closest_gap(text: str, left: set[str], right: set[str]) -> int | None:
-    """两端各自出现且不是同一处文字时的最近距离。
+def _cooccurrences(text: str, left: set[str], right: set[str],
+                   window: int) -> list[tuple[int, int, int]]:
+    """全部满足距离要求的共现，每个是 (距离, 覆盖两端的起点, 终点)。
+
+    一节里同一对概念可能在多处被讲到，只取最近的那处会漏掉别处更明确的陈述。
+    每次共现各自成为一个候选段落，由调用方按距离排序取前几个。
 
     中文里一端常是另一端的子串（回归/线性回归、梯度下降/梯度下降法）。命中位置
     重叠说明只是同一处文字被两个名字各匹配了一次，不算共现，必须排除。
     """
     left_spans = _spans(text, left)
     right_spans = _spans(text, right)
-    if not left_spans or not right_spans:
-        return None
-    best = None
+    hits = []
     for a_start, a_end in left_spans:
         for b_start, b_end in right_spans:
             if a_start < b_end and b_start < a_end:
                 continue
             gap = (b_start - a_end) if b_start >= a_end else (a_start - b_end)
-            if best is None or gap < best:
-                best = gap
-    return best
+            if gap > window:
+                continue
+            hits.append((gap, min(a_start, b_start), max(a_end, b_end)))
+    return sorted(hits)
+
+
+def _snap_back(text: str, index: int) -> int:
+    """把起点往前挪到边界：优先段首，其次句首，都够不着就硬切。"""
+    floor = max(0, index - SNAP_LIMIT)
+    paragraph = text.rfind("\n", floor, index)
+    if paragraph != -1:
+        return paragraph + 1
+    for i in range(index - 1, floor - 1, -1):
+        if text[i] in SENTENCE_END:
+            return i + 1
+    return index
+
+
+def _snap_forward(text: str, index: int) -> int:
+    ceiling = min(len(text), index + SNAP_LIMIT)
+    paragraph = text.find("\n", index, ceiling)
+    if paragraph != -1:
+        return paragraph
+    for i in range(index, ceiling):
+        if text[i] in SENTENCE_END:
+            return i + 1
+    return index
+
+
+def _neighborhood(text: str, start: int, end: int,
+                  context: int = CONTEXT) -> tuple[str, int]:
+    """截出共现点附近的一段，返回 (文本, 在整节里的起始偏移)。
+
+    只把这段送进 prompt。整节动辄上万字，模型会从与检索命中无关的地方摘句子——
+    共现窗口本来是筛选条件，不限定作用域的话就管不住模型看哪里。
+
+    但也不能只给命中那一句：判断两个概念的关系需要上下文，孤立一句往往看不出
+    是定义、是举例还是并列。所以前后各留 CONTEXT 字再向外对齐到段落边界，
+    实际给到模型的是命中处所在的一两段完整文字。
+    """
+    lo = _snap_back(text, max(0, start - context))
+    hi = _snap_forward(text, min(len(text), end + context))
+    return text[lo:hi], lo
 
 
 def supporting_groups(conn, claim_id: int) -> set[str]:
@@ -128,7 +183,11 @@ def record_probe(conn, claim_id: int, passage: "Passage", *, result: str,
 def find_passages(conn, claim_id: int, *, window: int = WINDOW,
                   exclude_known_groups: bool = True,
                   skip_probed: bool = True, limit: int = 3) -> list[Passage]:
-    """机械共现检索：两端概念在同一段且相距不超过 window 字。"""
+    """机械共现检索：两端概念相距不超过 window 字的每一处，各出一个候选段落。
+
+    候选的粒度是「一次共现」，不是「一节」：同一节里两处讲到同一对概念，就是两个
+    候选，按距离排序竞争 limit 名额。
+    """
     claim = store.get_claim(conn, claim_id)
     if not claim:
         raise ValueError(f"Claim 不存在: {claim_id}")
@@ -142,15 +201,20 @@ def find_passages(conn, claim_id: int, *, window: int = WINDOW,
     for item in local_corpus.passages(conn):
         if item.independence_group in known:
             continue
-        if (item.ref, _hash(item.text)) in seen:
-            continue
-        gap = _closest_gap(item.text, left, right)
-        if gap is None or gap > window:
-            continue
-        found.append(Passage(
-            item.ref, item.kind, item.key, item.text,
-            item.independence_group, gap))
-    found.sort(key=lambda item: (item.gap, item.ref))
+        taken: list[tuple[int, int]] = []
+        for gap, start, end in _cooccurrences(item.text, left, right, window):
+            text, offset = _neighborhood(item.text, start, end)
+            stop = offset + len(text)
+            # 相邻的共现会截出几乎重合的邻域，重复送一遍只是多花一次调用。
+            if any(offset < b and a < stop for a, b in taken):
+                continue
+            if (item.ref, _hash(text)) in seen:
+                continue
+            taken.append((offset, stop))
+            found.append(Passage(
+                item.ref, item.kind, item.key, text, item.text,
+                item.independence_group, gap, offset))
+    found.sort(key=lambda item: (item.gap, item.ref, item.offset))
     return found[:limit]
 
 
@@ -179,7 +243,11 @@ def survey(conn, *, limit: int | None = None, window: int = WINDOW,
             "claim": f"{subject.canonical_name} -{claim.relation}-> {object_.canonical_name}",
             "supporting_groups": sorted(supporting_groups(conn, claim_id)),
             "candidates": [
-                {"ref": item.ref, "group": item.independence_group, "gap": item.gap}
+                {"ref": item.ref, "group": item.independence_group,
+                 "gap": item.gap, "offset": item.offset,
+                 "window_chars": len(item.text),
+                 "section_chars": len(item.section_text),
+                 "excerpt": item.text[:120]}
                 for item in hits],
         })
     return {
@@ -214,16 +282,18 @@ def _extract_one(payload: dict, passage_text: str, subject, object_) -> dict | N
         subject_type, object_type = object_.entity_type, subject.entity_type
     qualifiers = payload.get("qualifiers") if isinstance(
         payload.get("qualifiers"), dict) else {}
+    evidence_type = str(payload.get("evidence_type", "cooccurrence")).strip()
     try:
         registry().validate_claim(
             subject_type, relation, object_type, active_only=True)
         registry().validate_qualifiers(relation, qualifiers, require_required=True)
+        registry().validate_evidence_type(evidence_type)
     except ValueError:
         return None
     return {
         "subject_id": subject_id, "object_id": object_id, "relation": relation,
         "qualifiers": qualifiers, "evidence": evidence,
-        "evidence_type": str(payload.get("evidence_type", "cooccurrence")).strip(),
+        "evidence_type": evidence_type,
         "reason": str(payload.get("reason", ""))[:300],
     }
 
@@ -264,7 +334,9 @@ def run(conn, *, limit: int | None = None, window: int = WINDOW,
         _, subject, object_, passage = item
         prompt = TARGET_PROMPT.format(
             left=subject.canonical_name, right=object_.canonical_name,
-            relations=contract, passage=passage.text)
+            relations=contract,
+            evidence_types="|".join(registry().evidence_type_names()),
+            passage=passage.text)
         try:
             return llm.chat_json([{"role": "user", "content": prompt}])
         except (RuntimeError, ValueError) as exc:
@@ -289,8 +361,10 @@ def run(conn, *, limit: int | None = None, window: int = WINDOW,
             skipped.append({
                 "claim_id": claim.id, "ref": passage.ref, "reason": reason})
             continue
+        # 快照登记整节原文：证据的出处是这一节，不是我们临时截的窗口。
+        # 窗口只约束模型能看到哪里，不改变 provenance 的单位。
         snapshot = local_corpus.snapshot_for(
-            conn, passage.kind, passage.key, passage.text)
+            conn, passage.kind, passage.key, passage.section_text)
         try:
             new_claim = store.add_claim(
                 conn, parsed["subject_id"], parsed["relation"], parsed["object_id"],
@@ -298,9 +372,12 @@ def run(conn, *, limit: int | None = None, window: int = WINDOW,
                 metadata={"created_from": "claim_targeted_search"})
             store.add_evidence(
                 conn, snapshot.id, parsed["evidence"], parsed["evidence_type"],
-                claim_id=new_claim.id, location=passage.ref,
+                claim_id=new_claim.id,
+                location=f"{passage.ref}#{passage.offset}",
                 mechanically_valid=True, extraction_run_id=run_id,
-                metadata={"targeted_for_claim": claim.id, "gap": passage.gap})
+                metadata={"targeted_for_claim": claim.id, "gap": passage.gap,
+                          "window_offset": passage.offset,
+                          "window_length": len(passage.text)})
         except ValueError as exc:
             record_probe(conn, claim.id, passage, result="no_relation",
                          run_id=run_id, reason=str(exc))

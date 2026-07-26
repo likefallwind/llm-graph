@@ -43,7 +43,7 @@ EXTRACT_PROMPT = """你是有据抽取器。只允许依据给出的语料，不
       "relation": "允许的关系",
       "object": "entities 中的名称",
       "qualifiers": {{}},
-      "evidence_type": "explicit_definition|explicit_taxonomy|explicit_composition|explicit_function|explicit_prerequisite|explicit_comparison|explicit_derivation|toc_order|hyperlink|cooccurrence",
+      "evidence_type": "{evidence_types}",
       "evidence": "逐字摘录",
       "location": "章节或段落说明"
     }}
@@ -122,7 +122,7 @@ def parse_payload(payload: dict, source_text: str) -> ObservationBatch:
         entity_type = str(raw.get("entity_type", "")).strip()
         evidence = str(raw.get("evidence", "")).strip()
         try:
-            reg.validate_entity_type(entity_type)
+            reg.validate_entity_type(entity_type)  # noqa: F841
         except ValueError as exc:
             rejected.append(f"entity[{index}] {exc}")
             continue
@@ -164,10 +164,16 @@ def parse_payload(payload: dict, source_text: str) -> ObservationBatch:
         if not evidence_in_text(evidence, source_text):
             rejected.append(f"claim[{index}] evidence 无法在语料中定位")
             continue
+        evidence_type = str(raw.get("evidence_type", "cooccurrence")).strip()
+        try:
+            reg.validate_evidence_type(evidence_type)
+        except ValueError as exc:
+            rejected.append(f"claim[{index}] {exc}")
+            continue
         claims.append(ClaimObservation(
             subject=subject, relation=relation, object=object_,
             qualifiers=qualifiers,
-            evidence_type=str(raw.get("evidence_type", "cooccurrence")).strip(),
+            evidence_type=evidence_type,
             evidence=evidence, location=str(raw.get("location", "")).strip(), raw=raw))
 
     for raw in payload.get("next_reading_targets", []):
@@ -197,6 +203,7 @@ def extract(source_text: str, topic: str, *, max_entities: int = 20,
         prompt = EXTRACT_PROMPT.format(
             topic=topic,
             entity_types="、".join(reg.entity_types),
+            evidence_types="|".join(reg.evidence_type_names()),
             relations=reg.extraction_contract(),
             max_entities=max_entities, max_claims=max_claims, text=chunk)
         payload = llm.chat_json([{"role": "user", "content": prompt}])

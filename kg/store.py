@@ -348,6 +348,127 @@ def decide(conn, target_type: str, target_id: int, outcome: str, *,
         evidence_review_snapshot=review_snapshot)
 
 
+def merge_entities(conn, source_id: int, target_id: int, *, reason: str = "",
+                   decision_id: int | None = None) -> dict:
+    """把 source 实体并入 target，记录可撤销的合并事件。
+
+    不是自动流程的一部分：合并是高影响操作，由重复清扫报告驱动、经人工确认后调用。
+    搬动的行 id 全部记进 merge_events.payload，`revert_merge` 按它原样回滚。
+    """
+    if source_id == target_id:
+        raise ValueError("不能把实体合并到它自己")
+    source, target = get_entity(conn, source_id), get_entity(conn, target_id)
+    if not source or not target:
+        raise ValueError("合并的两端实体必须都存在")
+    if source.status == "merged":
+        raise ValueError(f"实体 {source_id} 已经被合并过")
+
+    moved_aliases = [row["id"] for row in conn.execute(
+        "SELECT id FROM aliases WHERE entity_id=?", (source_id,))]
+    moved_evidence = [row["id"] for row in conn.execute(
+        "SELECT id FROM evidence WHERE entity_id=?", (source_id,))]
+    # 端点改到 target 之后会与已有 claim 撞唯一键的，视为同一条，直接丢弃重复。
+    dropped_claims, moved_subject, moved_object = [], [], []
+    for row in conn.execute(
+            "SELECT id,subject_id,relation,object_id,qualifiers_hash FROM claims"
+            " WHERE subject_id=? OR object_id=?", (source_id, source_id)):
+        new_subject = target_id if row["subject_id"] == source_id else row["subject_id"]
+        new_object = target_id if row["object_id"] == source_id else row["object_id"]
+        if new_subject == new_object:
+            dropped_claims.append(row["id"])
+            continue
+        clash = conn.execute(
+            "SELECT id FROM claims WHERE subject_id=? AND relation=? AND object_id=?"
+            " AND qualifiers_hash=? AND id!=?",
+            (new_subject, row["relation"], new_object, row["qualifiers_hash"],
+             row["id"])).fetchone()
+        if clash:
+            dropped_claims.append(row["id"])
+            continue
+        (moved_subject if row["subject_id"] == source_id else moved_object).append(
+            row["id"])
+
+    now = time.time()
+    payload = {
+        "aliases": moved_aliases, "evidence": moved_evidence,
+        "claims_subject": moved_subject, "claims_object": moved_object,
+        "claims_dropped": dropped_claims,
+        "source_status": source.status,
+        "source_canonical_name": source.canonical_name,
+    }
+    cur = conn.execute(
+        "INSERT INTO merge_events"
+        " (source_entity_id,target_entity_id,status,decision_id,reason,payload,"
+        "  created_at,updated_at) VALUES (?,?,'applied',?,?,?,?,?)",
+        (source_id, target_id, decision_id, reason, _json(payload), now, now))
+
+    conn.execute("UPDATE aliases SET entity_id=? WHERE entity_id=?",
+                 (target_id, source_id))
+    conn.execute("UPDATE evidence SET entity_id=?, target_key=? WHERE entity_id=?",
+                 (target_id, f"entity:{target_id}", source_id))
+    if moved_subject:
+        conn.execute(
+            "UPDATE claims SET subject_id=? WHERE id IN (%s)"
+            % ",".join("?" * len(moved_subject)), (target_id, *moved_subject))
+    if moved_object:
+        conn.execute(
+            "UPDATE claims SET object_id=? WHERE id IN (%s)"
+            % ",".join("?" * len(moved_object)), (target_id, *moved_object))
+    if dropped_claims:
+        conn.execute(
+            "UPDATE claims SET status='rejected' WHERE id IN (%s)"
+            % ",".join("?" * len(dropped_claims)), tuple(dropped_claims))
+    # 原规范名成为 target 的别名，保留可检索性。
+    conn.execute(
+        "INSERT OR IGNORE INTO aliases"
+        " (entity_id,name,normalized_name,alias_type,status,created_at)"
+        " VALUES (?,?,?,'merged_canonical','verified',?)",
+        (target_id, source.canonical_name, source.normalized_name, now))
+    conn.execute("UPDATE entities SET status='merged', updated_at=? WHERE id=?",
+                 (now, source_id))
+    conn.commit()
+    return {"merge_event_id": cur.lastrowid, "source": source.canonical_name,
+            "target": target.canonical_name, **payload}
+
+
+def revert_merge(conn, merge_event_id: int) -> dict:
+    """按 payload 原样回滚一次合并。"""
+    row = conn.execute(
+        "SELECT * FROM merge_events WHERE id=?", (merge_event_id,)).fetchone()
+    if not row:
+        raise ValueError(f"合并事件不存在: {merge_event_id}")
+    if row["status"] != "applied":
+        raise ValueError(f"合并事件状态为 {row['status']}，不可撤销")
+    payload = _load(row["payload"])
+    source_id, target_id = row["source_entity_id"], row["target_entity_id"]
+    now = time.time()
+    for alias_id in payload.get("aliases", []):
+        conn.execute("UPDATE aliases SET entity_id=? WHERE id=?",
+                     (source_id, alias_id))
+    for evidence_id in payload.get("evidence", []):
+        conn.execute(
+            "UPDATE evidence SET entity_id=?, target_key=? WHERE id=?",
+            (source_id, f"entity:{source_id}", evidence_id))
+    for claim_id in payload.get("claims_subject", []):
+        conn.execute("UPDATE claims SET subject_id=? WHERE id=?",
+                     (source_id, claim_id))
+    for claim_id in payload.get("claims_object", []):
+        conn.execute("UPDATE claims SET object_id=? WHERE id=?",
+                     (source_id, claim_id))
+    for claim_id in payload.get("claims_dropped", []):
+        conn.execute("UPDATE claims SET status='proposed' WHERE id=?", (claim_id,))
+    conn.execute(
+        "DELETE FROM aliases WHERE entity_id=? AND alias_type='merged_canonical'"
+        " AND normalized_name=?",
+        (target_id, normalize_name(payload.get("source_canonical_name", ""))))
+    conn.execute("UPDATE entities SET status=?, updated_at=? WHERE id=?",
+                 (payload.get("source_status", "proposed"), now, source_id))
+    conn.execute("UPDATE merge_events SET status='reverted', updated_at=? WHERE id=?",
+                 (now, merge_event_id))
+    conn.commit()
+    return {"merge_event_id": merge_event_id, "reverted": True}
+
+
 def identity_names(conn, entity_id: int) -> set[str]:
     """实体的身份名集合，全部是 normalized_name。
 

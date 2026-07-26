@@ -27,14 +27,25 @@ Mechanical validity proves provenance, not semantic correctness.
 
 ## Evidence Strength
 
-Strong evidence includes explicit definitions, taxonomy, composition, function,
-educational dependency, comparison, derivation, and relation-compatible
-structured claims from authoritative sources.
+The vocabulary and the strength of each type live in
+`config/relation-registry.yaml` under `evidence_types`. This document explains
+the intent; the registry is what the code enforces.
 
-Weak evidence includes table-of-contents order, hyperlinks, co-occurrence,
-category membership, citations without explicit relations, and neighborhood
-overlap. Weak evidence may prioritize reading or review, but cannot independently
-approve a typed claim unless its relation policy explicitly permits it.
+Strong types state a relation in the text itself: `explicit_definition`,
+`explicit_taxonomy`, `explicit_composition`, `explicit_function`,
+`explicit_prerequisite`, `explicit_comparison`, `explicit_derivation`.
+
+Weak types are arrangement rather than assertion: `toc_order`, `hyperlink`,
+`cooccurrence`. Category membership, citations without an explicit relation, and
+neighborhood overlap fall here as well. Weak evidence may prioritize reading or
+review, but never counts toward the approval threshold of a typed claim.
+
+Strength is per relation, not global. A type is strong for a claim only if it
+appears in that relation's `accepted_evidence_types`. `explicit_function` is
+strong for `used_for` and is excluded from `part_of`, because "A is used for B"
+is exactly the reading `part_of` is defined to rule out. A relation may accept
+only a subset of the strong types, and the ones it does not accept contribute
+nothing — they are not downgraded to weak, they are ignored.
 
 ## Relation-Specific Authority
 

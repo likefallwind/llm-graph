@@ -25,18 +25,7 @@ Evidence：
 """
 
 VALIDATOR_VERSION = "entailment-validator-1"
-ENTAILMENT_PROMPT_VERSION = "entailment-judge-1"
-
-STRONG_TYPES = {
-    "explicit_definition",
-    "explicit_taxonomy",
-    "explicit_composition",
-    "explicit_function",
-    "explicit_prerequisite",
-    "explicit_comparison",
-    "explicit_derivation",
-    "structured_authoritative",
-}
+ENTAILMENT_PROMPT_VERSION = "entailment-judge-2"
 
 
 @dataclass(frozen=True)
@@ -54,7 +43,10 @@ def create_entailment_run(conn) -> int:
     return store.create_run(
         conn, "entailment_verification", VALIDATOR_VERSION,
         model=llm.CHAT_MODEL, prompt_version=ENTAILMENT_PROMPT_VERSION,
-        config={"relation_registry_version": registry().version})
+        config={
+            "relation_registry_version": registry().version,
+            "relation_validator_versions": registry().validator_versions(),
+        })
 
 
 def stale_evidence_ids(conn, claim_id: int) -> set[int]:
@@ -249,16 +241,26 @@ def evaluate(conn, claim_id: int) -> Validation:
     groups = set()
     high = 0
     strong = 0
+    weak_types: set[str] = set()
     for row in rows:
-        groups.add(row["independence_group"])
-        if row["evidence_type"] in STRONG_TYPES:
+        # 强弱按关系判定：证据类型必须在该关系的 accepted_evidence_types 里。
+        is_strong = registry().is_strong_evidence(claim.relation, row["evidence_type"])
+        if is_strong:
+            groups.add(row["independence_group"])
             strong += 1
+        else:
+            weak_types.add(row["evidence_type"])
+            continue
         profile = json.loads(row["authority_profile"])
         level = profile.get(claim.relation) or profile.get("relations", {}).get(claim.relation)
-        if level == "high" and row["evidence_type"] in STRONG_TYPES:
+        if level == "high":
             high += 1
 
     independent = len(groups)
+    if weak_types:
+        reasons.append(
+            f"有 {len(rows) - strong} 条证据的类型不被 {claim.relation} 接受"
+            f"（{'、'.join(sorted(weak_types))}），不计入门槛")
     minimum = policy.get("minimum_evidence", {})
     required_independent = (
         minimum.get("independent_standard_sources")

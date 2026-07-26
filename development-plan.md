@@ -101,11 +101,13 @@ entity_external_ids
 claims
 evidence
 observations
+entailment_reviews
 
 runs
 decisions
 merge_events
 model_queue_reviews
+targeting_probes
 
 relation_definitions
 coverage_topics
@@ -120,6 +122,15 @@ pipeline_processed
 Source independence is represented by the `sources.independence_group` field,
 not by counting excerpts or repeated model judgments. Extraction and
 verification share the versioned `runs` table.
+
+`entailment_reviews`, `targeting_probes`, and `merge_events` are append-only.
+An entailment verdict is never overwritten: each judgment inserts a row tied to
+the `runs` record that produced it, and `evidence.current_entailment_review_id`
+points at the latest one. `decisions.evidence_review_snapshot` records which
+verdicts a decision was based on, so a decision can be read back without
+assuming the current verdicts are the ones it saw. `merge_events.payload`
+records every row an entity merge moved, which is what makes
+`store.revert_merge` possible.
 
 ### 4.2 Entity Types
 
@@ -142,7 +153,33 @@ resource
 Entity types are not cosmetic. They constrain which relations may connect two
 entities.
 
-### 4.3 Relation Registry v3
+### 4.3 Relation Registry
+
+`config/relation-registry.yaml` is the single machine authority. Its `version`
+field is currently `4`. `kg/ontology.py` loads it, enforces that every relation
+declares the full required field set, and synchronizes it into
+`relation_definitions` on every `db.connect()`.
+
+The registry also owns the global `evidence_types` vocabulary. Every evidence
+type declares `strength: strong | weak`, and every relation declares which of
+them it accepts:
+
+```text
+strong: explicit_definition, explicit_taxonomy, explicit_composition,
+        explicit_function, explicit_prerequisite, explicit_comparison,
+        explicit_derivation
+weak:   toc_order, hyperlink, cooccurrence
+```
+
+Evidence strength is per relation, not global. `explicit_function` is strong
+evidence for `used_for` and is deliberately excluded from `part_of`, because
+"A is used for B" is exactly the semantics `part_of` rules out. There is no
+hardcoded strong-type set anywhere in the code; extraction prompts and the
+evidence threshold both read the registry.
+
+The registry carries only fields that have a consumer. `tests/test_core_isolation.py`
+fails when a field is declared but never read, so dead configuration cannot
+give the false impression that a rule is in force.
 
 The first production-oriented graph intentionally exposes only three core
 relations:
@@ -239,10 +276,11 @@ Output schema:
 ```text
 entity observations
 claim observations
-facets
-misconceptions
 source-derived next reading targets
 ```
+
+There is no facet output. Anything worth naming is an entity; anything not worth
+naming is not stored.
 
 Every observation includes:
 
@@ -264,6 +302,28 @@ Next reading targets may come from:
 
 LLM memory may help rank or rephrase reading targets, but those targets remain
 retrieval tasks and are never accepted directly as graph knowledge.
+
+Reading a second textbook end to end rarely corroborates an existing claim: two
+books covering the same concept seldom state the same triple. Claim-directed
+retrieval (`kg/targeting.py`) is the complement. Given a claim stuck below the
+evidence threshold, it scans the local corpus with no LLM at all for places
+where identity names of both endpoints occur within a bounded distance, skipping
+independence groups that already support the claim. Each such co-occurrence is a
+separate candidate, so two passages in one section compete on their own merits.
+
+Only the neighborhood of the co-occurrence is sent to the model, expanded to
+paragraph boundaries. The distance window has to constrain what the model reads,
+not merely which sections are selected: a section can run to tens of thousands
+of characters, and given all of it the model will quote something unrelated to
+the match that triggered retrieval. The neighborhood is wide enough to judge
+from — a lone sentence rarely shows whether a mention is a definition, an
+example, or a list — and the snapshot registered as provenance is still the
+whole section.
+
+The extraction prompt names the two endpoints without naming the relation under
+test, so the model is not asked a leading question, and it may return the
+opposite direction or `none`. Every probe is recorded in `targeting_probes` so
+the same passage is not paid for twice.
 
 ### 5.3 Entity Resolution
 
@@ -547,7 +607,7 @@ Targets can be revised through documented benchmark evidence, not convenience.
 
 ## 7. Implementation Phases
 
-### Current Status Snapshot — 2026-07-25
+### Current Status Snapshot — 2026-07-26
 
 The redesigned grounded pipeline is operational on `develop` for a bounded
 vertical slice. This is not yet approval to run unbounded expansion or publish
@@ -556,26 +616,50 @@ claims automatically.
 Current database state:
 
 ```text
-sources: 3
-source snapshots: 9
-entities: 90
-claims: 40
-evidence records: 164
-observations: 193
-decisions: 64
-reading tasks: 30
-processed source/topic pairs: 11
+sources: 7
+source snapshots: 19
+entities: 114
+claims: 44 (is_a 20, part_of 17, prerequisite_of 7), all proposed
+evidence records: 213
+observations: 262
+decisions: 162
+entailment reviews: 89
+targeting probes: 31
+reading tasks: 38
+processed source/topic pairs: 12
 ```
+
+Three `part_of` claims produced by claim-directed retrieval were reviewed by
+hand, archived to `data/archive/bad-claims-20260726.json`, exported as gold
+negatives, and deleted. They are the first entries in `benchmarks/gold.jsonl`.
+Each records a distinct failure mode: a mathematical construction read as
+composition, a loss-function mention read as model composition, and a
+table-of-contents indentation read as composition with the direction reversed.
 
 Current resolution and review state:
 
 ```text
-aliases: 86 verified, 7 proposed, 2 rejected
-alignment candidates: 39 verified, 3 suspected
-observations: 181 resolved, 4 pending, 8 rejected
+aliases: 115 verified, 29 proposed, 2 rejected
+alignment candidates: 68 verified, 7 suspected
+observations: 231 resolved, 9 pending, 22 rejected
 type conflicts: 17, all with MiniMax M3 queue reviews
 model queue reviews: 21
+entity merges performed: 0
 ```
+
+Under registry v4 the shadow decision distribution is:
+
+```text
+needs_more_evidence: 32
+human_review: 12
+```
+
+No claim is auto-approvable. `human_review` here does not mean the evidence is
+adequate: all three core relations carry `high_impact_review: true`, and some of
+these claims also have opposing evidence. The identity report shows 18 of 57
+claim evidence records do not mention an identity name of one endpoint, 16 of
+which still count as strong evidence. Fifteen of the eighteen come from the
+original extraction path rather than from targeting.
 
 The four review queues were processed in this order:
 
@@ -591,7 +675,7 @@ restored grounded evidence for the `二分类 is_a 分类` and
 `多类分类 is_a 分类` claims. No entity primary type was changed solely from
 the model's recommendation.
 
-The full test suite currently contains 42 passing tests. Mechanical graph checks
+The full test suite currently contains 116 passing tests. Mechanical graph checks
 report no cycles, reverse duplicate typed edges, or invalid endpoint types.
 Existing soft warnings include prerequisite shortcuts, orphan nodes, and
 facet/entity duplication; these remain quality work rather than hard schema
@@ -814,6 +898,20 @@ Exit criteria:
 - the old system remains reproducible from its archive;
 - rollback and recovery procedures are documented.
 
+Current note — the legacy core is frozen as of 2026-07-26. It keeps working for
+its existing read commands, but receives no new algorithmic capability, and the
+new core no longer depends on it. `tests/test_core_isolation.py` enforces this
+mechanically: it parses the new-core modules and fails if any of them imports a
+legacy module or issues SQL against `nodes`, `edges`, or `review_log`. The last
+such dependency to be removed was `pipeline batch`, which previously selected
+Wikipedia pages by joining `node_page` against seed/approved `nodes`; it now
+reads `corpus` directly.
+
+The remaining shared surface is intentional and narrow: `db.connect()` installs
+both schemas, and the acquisition modules (`wiki.py`, `corpus.py`, `docs.py`,
+`htmltext.py`, `quality.py`, `llm.py`) are tools rather than knowledge
+representation, so both cores use them.
+
 ## 8. Current Development Iteration
 
 The next iteration should prepare a controlled expansion, not immediately run
@@ -890,6 +988,13 @@ The following choices are no longer open design questions:
    path; fuzzy matching only retrieves candidates.
 7. Automatic publication remains in shadow mode until benchmarked policy
    buckets meet the quality threshold.
+8. `config/relation-registry.yaml` is the only place where relation semantics
+   and evidence-type strength are defined. Code reads it; code does not restate
+   it.
+9. The legacy core is frozen and read-only. New work goes to the new core, and
+   the isolation is enforced by tests rather than by convention.
+10. There is no facet mechanism in the new core. Anything worth naming is an
+    entity; anything not worth naming is not stored.
 
 Future ontology expansion, activation of experimental relations, and automatic
 main-type changes still require explicit review and migration analysis.

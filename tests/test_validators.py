@@ -10,12 +10,19 @@ def _claim(conn, relation="alternative_to"):
         subject_type = object_type = "field"
     else:
         subject_type = object_type = "method"
+
     subject = store.add_entity(conn, f"{relation}-subject", subject_type)
     object_ = store.add_entity(conn, f"{relation}-object", object_type)
     return store.add_claim(conn, subject.id, relation, object_.id)
 
 
-def _support(conn, claim, slug, group, *, high=False):
+def _accepted_type(relation):
+    """取该关系接受的证据类型；强弱现在是按关系判定的。"""
+    from kg.ontology import registry
+    return registry().relation(relation)["accepted_evidence_types"][0]
+
+
+def _support(conn, claim, slug, group, *, high=False, evidence_type=None):
     source_id = store.upsert_source(
         conn,
         slug,
@@ -34,7 +41,7 @@ def _support(conn, claim, slug, group, *, high=False):
         conn,
         snapshot.id,
         f"{slug} explicitly supports the claim.",
-        "explicit_comparison",
+        evidence_type or _accepted_type(claim.relation),
         claim_id=claim.id,
         mechanically_valid=True,
         entailment="supports",
@@ -91,6 +98,24 @@ class ValidatorEvidenceThresholdTests(unittest.TestCase):
         self.assertEqual(result.outcome, "needs_more_evidence")
         self.assertEqual(result.independent_supports, 2)
         self.assertEqual(result.high_authority_supports, 0)
+
+    def test_evidence_type_not_accepted_by_relation_is_not_strong(self):
+        # explicit_function 是 used_for 的强证据，对 part_of 恰是被排除的语义。
+        conn = sqlite3.connect(":memory:")
+        conn.row_factory = sqlite3.Row
+        schema.ensure(conn)
+        self.addCleanup(conn.close)
+        claim = _claim(conn, "part_of")
+        _support(conn, claim, "book-a", "book:a", high=True,
+                 evidence_type="explicit_function")
+        _support(conn, claim, "book-b", "book:b",
+                 evidence_type="explicit_function")
+
+        result = validators.evaluate(conn, claim.id)
+
+        self.assertEqual(result.outcome, "needs_more_evidence")
+        self.assertEqual(result.independent_supports, 0)
+        self.assertTrue(any("不被 part_of 接受" in r for r in result.reasons))
 
     def test_high_impact_relations_require_human_review(self):
         for relation in ("is_a", "subfield_of", "part_of", "prerequisite_of"):

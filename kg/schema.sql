@@ -296,6 +296,8 @@ CREATE TABLE IF NOT EXISTS merge_events (
                       CHECK(status IN ('proposed','applied','reverted','rejected')),
     decision_id       INTEGER REFERENCES decisions(id),
     reason            TEXT NOT NULL DEFAULT '',
+    -- 合并搬动了哪些行（别名、证据、claim 端点），撤销时按它回滚。
+    payload           TEXT NOT NULL DEFAULT '{}',
     created_at        REAL NOT NULL,
     updated_at        REAL NOT NULL,
     CHECK(source_entity_id != target_entity_id)

@@ -14,13 +14,19 @@ from LLM memory.
 6. Keep test labels out of extraction and verification prompts.
 
 The first release targets at least 300 reviewed examples covering every relation,
-major AI subfields, multilingual aliases, name ambiguity, facets, wrong types,
-wrong directions, unsupported plausible claims, source conflicts, root taxonomy,
-and high-impact prerequisites.
+major AI subfields, multilingual aliases, name ambiguity, wrong types, wrong
+directions, unsupported plausible claims, source conflicts, root taxonomy, and
+high-impact prerequisites.
 
-`gold.schema.json` defines each JSONL record. `gold.jsonl` remains empty until
-source-backed annotation is performed. An empty benchmark is more honest than
-an ungrounded benchmark.
+`gold.schema.json` defines each JSONL record. Entries are only added after
+source-backed annotation; an empty benchmark is more honest than an ungrounded
+one, and a fabricated example is worse than no example.
+
+`gold.jsonl` currently holds 3 negatives, all `part_of` claims the pipeline
+produced and a human rejected. Their full provenance — evidence, entailment
+reviews, and decision history — is archived in `data/archive/`. Rejected claims
+are worth keeping precisely because they are what a policy change can silently
+start accepting again.
 
 Splits are `train`, `validation`, and `test`. Label corrections require a
 documented review event rather than silent replacement.
