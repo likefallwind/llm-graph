@@ -27,6 +27,7 @@ class Registry:
     def __init__(self, data: dict):
         self.version = int(data["version"])
         self.entity_types = data["entity_types"]
+        self.entity_type_disambiguation = list(data.get("disambiguation", []))
         self.evidence_types = data["evidence_types"]
         self.relations = data["relations"]
         self._validate_definition()
@@ -114,6 +115,34 @@ class Registry:
     def validate_entity_type(self, entity_type: str) -> None:
         if entity_type not in self.entity_types:
             raise OntologyError(f"未知实体类型: {entity_type}")
+
+    def ordered_entity_types(self) -> list[str]:
+        """按 priority 升序的主类型；没有 priority 时退回声明顺序。"""
+        return sorted(
+            self.entity_types,
+            key=lambda name: self.entity_types[name].get("priority", 999))
+
+    def entity_type_contract(self) -> str:
+        """生成给抽取和复核模型看的主类型判据。
+
+        判据只有一份，就在注册表里。提示词从这里生成而不是各自抄一遍——第二份
+        词表会被 tests/test_core_isolation.py 抓到，而且抄出来的两份迟早会分叉。
+
+        没有 priority/positive/negative 的旧词表退化成只列类型名，与改造前一致。
+        """
+        lines = []
+        for index, name in enumerate(self.ordered_entity_types(), start=1):
+            spec = self.entity_types[name]
+            lines.append(f"{index}. {name} —— {spec['description']}")
+            if spec.get("positive"):
+                lines.append(f"   正例：{'、'.join(spec['positive'])}")
+            for item in spec.get("negative", []):
+                lines.append(f"   反例：{item}")
+        if self.entity_type_disambiguation:
+            lines.append("")
+            lines.append("补充规则：")
+            lines.extend(f"- {item}" for item in self.entity_type_disambiguation)
+        return "\n".join(lines)
 
     def relation(self, name: str) -> dict:
         try:

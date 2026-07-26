@@ -303,6 +303,23 @@ CREATE TABLE IF NOT EXISTS merge_events (
     CHECK(source_entity_id != target_entity_id)
 );
 
+-- 人工修订实体主类型与定义的留痕。抽取只能在建实体那一刻写一次主类型和定义，
+-- 之后的观察只能记成 entity_type_assertions；没有这张表，判错的类型就永远错下去。
+-- payload 存改前的值，撤销时按它回滚。
+CREATE TABLE IF NOT EXISTS entity_revisions (
+    id          INTEGER PRIMARY KEY,
+    entity_id   INTEGER NOT NULL REFERENCES entities(id),
+    status      TEXT NOT NULL DEFAULT 'applied'
+                CHECK(status IN ('applied','reverted')),
+    reason      TEXT NOT NULL,
+    revised_by  TEXT NOT NULL DEFAULT 'human',
+    payload     TEXT NOT NULL DEFAULT '{}',
+    created_at  REAL NOT NULL,
+    updated_at  REAL NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_entity_revisions_entity
+    ON entity_revisions(entity_id, status);
+
 -- 定向补证探查过的（Claim, 段落）。模型说「这段没有陈述该关系」也是结论，
 -- 记下来避免下一轮重复问同一段。content_hash 变了才值得重问。
 CREATE TABLE IF NOT EXISTS targeting_probes (
@@ -392,3 +409,6 @@ VALUES (4, 'pipeline_processed', unixepoch());
 
 INSERT OR IGNORE INTO schema_migrations(version, name, applied_at)
 VALUES (7, 'model_queue_reviews', unixepoch());
+
+INSERT OR IGNORE INTO schema_migrations(version, name, applied_at)
+VALUES (12, 'revisable_entity_type_and_definition', unixepoch());

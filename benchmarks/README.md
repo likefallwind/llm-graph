@@ -30,3 +30,28 @@ start accepting again.
 
 Splits are `train`, `validation`, and `test`. Label corrections require a
 documented review event rather than silent replacement.
+
+## Entity types
+
+`entity_types.jsonl` is a separate, entity-level set defined by
+`entity_types.schema.json`. `gold.jsonl` measures whether a claim is right;
+this one measures whether an entity's primary type is right. They cannot share
+a record shape — a type judgment has no subject, relation, or object.
+
+It exists because the primary type is judged once, at extraction time, from a
+priority-ordered rule set (`design/entity-type-v5.md`). Every time that rule set
+changes, rerunning this file measures the regression instead of asking a human
+to relabel from scratch. That is the whole point of the human effort: label
+once, replay forever.
+
+Two kinds of record live here, distinguished by whether `evidence` is empty:
+
+- corpus-backed entities, which carry snapshot excerpts and can serve as gold
+- deliberately hard boundary terms absent from the corpus (BERT, GLUE,
+  Transformer, Attention), which have no excerpts and only measure whether the
+  rules are self-consistent between annotators
+
+`labels.confusable_with` carries most of the value. A type judgment is easy in
+the middle of a category and hard at its edge, so an example that records which
+neighbouring category it was nearly assigned to is worth more than one that
+merely records the right answer.

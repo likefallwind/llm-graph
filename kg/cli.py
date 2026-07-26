@@ -258,6 +258,32 @@ def cmd_pipeline(args):
         print(json.dumps(store.revert_merge(conn, args.merge_event),
                          ensure_ascii=False, indent=2))
         return
+    if args.action == "retype":
+        if not args.entity:
+            sys.exit("pipeline retype 需要 --entity")
+        if not args.to and args.definition is None:
+            sys.exit("pipeline retype 需要 --to 或 --definition 至少一项")
+        try:
+            result = store.revise_entity(
+                conn, args.entity, entity_type=args.to,
+                definition=args.definition, reason=args.reason)
+        except ValueError as exc:
+            sys.exit(str(exc))
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return
+    if args.action == "revert-retype":
+        if not args.revision:
+            sys.exit("pipeline revert-retype 需要 --revision")
+        try:
+            result = store.revert_revision(conn, args.revision)
+        except ValueError as exc:
+            sys.exit(str(exc))
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return
+    if args.action == "revisions":
+        print(json.dumps(store.entity_revisions(conn, args.entity),
+                         ensure_ascii=False, indent=2))
+        return
     if args.action == "duplicates":
         result = entity_resolution.find_duplicate_candidates(
             conn, limit=args.limit or 50)
@@ -734,7 +760,7 @@ def main():
         choices=[
             "read", "doc", "wiki", "batch", "migrate", "status", "reshadow",
             "survey", "target", "duplicates", "identity", "alias-declarations",
-            "merge", "revert-merge",
+            "merge", "revert-merge", "retype", "revert-retype", "revisions",
             "align-aliases", "review-alignments", "replay-pending",
             "review-type-conflicts",
         ])
@@ -777,8 +803,12 @@ def main():
                    help="survey/target: 每条 claim 最多探查的候选段落数")
     s.add_argument("--source-entity", type=int, help="merge: 被并入的实体 id")
     s.add_argument("--target-entity", type=int, help="merge: 保留的实体 id")
-    s.add_argument("--reason", default="", help="merge: 合并理由")
+    s.add_argument("--reason", default="", help="merge/retype: 操作理由；retype 必填")
     s.add_argument("--merge-event", type=int, help="revert-merge: 合并事件 id")
+    s.add_argument("--entity", type=int, help="retype/revisions: 实体 id")
+    s.add_argument("--to", help="retype: 新的实体主类型")
+    s.add_argument("--definition", help="retype: 新的定义")
+    s.add_argument("--revision", type=int, help="revert-retype: 实体修订 id")
     s.set_defaults(fn=cmd_pipeline)
 
     args = p.parse_args()

@@ -1,0 +1,91 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "LLM Graph Entity Type Gold Example",
+  "description": "实体级主类型判定的人工标注。与 claim 级的 gold.schema.json 分开：那个测关系判得对不对，这个测主类型判得对不对。判据变更后重跑本集合即可测回归。",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "id",
+    "benchmark_version",
+    "split",
+    "name",
+    "definition",
+    "labels",
+    "review"
+  ],
+  "properties": {
+    "id": {"type": "string", "minLength": 1},
+    "benchmark_version": {"type": "integer", "minimum": 1},
+    "split": {"enum": ["train", "validation", "test"]},
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "description": "语料里出现的名称。多义名保留原样，拆分建议写在 labels.split_into。"
+    },
+    "definition": {
+      "type": "string",
+      "description": "判定所依据的定义。类型判据的输入是定义而不是名字，所以这一项必须存在；无定义的样本填空串并在 rationale 里说明。"
+    },
+    "coverage_topic": {"type": ["string", "null"]},
+    "evidence": {
+      "type": "array",
+      "description": "语料摘录。库内实体必须有；纯判据一致性测试的边界样本（语料里没有的术语）可以为空数组。",
+      "items": {"$ref": "#/$defs/evidence"}
+    },
+    "labels": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["entity_type", "rule"],
+      "properties": {
+        "entity_type": {
+          "enum": ["resource", "criterion", "data", "task", "solution", "concept", "ambiguous"]
+        },
+        "rule": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 6,
+          "description": "命中的优先序编号，1=resource … 6=concept；ambiguous 填 0。"
+        },
+        "confusable_with": {
+          "type": ["string", "null"],
+          "description": "最容易被误判成的相邻类别。反例价值主要在这一项。"
+        },
+        "split_into": {
+          "type": "array",
+          "description": "entity_type 为 ambiguous 时，该拆成的两个名字。",
+          "items": {"type": "string", "minLength": 1}
+        }
+      }
+    },
+    "review": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["reviewer", "rationale", "reviewed_at"],
+      "properties": {
+        "reviewer": {"type": "string", "minLength": 1},
+        "rationale": {
+          "type": "string",
+          "minLength": 1,
+          "description": "为什么命中这一格而不是相邻那格。判错的样本尤其要写清楚。"
+        },
+        "reviewed_at": {"type": "string", "format": "date-time"},
+        "model_verdict": {
+          "type": ["string", "null"],
+          "description": "人工否决时记下模型当时判的是什么，用于统计模型的系统性偏差。"
+        }
+      }
+    }
+  },
+  "$defs": {
+    "evidence": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["source_snapshot", "excerpt", "location"],
+      "properties": {
+        "source_snapshot": {"type": "string", "minLength": 1},
+        "excerpt": {"type": "string", "minLength": 1},
+        "location": {"type": "string", "minLength": 1}
+      }
+    }
+  }
+}

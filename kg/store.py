@@ -436,6 +436,101 @@ def merge_entities(conn, source_id: int, target_id: int, *, reason: str = "",
             "target": target.canonical_name, **payload}
 
 
+def revise_entity(conn, entity_id: int, *, entity_type: str | None = None,
+                  definition: str | None = None, reason: str,
+                  revised_by: str = "human") -> dict:
+    """人工修订实体的主类型与定义，留痕且可撤销。
+
+    抽取路径只在建实体那一刻写一次主类型和定义（`add_entity`），之后所有观察
+    只能记成 `entity_type_assertions`，主类型本身没有任何修改路径。没有这条
+    出口，判错的类型就永远错下去，自动判定也就不敢放开。
+
+    不是自动流程的一部分：`revised_by` 记录是谁改的，自动路径不得调用本函数
+    去绕过「一切裁决先 Shadow」。
+    """
+    reason = reason.strip()
+    if not reason:
+        raise ValueError("修订实体必须给出理由")
+    entity = get_entity(conn, entity_id)
+    if not entity:
+        raise ValueError(f"实体不存在: {entity_id}")
+    if entity.status == "merged":
+        raise ValueError(f"实体 {entity_id} 已被合并，应修订合并后的目标实体")
+
+    before, after = {}, {}
+    if entity_type is not None and entity_type != entity.entity_type:
+        registry().validate_entity_type(entity_type)
+        before["entity_type"] = entity.entity_type
+        after["entity_type"] = entity_type
+    if definition is not None:
+        definition = definition.strip()
+        if not definition:
+            raise ValueError("定义不能改成空——判类型要靠它")
+        if definition != entity.definition:
+            before["definition"] = entity.definition
+            after["definition"] = definition
+    if not after:
+        raise ValueError("修订没有改变任何字段")
+
+    now = time.time()
+    cur = conn.execute(
+        "INSERT INTO entity_revisions"
+        " (entity_id,status,reason,revised_by,payload,created_at,updated_at)"
+        " VALUES (?,'applied',?,?,?,?,?)",
+        (entity_id, reason, revised_by,
+         _json({"before": before, "after": after}), now, now))
+    _apply_entity_fields(conn, entity_id, after)
+    conn.commit()
+    return {"revision_id": cur.lastrowid, "entity_id": entity_id,
+            "canonical_name": entity.canonical_name,
+            "before": before, "after": after}
+
+
+def revert_revision(conn, revision_id: int) -> dict:
+    """按 payload 原样回滚一次实体修订。"""
+    row = conn.execute(
+        "SELECT * FROM entity_revisions WHERE id=?", (revision_id,)).fetchone()
+    if not row:
+        raise ValueError(f"实体修订不存在: {revision_id}")
+    if row["status"] != "applied":
+        raise ValueError(f"实体修订状态为 {row['status']}，不可撤销")
+    before = _load(row["payload"]).get("before", {})
+    _apply_entity_fields(conn, row["entity_id"], before)
+    conn.execute(
+        "UPDATE entity_revisions SET status='reverted', updated_at=? WHERE id=?",
+        (time.time(), revision_id))
+    conn.commit()
+    return {"revision_id": revision_id, "entity_id": row["entity_id"],
+            "reverted": True, "restored": before}
+
+
+def _apply_entity_fields(conn, entity_id: int, fields: dict) -> None:
+    if not fields:
+        return
+    columns = [key for key in ("entity_type", "definition") if key in fields]
+    conn.execute(
+        "UPDATE entities SET %s, updated_at=? WHERE id=?"
+        % ",".join(f"{column}=?" for column in columns),
+        (*(fields[column] for column in columns), time.time(), entity_id))
+
+
+def entity_revisions(conn, entity_id: int | None = None) -> list[dict]:
+    """实体修订史，最近的在前。"""
+    sql = ("SELECT r.*,e.canonical_name FROM entity_revisions r"
+           " JOIN entities e ON e.id=r.entity_id")
+    params: tuple = ()
+    if entity_id is not None:
+        sql += " WHERE r.entity_id=?"
+        params = (entity_id,)
+    sql += " ORDER BY r.id DESC"
+    return [{
+        "revision_id": row["id"], "entity_id": row["entity_id"],
+        "canonical_name": row["canonical_name"], "status": row["status"],
+        "reason": row["reason"], "revised_by": row["revised_by"],
+        **_load(row["payload"]),
+    } for row in conn.execute(sql, params)]
+
+
 def revert_merge(conn, merge_event_id: int) -> dict:
     """按 payload 原样回滚一次合并。"""
     row = conn.execute(

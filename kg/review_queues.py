@@ -46,7 +46,10 @@ def review_type_conflicts(conn, limit: int = 50) -> list[dict]:
         " FROM entity_type_assertions a"
         " JOIN entities e ON e.id=a.entity_id"
         " LEFT JOIN observations o ON o.id=a.observation_id"
-        " WHERE a.status='conflict' ORDER BY a.entity_id,a.id"
+        # 断言是追加的观察史，不因人工改型而改写；冲突与否是相对当前主类型的
+        # 派生事实，所以在这里现算。retype 之后已经不冲突的不该再排队。
+        " WHERE a.status='conflict' AND a.observed_type!=e.entity_type"
+        " ORDER BY a.entity_id,a.id"
         " LIMIT ?", (max(1, limit),)).fetchall()
     grouped: dict[int, dict] = {}
     for source_row in rows:
