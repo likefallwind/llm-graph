@@ -4,7 +4,9 @@ from __future__ import annotations
 from . import store, validators
 
 
-POLICY_VERSION = "claim-policy-3"
+# 4：证据计数改为两层——全局 strength 决定一段文字算不算断言（支持与反对同时
+# 适用），关系白名单只决定它能不能建立该关系（只作用于支持侧）。
+POLICY_VERSION = "claim-policy-4"
 
 
 def shadow_claim(conn, claim_id: int) -> dict:

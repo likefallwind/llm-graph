@@ -235,26 +235,46 @@ def extract(source_text: str, topic: str, *, max_entities: int = 20,
         rejected=tuple(rejected))
 
 
-def split_text(text: str, limit: int = 12000) -> list[str]:
-    """按段落稳定分块；超长段硬切，避免整页超出模型上下文。"""
-    chunks: list[str] = []
+def _split_paragraph(paragraph: str, limit: int) -> list[str]:
+    """整段就超过上限时按句子断开；仍然不从句子中间切。"""
+    parts: list[str] = []
     current = ""
+    for sentence in re.split(r"(?<=[。！？；!?;])", paragraph):
+        if not sentence:
+            continue
+        current += sentence
+        if len(current) >= limit:
+            parts.append(current)
+            current = ""
+    if current:
+        parts.append(current)
+    return parts or [paragraph]
+
+
+def split_text(text: str, limit: int = 12000) -> list[str]:
+    """按自然段分块。上限是目标，不是硬边界。
+
+    一段跨过上限时在这一段的**后面**断开，不在前面——取长的那一侧。在前面断会
+    留下一个刚好卡在上限的短块，而抽取质量对上下文完整度更敏感，不对块长敏感。
+
+    永远不在段落中间切。整段就超过上限的退一步按句子断（当前语料没有这种段落，
+    最长 6401 字），这条路只是防止将来某个畸形输入把一整节拖垮。
+    """
+    units: list[str] = []
     for paragraph in re.split(r"\n\s*\n", text):
         paragraph = paragraph.strip()
         if not paragraph:
             continue
-        while len(paragraph) > limit:
-            if current:
-                chunks.append(current)
-                current = ""
-            chunks.append(paragraph[:limit])
-            paragraph = paragraph[limit:]
-        candidate = f"{current}\n\n{paragraph}" if current else paragraph
-        if len(candidate) > limit and current:
+        units.extend(
+            _split_paragraph(paragraph, limit) if len(paragraph) > limit
+            else [paragraph])
+    chunks: list[str] = []
+    current = ""
+    for unit in units:
+        current = f"{current}\n\n{unit}" if current else unit
+        if len(current) >= limit:
             chunks.append(current)
-            current = paragraph
-        else:
-            current = candidate
+            current = ""
     if current:
         chunks.append(current)
     return chunks or [text]

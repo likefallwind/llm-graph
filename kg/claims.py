@@ -6,6 +6,7 @@ from dataclasses import dataclass
 
 from . import entity_resolution, store
 from .observations import EntityObservation, ObservationBatch
+from .ontology import registry
 
 
 @dataclass(frozen=True)
@@ -62,19 +63,17 @@ def materialize(conn, batch: ObservationBatch, *, source_snapshot_id: int,
             subject_text=item.subject, relation=item.relation,
             object_text=item.object, excerpt=item.evidence,
             location=item.location, payload=item.raw)
-        subject_id = resolved.get(item.subject.casefold())
-        object_id = resolved.get(item.object.casefold())
+        subject_id = _endpoint_id(conn, resolved, item.subject, suspected)
+        object_id = _endpoint_id(conn, resolved, item.object, suspected)
         if not subject_id or not object_id:
-            if (item.subject.casefold() in suspected
-                    or item.object.casefold() in suspected):
-                rejected.append(
-                    f"Claim「{item.subject} -{item.relation}-> {item.object}」"
-                    "等待疑似实体对齐")
-            else:
-                store.resolve_observation(conn, observation_id, False)
-                rejected.append(
-                    f"Claim「{item.subject} -{item.relation}-> {item.object}」"
-                    "端点未完成消歧")
+            # 保持 pending，不标 rejected：端点现在落不了地，但后续批次可能建出
+            # 这个实体，届时 replay_pending 能把 Claim 捡回来。rejected 是终态，
+            # 没有任何路径会重看它。
+            waiting = (item.subject.casefold() in suspected
+                       or item.object.casefold() in suspected)
+            rejected.append(
+                f"Claim「{item.subject} -{item.relation}-> {item.object}」"
+                + ("等待疑似实体对齐" if waiting else "端点未完成消歧，留待重放"))
             continue
         try:
             claim = store.add_claim(
@@ -104,6 +103,25 @@ def _exact_entity_id(conn, name: str) -> int | None:
         return canonical.id
     aliases = store.find_verified_alias_entities(conn, name)
     return aliases[0].id if len(aliases) == 1 else None
+
+
+def _endpoint_id(conn, resolved: dict[str, int], name: str,
+                 suspected: set[str]) -> int | None:
+    """本批消歧结果优先，其次退回库里已有实体的确定性精确匹配。
+
+    只走确定性快路（规范名 / 唯一 verified alias），不做相似度、不调 LLM——
+    这里认领的是**已经消歧过**的既有实体，不是重新做一次消歧。
+
+    退回这一步是必要的：同一个概念在这一批里可能因为疑似对齐或歧义没落地，
+    但它在更早的批次里已经建好了。只看本批 ``resolved`` 会白白丢掉 Claim。
+    """
+    hit = resolved.get(name.casefold())
+    if hit:
+        return hit
+    if name.casefold() in suspected:
+        # 这个名字正等着对齐裁决，现在认领任何实体都可能认错。
+        return None
+    return _exact_entity_id(conn, name)
 
 
 def replay_pending(conn, limit: int = 100) -> dict:
@@ -162,6 +180,13 @@ def replay_pending(conn, limit: int = 100) -> dict:
             continue
         raw = json.loads(row["payload"])
         try:
+            # 重放的 observation 可能早于关系注册表收窄，这里必须重新过 lifecycle
+            # 闸：抽取时合法不代表现在还合法。
+            registry().validate_claim(
+                store.get_entity(conn, subject_id).entity_type,
+                row["relation"],
+                store.get_entity(conn, object_id).entity_type,
+                active_only=True)
             claim = store.add_claim(
                 conn, subject_id, row["relation"], object_id,
                 qualifiers=raw.get("qualifiers", {}), status="proposed",

@@ -86,11 +86,24 @@ class Registry:
         if evidence_type not in self.evidence_types:
             raise OntologyError(f"未知证据类型: {evidence_type}")
 
-    def is_strong_evidence(self, relation: str, evidence_type: str) -> bool:
-        """该证据类型能否作为这个关系的强支持。
+    def is_assertive_evidence(self, evidence_type: str) -> bool:
+        """这个证据类型本身是不是一句断言。
 
-        强弱是**按关系**判定的，不是全局的：explicit_function 对 used_for 是强
-        证据，对 part_of 则恰好是 description 排除的语义。
+        全局属性，和关系无关。目录序、超链接、共现是编排不是断言——它们既不能
+        支持一个关系，也不能反驳一个关系。
+        """
+        self.validate_evidence_type(evidence_type)
+        return self.evidence_types[evidence_type]["strength"] == "strong"
+
+    def is_strong_evidence(self, relation: str, evidence_type: str) -> bool:
+        """该证据类型能否**建立**这个关系。
+
+        按关系判定：explicit_function 对 used_for 是强证据，对 part_of 则恰好是
+        description 排除的语义。
+
+        注意这只管「能不能建立」。一条断言不在白名单里，不代表它不能反驳该关系
+        ——「特征是预测所依据的自变量」这个定义建立不了 part_of，但它确实是对
+        `特征 part_of 样本` 的有效反驳。反驳看的是 is_assertive_evidence。
         """
         return evidence_type in set(self.relation(relation)["accepted_evidence_types"])
 

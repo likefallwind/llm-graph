@@ -117,6 +117,87 @@ class ValidatorEvidenceThresholdTests(unittest.TestCase):
         self.assertEqual(result.independent_supports, 0)
         self.assertTrue(any("不被 part_of 接受" in r for r in result.reasons))
 
+    def _oppose(self, claim, slug, group, evidence_type=None):
+        source_id = store.upsert_source(
+            self.conn, slug, slug, "textbook", independence_group=group)
+        snapshot = store.add_source_snapshot(
+            self.conn, source_id, "v1", content=f"{slug} contradicts the claim.")
+        store.add_evidence(
+            self.conn, snapshot.id, f"{slug} contradicts the claim.",
+            evidence_type or _accepted_type(claim.relation),
+            claim_id=claim.id, mechanically_valid=True, entailment="contradicts")
+
+    def test_strong_opposing_evidence_goes_to_human_review(self):
+        claim = _claim(self.conn)
+        _support(self.conn, claim, "book-a", "book:a", high=True)
+        self._oppose(claim, "book-b", "book:b")
+
+        result = validators.evaluate(self.conn, claim.id)
+
+        self.assertEqual(result.outcome, "human_review")
+        self.assertTrue(any("反对证据" in r for r in result.reasons))
+
+    def test_non_assertive_opposing_evidence_does_not_force_human_review(self):
+        # 共现是编排不是断言：它支持不了一个关系，同样也反驳不了。原来只在支持侧
+        # 过滤，一条共现的 contradicts 却能把 claim 判去人工，那是不对称的。
+        claim = _claim(self.conn)
+        _support(self.conn, claim, "book-a", "book:a", high=True)
+        _support(self.conn, claim, "book-b", "book:b")
+        self._oppose(claim, "book-c", "book:c", evidence_type="cooccurrence")
+
+        result = validators.evaluate(self.conn, claim.id)
+
+        self.assertEqual(result.outcome, "auto_approve")
+
+    def test_non_assertive_evidence_stays_visible_in_reasons(self):
+        claim = _claim(self.conn)
+        _support(self.conn, claim, "book-a", "book:a", high=True)
+        self._oppose(claim, "book-c", "book:c", evidence_type="toc_order")
+
+        result = validators.evaluate(self.conn, claim.id)
+
+        self.assertEqual(result.outcome, "needs_more_evidence")
+        self.assertTrue(any("编排而非断言" in r for r in result.reasons))
+
+    def test_assertive_opposing_evidence_counts_even_if_it_cannot_establish(self):
+        # explicit_definition 建立不了 part_of，但一句定义确实能反驳 part_of。
+        # 白名单管的是「能不能建立」，不管「能不能反驳」。
+        claim = _claim(self.conn, "part_of")
+        self._oppose(claim, "book-c", "book:c", evidence_type="explicit_definition")
+
+        result = validators.evaluate(self.conn, claim.id)
+
+        self.assertEqual(result.outcome, "human_review")
+        self.assertTrue(any("反对证据" in r for r in result.reasons))
+
+    def test_support_that_cannot_establish_is_not_reported_as_missing(self):
+        claim = _claim(self.conn, "part_of")
+        _support(self.conn, claim, "book-a", "book:a", high=True,
+                 evidence_type="explicit_function")
+
+        result = validators.evaluate(self.conn, claim.id)
+
+        self.assertEqual(result.outcome, "needs_more_evidence")
+        self.assertIn("现有支持都不足以建立该关系", result.reasons)
+
+    def test_no_reviewed_evidence_is_reported_as_missing(self):
+        claim = _claim(self.conn)
+
+        result = validators.evaluate(self.conn, claim.id)
+
+        self.assertEqual(result.outcome, "needs_more_evidence")
+        self.assertIn("没有通过蕴含验证的支持证据", result.reasons)
+
+    def test_required_independent_zero_is_honoured_not_skipped(self):
+        # 配成 0 时不能静默滑到默认值 2；那是配置被忽略，不是配置生效。
+        self.assertEqual(
+            validators._required_independent(
+                {"minimum_evidence": {"independent_standard_sources": 0}}), 0)
+        self.assertEqual(
+            validators._required_independent(
+                {"minimum_evidence": {"independent_curriculum_sources": 3}}), 3)
+        self.assertEqual(validators._required_independent({}), 2)
+
     def test_high_impact_relations_require_human_review(self):
         for relation in ("is_a", "subfield_of", "part_of", "prerequisite_of"):
             with self.subTest(relation=relation):

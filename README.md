@@ -5,7 +5,8 @@
 
 设计与开发约束：
 
-- [development-plan.md](development-plan.md)
+- [design/architecture.md](design/architecture.md) — 新核心当前实际怎么跑
+- [development-plan.md](development-plan.md) — 还没做的部分
 - [design/ontology.md](design/ontology.md)
 - [design/evidence-policy.md](design/evidence-policy.md)
 - [config/relation-registry.yaml](config/relation-registry.yaml)

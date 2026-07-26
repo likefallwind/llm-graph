@@ -538,6 +538,125 @@ class SuspectedMaterializationTests(unittest.TestCase):
         self.assertEqual("pending", claim_status)
 
 
+class EndpointFallbackTests(unittest.TestCase):
+    """端点落不到本批 resolved 时，退回库里已有实体的确定性精确匹配。"""
+
+    def setUp(self):
+        self.conn = sqlite3.connect(":memory:")
+        self.conn.row_factory = sqlite3.Row
+        schema.ensure(self.conn)
+        source_id = store.upsert_source(
+            self.conn, "book-a", "book-a", "textbook",
+            independence_group="book:a")
+        self.snapshot = store.add_source_snapshot(
+            self.conn, source_id, "v1", content="材料")
+        self.run_id = store.create_run(self.conn, "test", "test-version")
+
+    def tearDown(self):
+        self.conn.close()
+
+    def _batch(self):
+        return ObservationBatch(
+            entities=(observation("二分类", "task"), observation("分类", "task")),
+            claims=(ClaimObservation(
+                subject="二分类", relation="is_a", object="分类", qualifiers={},
+                evidence_type="explicit_taxonomy", evidence="二分类属于分类。",
+                location="§1", raw={}),),
+            next_reading_targets=(), rejected=())
+
+    def _materialize_with_one_endpoint_failing(self):
+        # 「分类」这一端在本批消歧失败（ambiguous），但它早就在库里。
+        def normalizer(obs, candidates):
+            if obs.name == "分类":
+                return {"decision": "ambiguous", "confidence": 0.1,
+                        "reason": "歧义"}
+            return {"decision": "new", "canonical_name": obs.name,
+                    "confidence": 0.99, "reason": "新概念"}
+
+        with patch("kg.entity_resolution._llm_normalize", side_effect=normalizer):
+            return claims.materialize(
+                self.conn, self._batch(), source_snapshot_id=self.snapshot.id,
+                run_id=self.run_id)
+
+    def test_existing_entity_is_claimed_when_batch_resolution_failed(self):
+        existing = store.add_entity(self.conn, "分类", "task")
+
+        result = self._materialize_with_one_endpoint_failing()
+
+        self.assertEqual(1, len(result.claim_ids))
+        claim = store.get_claim(self.conn, result.claim_ids[0])
+        self.assertEqual(existing.id, claim.object_id)
+
+    def test_verified_alias_also_reaches_the_existing_entity(self):
+        existing = store.add_entity(self.conn, "分类问题", "task")
+        store.add_alias(self.conn, existing.id, "分类", status="verified")
+
+        result = self._materialize_with_one_endpoint_failing()
+
+        self.assertEqual(1, len(result.claim_ids))
+        self.assertEqual(
+            existing.id, store.get_claim(self.conn, result.claim_ids[0]).object_id)
+
+    def test_unresolvable_endpoint_leaves_the_claim_pending_not_rejected(self):
+        # 库里没有这个实体。observation 必须留 pending——rejected 是终态，
+        # replay_pending 永远不会再看它。
+        result = self._materialize_with_one_endpoint_failing()
+
+        self.assertEqual((), result.claim_ids)
+        status = self.conn.execute(
+            "SELECT status FROM observations WHERE run_id=? AND relation='is_a'",
+            (self.run_id,)).fetchone()["status"]
+        self.assertEqual("pending", status)
+
+    def test_merged_entity_is_not_claimed_as_an_endpoint(self):
+        gone = store.add_entity(self.conn, "分类", "task")
+        target = store.add_entity(self.conn, "分类问题", "task")
+        store.merge_entities(self.conn, gone.id, target.id)
+
+        result = self._materialize_with_one_endpoint_failing()
+
+        # 合并把「分类」变成了 target 的 verified alias，所以应该落到 target，
+        # 绝不能落回状态为 merged 的死实体。
+        self.assertEqual(1, len(result.claim_ids))
+        self.assertEqual(
+            target.id, store.get_claim(self.conn, result.claim_ids[0]).object_id)
+
+    def test_suspected_endpoint_is_not_short_circuited_by_a_later_batch_entity(self):
+        # 「分类」进了疑似对齐队列，随后本批另一个实体恰好建出了同名规范名。
+        # 此时退回精确匹配会认领这个新实体，等于抢在对齐裁决之前替它做了决定。
+        store.add_entity(self.conn, "分类问题", "task")
+        batch = ObservationBatch(
+            entities=(
+                observation("二分类", "task"),
+                observation("分类", "task"),
+                observation("类别划分", "task"),
+            ),
+            claims=(ClaimObservation(
+                subject="二分类", relation="is_a", object="分类", qualifiers={},
+                evidence_type="explicit_taxonomy", evidence="二分类属于分类。",
+                location="§1", raw={}),),
+            next_reading_targets=(), rejected=())
+
+        def normalizer(obs, candidates):
+            if obs.name == "分类":
+                return {"decision": "existing", "candidate_id": 1,
+                        "canonical_name": "分类问题", "confidence": 0.82,
+                        "reason": "定义一致"}
+            if obs.name == "类别划分":
+                return {"decision": "new", "canonical_name": "分类",
+                        "confidence": 0.99, "reason": "新概念"}
+            return {"decision": "new", "canonical_name": obs.name,
+                    "confidence": 0.99, "reason": "新概念"}
+
+        with patch("kg.entity_resolution._llm_normalize", side_effect=normalizer):
+            result = claims.materialize(
+                self.conn, batch, source_snapshot_id=self.snapshot.id,
+                run_id=self.run_id)
+
+        self.assertIsNotNone(store.find_canonical_entity(self.conn, "分类"))
+        self.assertEqual((), result.claim_ids)
+
+
 class ProposedAliasReviewTests(unittest.TestCase):
     def setUp(self):
         self.conn = sqlite3.connect(":memory:")

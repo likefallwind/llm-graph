@@ -200,6 +200,20 @@ def _would_cycle(conn, claim) -> bool:
     return False
 
 
+def _required_independent(policy: dict) -> int:
+    """该关系要求的独立来源组数。
+
+    两个键是同一个门槛的不同叫法（教学类关系用 curriculum）。用显式判空而不是
+    ``or`` 串联：配成 0 时 ``or`` 会静默滑到下一个默认值，那是配置被忽略，
+    不是配置生效。
+    """
+    minimum = policy.get("minimum_evidence", {})
+    for key in ("independent_standard_sources", "independent_curriculum_sources"):
+        if key in minimum:
+            return int(minimum[key])
+    return 2
+
+
 def evaluate(conn, claim_id: int) -> Validation:
     claim = store.get_claim(conn, claim_id)
     if not claim:
@@ -208,71 +222,87 @@ def evaluate(conn, claim_id: int) -> Validation:
     object_ = store.get_entity(conn, claim.object_id)
     registry().validate_claim(subject.entity_type, claim.relation, object_.entity_type)
     policy = registry().relation(claim.relation)
-    evidence = store.evidence_for_claim(conn, claim_id)
-    valid = [item for item in evidence if item.mechanically_valid]
-    supports = [item for item in valid if item.entailment == "supports"]
-    opposes = [item for item in valid if item.entailment == "contradicts"]
-    reasons: list[str] = []
-    evidence_ids = tuple(item.id for item in valid)
+
+    rows = conn.execute(
+        "SELECT e.id,e.evidence_type,e.entailment,e.current_entailment_review_id,"
+        " s.independence_group,s.authority_profile"
+        " FROM evidence e"
+        " JOIN source_snapshots ss ON ss.id=e.source_snapshot_id"
+        " JOIN sources s ON s.id=ss.source_id"
+        " WHERE e.claim_id=? AND e.mechanically_valid=1 ORDER BY e.id",
+        (claim_id,)).fetchall()
+    evidence_ids = tuple(row["id"] for row in rows)
     # 裁决依据的是「这些证据的这一次判定」，重判之后旧裁决才复现得出来。
     reviews = tuple(
-        (item.id, item.current_entailment_review_id) for item in valid)
+        (row["id"], row["current_entailment_review_id"]) for row in rows)
+
+    # 两层过滤，管的是两件不同的事：
+    #   1. 全局 strength —— 这段文字是不是一句断言。目录序/超链接/共现是编排，
+    #      既支持不了也反驳不了，两边都不计。原来只在支持侧过滤，一条共现的
+    #      contradicts 却能把 claim 判去人工，那是不对称的。
+    #   2. 关系白名单 accepted_evidence_types —— 这类断言能不能**建立**该关系。
+    #      只过滤支持侧。建立不了不等于反驳不了。
+    strong_supports = 0
+    opposes = 0
+    groups: set[str] = set()
+    high = 0
+    non_assertive: set[str] = set()
+    unaccepted_supports: set[str] = set()
+    for row in rows:
+        verdict = row["entailment"]
+        if verdict not in {"supports", "contradicts"}:
+            continue
+        evidence_type = row["evidence_type"]
+        if not registry().is_assertive_evidence(evidence_type):
+            non_assertive.add(evidence_type)
+            continue
+        if verdict == "contradicts":
+            opposes += 1
+            continue
+        if not registry().is_strong_evidence(claim.relation, evidence_type):
+            unaccepted_supports.add(evidence_type)
+            continue
+        strong_supports += 1
+        groups.add(row["independence_group"])
+        profile = json.loads(row["authority_profile"])
+        level = (profile.get(claim.relation)
+                 or profile.get("relations", {}).get(claim.relation))
+        if level == "high":
+            high += 1
+
+    reasons: list[str] = []
+    if non_assertive:
+        reasons.append(
+            f"有证据只是编排而非断言（{'、'.join(sorted(non_assertive))}），"
+            "支持与反对均不计入")
+    if unaccepted_supports:
+        reasons.append(
+            f"有支持证据的类型不被 {claim.relation} 接受"
+            f"（{'、'.join(sorted(unaccepted_supports))}），不计入门槛")
 
     if _would_cycle(conn, claim):
         return Validation(
             "human_review", ("批准会引入无环关系环路",),
             evidence_ids, 0, 0, reviews)
     if opposes:
-        reasons.append(f"存在 {len(opposes)} 条反对证据")
+        reasons.insert(0, f"存在 {opposes} 条反对证据")
         return Validation(
             "human_review", tuple(reasons), evidence_ids, 0, 0, reviews)
-    if not supports:
+    if strong_supports == 0:
+        reasons.insert(
+            0, "现有支持都不足以建立该关系" if unaccepted_supports or non_assertive
+            else "没有通过蕴含验证的支持证据")
         return Validation(
-            "needs_more_evidence", ("没有通过蕴含验证的支持证据",),
-            evidence_ids, 0, 0, reviews)
-
-    rows = conn.execute(
-        "SELECT e.id,e.evidence_type,s.independence_group,s.authority_profile"
-        " FROM evidence e"
-        " JOIN source_snapshots ss ON ss.id=e.source_snapshot_id"
-        " JOIN sources s ON s.id=ss.source_id"
-        " WHERE e.claim_id=? AND e.mechanically_valid=1 AND e.entailment='supports'",
-        (claim_id,)).fetchall()
-    groups = set()
-    high = 0
-    strong = 0
-    weak_types: set[str] = set()
-    for row in rows:
-        # 强弱按关系判定：证据类型必须在该关系的 accepted_evidence_types 里。
-        is_strong = registry().is_strong_evidence(claim.relation, row["evidence_type"])
-        if is_strong:
-            groups.add(row["independence_group"])
-            strong += 1
-        else:
-            weak_types.add(row["evidence_type"])
-            continue
-        profile = json.loads(row["authority_profile"])
-        level = profile.get(claim.relation) or profile.get("relations", {}).get(claim.relation)
-        if level == "high":
-            high += 1
+            "needs_more_evidence", tuple(reasons), evidence_ids, 0, 0, reviews)
 
     independent = len(groups)
-    if weak_types:
+    required_independent = _required_independent(policy)
+    required_high = policy.get("minimum_evidence", {}).get(
+        "explicit_high_authority", 1)
+    if high >= required_high and independent >= required_independent:
         reasons.append(
-            f"有 {len(rows) - strong} 条证据的类型不被 {claim.relation} 接受"
-            f"（{'、'.join(sorted(weak_types))}），不计入门槛")
-    minimum = policy.get("minimum_evidence", {})
-    required_independent = (
-        minimum.get("independent_standard_sources")
-        or minimum.get("independent_curriculum_sources")
-        or 2)
-    required_high = minimum.get("explicit_high_authority", 1)
-    if strong == 0:
-        reasons.append("现有支持仅为弱证据")
-        outcome = "needs_more_evidence"
-    elif high >= required_high and independent >= required_independent:
-        reasons.append(
-            f"强证据 {strong} 条，独立来源组 {independent} 个，高权威支持 {high} 条")
+            f"强证据 {strong_supports} 条，独立来源组 {independent} 个，"
+            f"高权威支持 {high} 条")
         outcome = "human_review" if policy.get("high_impact_review") else "auto_approve"
         if policy.get("high_impact_review"):
             reasons.append("高影响关系在校准完成前保留人工审核")

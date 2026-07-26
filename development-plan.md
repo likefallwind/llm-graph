@@ -1,5 +1,9 @@
 # LLM Graph Development Plan
 
+What is still open. Implemented behavior is described in
+`design/architecture.md`; this file keeps the objective, the invariants, the
+designs not yet built, and the current iteration.
+
 ## 1. Objective
 
 Build a high-quality, corpus-grounded knowledge graph that systematically covers
@@ -27,44 +31,10 @@ AI coverage gap
   -> schedule the next reading task
 ```
 
-## 2. Development Strategy
+The first four steps and the validation path exist. Coverage-driven selection
+and scheduling do not.
 
-Develop directly on the `develop` branch. Reuse the useful infrastructure in
-the repository while replacing the graph representation, verification, and
-evaluation core in place. The stable `main` branch is the rollback boundary;
-do not maintain parallel v1/v2 packages or databases.
-
-### Reuse
-
-- Wikipedia and document acquisition
-- source YAML configuration
-- source snapshots and content hashes
-- HTML and PDF text extraction
-- LLM request, concurrency, retry, and JSON parsing
-- text chunking and mechanical evidence checks
-- CLI conventions
-- graph visualization concepts
-- cycle, orphan, and redundancy guard ideas
-
-### Replace
-
-- single-source node and edge storage
-- fixed one-row-per-edge evidence representation
-- generic structural support for all relation types
-- current automatic adjudication rules
-- embedding-threshold-driven granularity decisions
-- review-history-only calibration
-- sparse-node and link-popularity-only expansion
-
-### Branch Workflow
-
-- All redesign work happens on `develop`.
-- `main` remains the stable baseline until the redesigned pipeline passes.
-- Refactor existing modules instead of creating versioned packages.
-- Schema changes require a database backup and reversible migrations.
-- Existing data is legacy input and must be revalidated before publication.
-
-## 3. Non-Negotiable Invariants
+## 2. Non-Negotiable Invariants
 
 1. Every published entity has at least one source-backed description.
 2. Every published claim has at least one mechanically locatable evidence item.
@@ -80,176 +50,39 @@ do not maintain parallel v1/v2 packages or databases.
 10. Every algorithm, model, prompt, and source snapshot used in a decision is
     versioned.
 
-## 4. Target Architecture
+Schema changes require a database backup and reversible migrations. Existing
+legacy data is input, not knowledge, and must be revalidated before publication.
 
-### 4.1 Storage
+## 3. Relation Scope
 
-Current core tables:
+The graph intentionally exposes only three core relations: `is_a`, `part_of`,
+and `prerequisite_of`. The first version is meant to recover knowledge structure
+and learning order. Relations that are hard to distinguish at scale should be
+merged into these where valid, or omitted until later.
 
-```text
-sources
-source_snapshots
+Ten relations stay registered as `experimental` and are not available to the
+extraction path: `subfield_of`, `often_confused_with`,
+`pedagogical_contrast_with`, `alternative_to`, `used_for`, `solves`,
+`evaluated_by`, `trained_on`, `optimizes`, `derived_from`. Experimental
+registration preserves design options without letting them inflate the graph.
 
-entities
-aliases
-entity_type_assertions
-entity_resolution_events
-entity_alignment_candidates
-entity_alignment_evidence
-entity_external_ids
+Before any experimental relation becomes core it needs endpoint rules, evidence
+contracts, confusion tests, a validator, migration analysis, and benchmark
+coverage. Do not add a relation until every field required by
+`kg/ontology.py` is defined.
 
-claims
-evidence
-observations
-entailment_reviews
+## 4. Designs Not Yet Built
 
-runs
-decisions
-merge_events
-model_queue_reviews
-targeting_probes
+### 4.1 Coverage Planner
 
-relation_definitions
-coverage_topics
-reading_tasks
+Maintain a source-grounded AI domain taxonomy separate from the knowledge graph,
+assembled from authoritative curricula, textbook tables of contents, course
+outlines, and recognized classification systems.
 
-legacy_entity_map
-legacy_claim_map
-migration_issues
-pipeline_processed
-```
-
-Source independence is represented by the `sources.independence_group` field,
-not by counting excerpts or repeated model judgments. Extraction and
-verification share the versioned `runs` table.
-
-`entailment_reviews`, `targeting_probes`, and `merge_events` are append-only.
-An entailment verdict is never overwritten: each judgment inserts a row tied to
-the `runs` record that produced it, and `evidence.current_entailment_review_id`
-points at the latest one. `decisions.evidence_review_snapshot` records which
-verdicts a decision was based on, so a decision can be read back without
-assuming the current verdicts are the ones it saw. `merge_events.payload`
-records every row an entity merge moved, which is what makes
-`store.revert_merge` possible.
-
-### 4.2 Entity Types
-
-Current entity types:
-
-```text
-field
-concept
-method
-task
-model
-architecture
-dataset
-metric
-loss
-system
-resource
-```
-
-Entity types are not cosmetic. They constrain which relations may connect two
-entities.
-
-### 4.3 Relation Registry
-
-`config/relation-registry.yaml` is the single machine authority. Its `version`
-field is currently `4`. `kg/ontology.py` loads it, enforces that every relation
-declares the full required field set, and synchronizes it into
-`relation_definitions` on every `db.connect()`.
-
-The registry also owns the global `evidence_types` vocabulary. Every evidence
-type declares `strength: strong | weak`, and every relation declares which of
-them it accepts:
-
-```text
-strong: explicit_definition, explicit_taxonomy, explicit_composition,
-        explicit_function, explicit_prerequisite, explicit_comparison,
-        explicit_derivation
-weak:   toc_order, hyperlink, cooccurrence
-```
-
-Evidence strength is per relation, not global. `explicit_function` is strong
-evidence for `used_for` and is deliberately excluded from `part_of`, because
-"A is used for B" is exactly the semantics `part_of` rules out. There is no
-hardcoded strong-type set anywhere in the code; extraction prompts and the
-evidence threshold both read the registry.
-
-The registry carries only fields that have a consumer. `tests/test_core_isolation.py`
-fails when a field is declared but never read, so dead configuration cannot
-give the false impression that a rule is in force.
-
-The first production-oriented graph intentionally exposes only three core
-relations:
-
-```text
-is_a
-part_of
-prerequisite_of
-```
-
-This small registry is deliberate. The first graph version is primarily meant
-to recover knowledge structure and learning order. Relations that are difficult
-to distinguish at scale should be merged into these core semantics where that
-is valid, or omitted until a later version.
-
-The following relations remain registered as `experimental` and are not
-available to the grounded extraction path:
-
-```text
-subfield_of
-often_confused_with
-pedagogical_contrast_with
-alternative_to
-used_for
-solves
-evaluated_by
-trained_on
-optimizes
-derived_from
-```
-
-Experimental registration preserves design options without allowing them to
-inflate the current graph or blur the educational structure.
-
-Each relation definition must specify:
-
-- allowed subject entity types;
-- allowed object entity types;
-- direction;
-- symmetry;
-- transitivity;
-- acyclicity;
-- inverse relation if applicable;
-- accepted evidence types;
-- minimum automatic approval policy;
-- contradiction rules;
-- relation-specific validator version.
-
-Do not add a relation until these properties are defined.
-
-## 5. Core Algorithms
-
-### 5.1 Coverage Planner
-
-Maintain a source-grounded AI domain taxonomy separate from the knowledge graph.
-The initial taxonomy should be assembled from authoritative curricula, textbook
-tables of contents, course outlines, and recognized classification systems.
-
-Each coverage topic tracks:
-
-- importance;
-- expected entity categories;
-- available authoritative sources;
-- current entity coverage;
-- claim density;
-- multi-source evidence coverage;
-- orphan rate;
-- unresolved conflict rate;
-- automatic approval audit quality;
-- freshness.
+Each coverage topic should track importance, expected entity categories,
+available authoritative sources, current entity coverage, claim density,
+multi-source evidence coverage, orphan rate, unresolved conflict rate,
+automatic approval audit quality, and freshness.
 
 Reading-task priority:
 
@@ -263,234 +96,41 @@ priority =
     / expected_review_cost
 ```
 
-This formula is a policy interface, not a permanent fixed equation. Its inputs
-must be inspectable and benchmarked.
+This is a policy interface, not a permanent equation. Its inputs must be
+inspectable and benchmarked.
 
-### 5.2 Corpus-Grounded Reading Agent
+Current state: `coverage_topics` and `reading_tasks` exist and are written to.
+Nothing reads `reading_tasks`. `pipeline.batch` picks sections by
+`doc_sections.ord`, so expansion order is arbitrary with respect to coverage.
 
-The agent receives a coverage task and a set of source snapshots. It may only
-extract information present in those snapshots.
+### 4.2 Adversarial Critique
 
-Output schema:
-
-```text
-entity observations
-claim observations
-source-derived next reading targets
-```
-
-There is no facet output. Anything worth naming is an entity; anything not worth
-naming is not stored.
-
-Every observation includes:
-
-- exact evidence excerpt;
-- source snapshot and location;
-- explicit or inferred status;
-- proposed entity types;
-- proposed relation;
-- extraction model and prompt version.
-
-Next reading targets may come from:
-
-- section headings;
-- explicit terminology;
-- hyperlinks;
-- citations;
-- indexes;
-- source-derived search queries.
-
-LLM memory may help rank or rephrase reading targets, but those targets remain
-retrieval tasks and are never accepted directly as graph knowledge.
-
-Reading a second textbook end to end rarely corroborates an existing claim: two
-books covering the same concept seldom state the same triple. Claim-directed
-retrieval (`kg/targeting.py`) is the complement. Given a claim stuck below the
-evidence threshold, it scans the local corpus with no LLM at all for places
-where identity names of both endpoints occur within a bounded distance, skipping
-independence groups that already support the claim. Each such co-occurrence is a
-separate candidate, so two passages in one section compete on their own merits.
-
-Only the neighborhood of the co-occurrence is sent to the model, expanded to
-paragraph boundaries. The distance window has to constrain what the model reads,
-not merely which sections are selected: a section can run to tens of thousands
-of characters, and given all of it the model will quote something unrelated to
-the match that triggered retrieval. The neighborhood is wide enough to judge
-from — a lone sentence rarely shows whether a mention is a definition, an
-example, or a list — and the snapshot registered as provenance is still the
-whole section.
-
-The extraction prompt names the two endpoints without naming the relation under
-test, so the model is not asked a leading question, and it may return the
-opposite direction or `none`. Every probe is recorded in `targeting_probes` so
-the same passage is not paid for twice.
-
-### 5.3 Entity Resolution
-
-Candidate generation:
-
-```text
-normalized name
-aliases
-language-aware matching
-external identifiers
-source mappings
-embedding similarity
-domain and type compatibility
-neighborhood compatibility
-```
-
-Resolution outcomes:
-
-```text
-same_entity
-type_conflict
-suspected_same_entity
-created
-ambiguous
-```
-
-Resolution order:
-
-```text
-deterministically normalized name
-  -> exact canonical-name match
-  -> exact verified-alias match
-  -> limited candidate retrieval
-  -> grounded LLM classification
-  -> deterministic safety gate or suspected-alignment queue
-```
-
-Each entity has one canonical normalized name and may have multiple sourced
-aliases. Exact canonical and verified-alias matches are the fast path. Fuzzy
-string similarity is candidate retrieval only and never proves identity.
-
-High-confidence direct translations and strict name variants may be verified
-when the LLM classification also passes deterministic string checks. Examples
-include Chinese/English term pairs and category-word variants such as
-`分类`/`分类问题` or `Softmax 函数`/`softmax运算`. Abbreviations, symbols,
-semantic aliases, and composite names are not automatically merged from one
-model judgment.
-
-Other likely matches enter `entity_alignment_candidates` as
-`suspected_same_entity`. Evidence accumulates by independent source group.
-Repeated judgments by MiniMax M3 are audit evidence, not additional independent
-knowledge sources. Model queue reviews are stored separately in
-`model_queue_reviews`.
-
-All merges are stored as reversible events. Aliases retain language, source, and
-history.
-
-### 5.4 Claim Normalization and Aggregation
-
-Observations are normalized into canonical `(subject, relation, object,
-qualifiers)` claims.
-
-Equivalent observations attach evidence to the same claim. They must not create
-duplicate edges or silently discard later sources.
-
-Evidence records:
-
-```text
-support
-oppose
-uncertain
-```
-
-The system must distinguish:
-
-- several excerpts from one source;
-- several sources in one source family;
-- genuinely independent sources.
-
-Translations, mirrors, and derived structured databases do not automatically
-count as independent sources.
-
-### 5.5 Relation-Specific Validation
-
-Generic hyperlinks and co-occurrence cannot prove typed relations.
-
-`is_a` validation:
-
-- explicit taxonomic language;
-- entity type compatibility;
-- structured taxonomy evidence;
-- direction consistency;
-- conflict with existing taxonomy.
-
-`part_of` validation:
-
-- explicit evidence that the subject is an actual structural component or an
-  explicitly identified process stage;
-- rejection of usage, dependency, participation, construction, input/output,
-  attribute, subtype, category-membership, and topical-membership evidence;
-- explicit composition confirmation from the entailment judge before evidence
-  can count as supporting;
-- human review for high-impact claims.
-
-`prerequisite_of` validation:
-
-- explicit learning dependency;
-- agreement across textbooks or course sequences;
-- definition dependency;
-- direction checks;
-- cycle and shortcut checks.
-
-Textbook order alone is weak evidence and cannot independently approve a
-prerequisite claim.
-
-Experimental relations are not extracted in the current vertical slice. Before
-any one becomes core, it must receive endpoint rules, evidence contracts,
-confusion tests, validators, migration analysis, and benchmark coverage.
-
-### 5.6 LLM Verification Roles
-
-The LLM can perform separate grounded roles:
-
-1. Extractor
-2. Entity linker
-3. Relation classifier
-4. Evidence entailment judge
-5. Adversarial critic
-6. Reading planner
+The LLM currently fills five grounded roles: extractor, entity linker, relation
+classifier, evidence entailment judge, reading planner. The sixth — adversarial
+critic, asked to argue against a claim its own extractor produced — is not
+implemented.
 
 Multiple calls to the same model are useful checks but are not independent
-knowledge sources. Source diversity and deterministic validation provide the
-actual independent support.
+knowledge sources.
 
-### 5.7 Decision Engine
+### 4.3 Calibrated Decision Policy
 
-Decision features:
+`validators.evaluate` currently decides from independent source count, high
+authority count, opposing evidence, entailment verdict, and structural
+constraints. The features it does not use yet:
 
-- number of independent supporting sources;
-- number and strength of opposing sources;
-- source authority for the specific relation;
-- exact evidence validity;
-- entailment result;
-- adversarial critique result;
 - entity-resolution confidence;
-- relation domain and range validity;
-- structural constraint results;
+- adversarial critique result;
 - historical calibrated precision for the same policy bucket.
 
-Decision outcomes:
+`auto_reject` is defined but never produced. Automatic rejection should be
+allowed for mechanical invalidity, explicit contradiction, or a calibrated
+negative decision. Lack of evidence must stay `needs_more_evidence`.
 
-```text
-auto_approve
-auto_reject
-needs_more_evidence
-human_review
-```
+A policy may leave shadow mode only after its lower confidence bound meets the
+quality target on gold or audited examples.
 
-Automatic rejection is allowed for mechanical invalidity, explicit
-contradiction, or a calibrated negative decision. Lack of evidence alone yields
-`needs_more_evidence`.
-
-All automatic policies start in shadow mode. A policy may become active only
-after its lower confidence bound meets the quality target on gold or audited
-examples.
-
-### 5.8 Active Review
+### 4.4 Active Review
 
 Human review priority:
 
@@ -503,336 +143,130 @@ review_priority =
     * expected_future_reuse
 ```
 
-Humans should focus on:
+Humans should focus on conflicting authoritative evidence, ambiguous entity
+merges, root taxonomy and high-impact prerequisite claims, ontology changes, and
+statistically selected audits. Routine well-supported claims should be handled
+automatically after calibration.
 
-- conflicting authoritative evidence;
-- ambiguous entity merges;
-- root taxonomy and high-impact prerequisite claims;
-- ontology changes;
-- statistically selected audits.
+Current state: the four review queues exist but are unordered within themselves.
+Stratified random audits do not exist.
 
-Routine, well-supported claims should be handled automatically after
-calibration.
+### 4.5 Soft Anomaly Detection
 
-### 5.9 Graph Consistency
-
-Hard constraints:
-
-- relation domain and range;
-- forbidden self-edges;
-- required acyclicity;
-- symmetric relation normalization;
-- duplicate canonical claims;
-- invalid external identifiers.
-
-Soft anomaly detection:
+Hard constraints (domain/range, self-edges, acyclicity, symmetric
+normalization, duplicate canonical claims) are enforced. Soft anomalies are not
+detected:
 
 - taxonomy versus composition conflicts;
 - suspicious multiple parents;
 - excessive or insufficient hierarchy depth;
 - prerequisite shortcuts;
 - disconnected high-value entities;
-- facet/entity duplication;
 - contradictory definitions;
 - evidence conflicts;
 - subfield coverage imbalance.
 
-Hard violations block publication. Soft anomalies create review tasks.
+Hard violations block publication. Soft anomalies should create review tasks.
 
-## 6. Evaluation Plan
+## 5. Evaluation Plan
 
-### 6.1 Gold Benchmark
+### 5.1 Gold Benchmark
 
-Create a versioned benchmark before enabling redesigned automatic decisions.
+A versioned benchmark must exist before any redesigned automatic decision is
+enabled.
 
-Initial target: at least 300 human-reviewed examples covering:
+Target: at least 300 human-reviewed examples covering major AI subfields, every
+core relation, positive/negative/wrong-direction/wrong-type claims, multilingual
+aliases, same-name different-entity cases, and both simple and high-impact graph
+locations. Gold examples store reviewer rationale and source evidence.
 
-- major AI subfields;
-- every initial relation;
-- positive, negative, wrong-direction, and wrong-type claims;
-- multilingual aliases;
-- same-name different-entity cases;
-- entity versus facet decisions;
-- simple and high-impact graph locations.
+Current state: `benchmarks/gold.schema.json` is defined and `gold.jsonl` holds
+3 reviewed negatives — all `part_of` claims the pipeline produced and a human
+rejected. Provenance archived in `data/archive/bad-claims-20260726.json`.
 
-Gold examples must store reviewer rationale and source evidence.
+### 5.2 Metrics
 
-### 6.2 Metrics
+Entity resolution: candidate recall; same-entity precision and recall;
+automatic merge precision; granularity accuracy.
 
-Entity resolution:
+Claims: relation precision, recall, and F1; direction accuracy; relation-type
+confusion matrix; evidence entailment accuracy; unsupported published claim
+rate.
 
-- candidate recall;
-- same-entity precision and recall;
-- automatic merge precision;
-- granularity accuracy.
+Automation: automatic approval precision; automatic rejection precision;
+human-review rate; audit overturn rate; decisions per human review minute.
 
-Claims:
+Coverage: subfield coverage; core-topic coverage; entity-type coverage;
+multi-source evidence rate; orphan rate; unresolved conflict rate; source
+diversity.
 
-- relation precision, recall, and F1;
-- direction accuracy;
-- relation-type confusion matrix;
-- evidence entailment accuracy;
-- unsupported published claim rate.
+None of these are computed yet.
 
-Automation:
-
-- automatic approval precision;
-- automatic rejection precision;
-- human-review rate;
-- audit overturn rate;
-- decisions per human review minute.
-
-Coverage:
-
-- subfield coverage;
-- core-topic coverage;
-- entity-type coverage;
-- multi-source evidence rate;
-- orphan rate;
-- unresolved conflict rate;
-- source diversity.
-
-### 6.3 Initial Quality Gates
+### 5.3 Quality Gates
 
 - Published claims with no evidence: `0`.
 - Mechanically invalid evidence accepted: `0`.
-- Automatic entity merge precision: target at least `99%`.
-- Automatic claim approval precision: target at least `98%` per enabled policy
-  bucket.
+- Automatic entity merge precision: at least `99%`.
+- Automatic claim approval precision: at least `98%` per enabled policy bucket.
 - High-impact taxonomy and prerequisite claims require stricter policy or human
   review until sufficient calibration data exists.
 - No automatic policy is enabled based only on a tiny audit sample.
 
 Targets can be revised through documented benchmark evidence, not convenience.
 
-## 7. Implementation Phases
+## 6. Status Snapshot — 2026-07-26
 
-### Current Status Snapshot — 2026-07-26
-
-The redesigned grounded pipeline is operational on `develop` for a bounded
-vertical slice. This is not yet approval to run unbounded expansion or publish
-claims automatically.
-
-Current database state:
+The pipeline is operational for a bounded vertical slice: supervised-learning
+foundations, three core relations, two or more independent textbook sources plus
+Wikipedia. This is not approval to run unbounded expansion or publish
+automatically.
 
 ```text
-sources: 7
-source snapshots: 19
-entities: 114
-claims: 44 (is_a 20, part_of 17, prerequisite_of 7), all proposed
-evidence records: 213
-observations: 262
-decisions: 162
-entailment reviews: 89
-targeting probes: 31
-reading tasks: 38
+sources: 7                  entities: 114
+source snapshots: 19        claims: 44 (is_a 20, part_of 17, prerequisite_of 7)
+evidence records: 213       observations: 262
+entailment reviews: 89      decisions: 162
+targeting probes: 31        reading tasks: 38
 processed source/topic pairs: 12
 ```
-
-Three `part_of` claims produced by claim-directed retrieval were reviewed by
-hand, archived to `data/archive/bad-claims-20260726.json`, exported as gold
-negatives, and deleted. They are the first entries in `benchmarks/gold.jsonl`.
-Each records a distinct failure mode: a mathematical construction read as
-composition, a loss-function mention read as model composition, and a
-table-of-contents indentation read as composition with the direction reversed.
-
-Current resolution and review state:
 
 ```text
 aliases: 115 verified, 29 proposed, 2 rejected
 alignment candidates: 68 verified, 7 suspected
 observations: 231 resolved, 9 pending, 22 rejected
 type conflicts: 17, all with MiniMax M3 queue reviews
-model queue reviews: 21
 entity merges performed: 0
 ```
 
-Under registry v4 the shadow decision distribution is:
+Shadow decision distribution under registry v4:
 
 ```text
 needs_more_evidence: 32
 human_review: 12
 ```
 
-No claim is auto-approvable. `human_review` here does not mean the evidence is
-adequate: all three core relations carry `high_impact_review: true`, and some of
-these claims also have opposing evidence. The identity report shows 18 of 57
-claim evidence records do not mention an identity name of one endpoint, 16 of
-which still count as strong evidence. Fifteen of the eighteen come from the
-original extraction path rather than from targeting.
+No claim is auto-approvable. `human_review` does not mean the evidence is
+adequate — all three core relations carry `high_impact_review: true`, and some
+of these claims also have opposing evidence.
 
-The four review queues were processed in this order:
+`pipeline identity` reports 18 of 57 claim evidence records that do not mention
+an identity name of one endpoint, 16 of which still count as strong evidence.
+Fifteen of the eighteen come from the extraction path, not from targeting. This
+is the largest open data-quality gap.
 
-1. proposed aliases;
-2. suspected entity alignments;
-3. pending Observation replay;
-4. entity type conflicts.
+123 tests pass. Mechanical graph checks report no cycles, reverse duplicate
+typed edges, or invalid endpoint types.
 
-MiniMax M3 reviewed all four queues. Its conclusions were stored as evidence,
-not treated as independent sources. Safe direct aliases were promoted through
-deterministic gates. Pending replay reduced the queue from eight to four and
-restored grounded evidence for the `二分类 is_a 分类` and
-`多类分类 is_a 分类` claims. No entity primary type was changed solely from
-the model's recommendation.
-
-The full test suite currently contains 116 passing tests. Mechanical graph checks
-report no cycles, reverse duplicate typed edges, or invalid endpoint types.
-Existing soft warnings include prerequisite shortcuts, orphan nodes, and
-facet/entity duplication; these remain quality work rather than hard schema
-failures.
-
-### Phase 0: Baseline — Partial
-
-Tasks:
-
-- avoid broad graph expansion and real automatic approval during the redesign;
-- back up the current database;
-- export current entities, edges, sources, evidence text, signals, and decisions;
-- record current quality and coverage metrics;
-- document known failure examples.
-
-Deliverables:
-
-- `data/baseline/` export package;
-- `reports/baseline.json`;
-- versioned failure-case set.
-
-Exit criteria:
-
-- the current baseline can be reproduced and compared with the redesign;
-- database changes have a reversible migration path.
-
-### Phase 1: Ontology, Evidence Policy, and Benchmark — Partial
-
-Tasks:
-
-- define entity types;
-- define the initial relation registry;
-- define source independence;
-- define evidence acceptance rules;
-- build the AI coverage taxonomy;
-- produce the first 300 gold examples.
-
-Deliverables:
-
-- `design/ontology.md`;
-- `design/evidence-policy.md`;
-- `config/relation-registry.yaml`;
-- `config/ai-coverage-taxonomy.yaml`;
-- `benchmarks/gold.jsonl`.
-
-Exit criteria:
-
-- every relation has unambiguous semantics and validation rules;
-- benchmark examples exercise every relation and major failure mode.
-
-Current note: ontology, evidence policy, relation registry v3, coverage taxonomy,
-and the benchmark schema exist. The gold dataset is still only a seed and is far
-below the 300-example quality gate.
-
-### Phase 2: Storage Foundation — Implemented
-
-Tasks:
-
-- create `kg/schema.sql` and explicit migrations;
-- implement source and snapshot storage;
-- implement entities, aliases, and external identifiers;
-- implement claims and evidence;
-- implement immutable run records and reversible decisions;
-- implement storage-level constraints and reversible migrations.
-
-Implemented modules:
-
-```text
-kg/models.py
-kg/store.py
-kg/schema.py
-kg/schema.sql
-kg/ontology.py
-```
-
-Exit criteria:
-
-- one claim can retain multiple supporting and opposing evidence records;
-- later evidence is never silently discarded;
-- every decision is reproducible and reversible.
-
-### Phase 3: First Vertical Slice — Operational, Not Yet Calibrated
-
-Scope:
-
-- one bounded domain, recommended: supervised-learning foundations;
-- three relations: `is_a`, `part_of`, and `prerequisite_of`;
-- two or more independent textbook or curriculum sources plus Wikipedia as
-  supplementary material.
-
-Tasks:
-
-- adapt existing corpus and document readers;
-- implement observation extraction;
-- implement mechanical evidence validation;
-- implement entity resolution;
-- implement claim aggregation;
-- implement relation-specific validators;
-- generate a shadow decision report.
-
-Implemented modules:
-
-```text
-kg/observations.py
-kg/entity_resolution.py
-kg/claims.py
-kg/validators.py
-kg/decision.py
-kg/pipeline.py
-kg/review_queues.py
-```
-
-Exit criteria:
-
-- the bounded domain runs end to end using redesigned claim persistence;
-- every output claim has inspectable evidence;
-- results can be evaluated against the gold set;
-- no real automatic decisions are required.
-
-Current note: the redesigned pipeline runs end to end for supervised-learning
-foundations, uses the three core relations, preserves evidence separately from
-claims, performs relation-specific entailment validation, and emits shadow
-decisions. It still needs broader independent-source coverage and benchmark
-evaluation before this phase is considered complete.
-
-### Phase 4: Grounded Reading Agent — Foundation Implemented
-
-Tasks:
-
-- implement reading-task queues;
-- extract next targets from headings, terms, links, citations, and indexes;
-- enforce retrieval-before-knowledge;
-- detect repeated reading loops;
-- track source and topic coverage;
-- add source-family and independence handling.
-
-Exit criteria:
-
-- the graph can expand through corpus reading without accepting LLM memory as
-  knowledge;
-- every expansion path is traceable from coverage task to source to claim.
-
-Current note: document and Wikipedia readers, reading tasks, source snapshots,
-source independence groups, per-chunk extraction limits, and processed-source
-tracking are implemented. Repeated-loop control and coverage-driven scheduling
-still need production evaluation.
+## 7. Remaining Phases
 
 ### Phase 5: Automated Verification and Active Review — In Progress
 
-Tasks:
+Built: grounded entailment verification with append-only review history, shadow
+decisions, entity-alignment queues, model review audit records, pending
+Observation replay, type-conflict triage, claim-directed retrieval.
 
-- implement grounded entailment verification;
-- implement adversarial critique;
-- calibrate relation-specific policies;
-- implement shadow decisions;
-- implement active-review prioritization;
-- implement stratified random audits.
+Remaining: adversarial critique, calibrated active-review prioritization,
+stratified audits.
 
 Exit criteria:
 
@@ -840,12 +274,7 @@ Exit criteria:
 - conflicts and ambiguous merges are routed to humans;
 - routine review workload falls without reducing measured precision.
 
-Current note: grounded entailment, shadow decisions, entity-alignment queues,
-model review audit records, pending Observation replay, and type-conflict
-triage are implemented. Adversarial critique, calibrated active-review
-prioritization, and stratified audits remain incomplete.
-
-### Phase 6: Coverage Planner — Early Foundation
+### Phase 6: Coverage Planner — Not Started
 
 Tasks:
 
@@ -861,7 +290,7 @@ Exit criteria:
 - expansion is not dominated by link popularity or current graph proximity;
 - coverage progress is measurable over time.
 
-### Phase 7: Legacy Data Migration and Comparative Evaluation — Code Ready, Not Run
+### Phase 7: Legacy Data Migration — Code Ready, Not Run
 
 Tasks:
 
@@ -878,9 +307,10 @@ Exit criteria:
 - every migrated claim receives complete provenance and validation state;
 - the redesign outperforms the baseline on agreed quality metrics.
 
-Current note: migration tables and preview/apply code exist, but the current
-database has no migrated legacy entities or claims. Comparative evaluation has
-not started.
+Blocker: `legacy_migration.RELATED_MAP` maps legacy `related_to` edges onto
+three relations that are all `experimental`. Decide whether to promote them
+properly or drop those edges before running the migration. Do not bypass
+`active_only` for the migration's convenience.
 
 ### Phase 8: Cutover and Cleanup — Pending
 
@@ -898,24 +328,13 @@ Exit criteria:
 - the old system remains reproducible from its archive;
 - rollback and recovery procedures are documented.
 
-Current note — the legacy core is frozen as of 2026-07-26. It keeps working for
-its existing read commands, but receives no new algorithmic capability, and the
-new core no longer depends on it. `tests/test_core_isolation.py` enforces this
-mechanically: it parses the new-core modules and fails if any of them imports a
-legacy module or issues SQL against `nodes`, `edges`, or `review_log`. The last
-such dependency to be removed was `pipeline batch`, which previously selected
-Wikipedia pages by joining `node_page` against seed/approved `nodes`; it now
-reads `corpus` directly.
-
-The remaining shared surface is intentional and narrow: `db.connect()` installs
-both schemas, and the acquisition modules (`wiki.py`, `corpus.py`, `docs.py`,
-`htmltext.py`, `quality.py`, `llm.py`) are tools rather than knowledge
-representation, so both cores use them.
+The legacy core was frozen on 2026-07-26 and the new core no longer depends on
+it — see `design/architecture.md` §2. What remains is switching the read-side
+commands over and archiving.
 
 ## 8. Current Development Iteration
 
-The next iteration should prepare a controlled expansion, not immediately run
-unbounded full-graph growth.
+Prepare a controlled expansion, not unbounded growth.
 
 ### 8.1 Close the High-Impact Human Queue
 
@@ -934,31 +353,36 @@ sufficient:
 - remaining proposed abbreviations and semantic aliases, including `ce`,
   `minibatch SGD`, and `稠密层`.
 
-The four pending observations depend on unresolved alignment for
-`牛顿-拉弗森法` and `平方误差函数`; replay them after human decisions.
+Pending observations depend on unresolved alignment; replay them after human
+decisions.
 
-### 8.2 Add Independent Evidence
+### 8.2 Close the Identity-Mention Gap
 
-- read at least one genuinely independent authoritative source for the current
-  core claims;
+Fifteen evidence records from the extraction path do not mention an identity
+name of one endpoint yet still count as strong evidence. The extraction prompt
+is `kg/observations.py:13`. Decide whether to reject such evidence mechanically
+or fix the prompt; measure with `pipeline identity` before and after.
+
+### 8.3 Add Independent Evidence
+
 - prioritize `is_a` and `prerequisite_of` claims with only one source group;
+- prefer claim-directed retrieval over reading another book end to end;
 - do not count translations, repeated chapters from the same book family, or
   repeated MiniMax M3 reviews as independent;
 - use relation-specific authority: textbooks and curricula are usually stronger
-  for learning order, while Wikipedia remains supplementary rather than
-  globally inferior or superior.
+  for learning order, while Wikipedia remains supplementary rather than globally
+  inferior or superior.
 
-### 8.3 Build the Calibration Set
+### 8.4 Build the Calibration Set
 
-- expand `benchmarks/gold.jsonl` from its seed state toward at least 300 reviewed
-  examples;
+- grow `benchmarks/gold.jsonl` toward at least 300 reviewed examples;
 - include multilingual aliases, abbreviations, semantic aliases, composite
   names, wrong directions, type conflicts, and hard `part_of` negatives;
 - report precision by policy bucket instead of one aggregate number;
 - keep every automatic policy in shadow mode until its lower confidence bound
   reaches the quality gate.
 
-### 8.4 Run Controlled Expansion
+### 8.5 Run Controlled Expansion
 
 After the human queue and first calibration batch are complete:
 
@@ -970,24 +394,21 @@ After the human queue and first calibration batch are complete:
 5. compare queue growth, orphan rate, evidence independence, and audit quality;
 6. increase batch size only when review debt stays bounded.
 
-The extraction limits are per text chunk, not global per document. They protect
-model output quality without truncating the rest of a long chapter.
-
 ## 9. Decisions Now Fixed
 
-The following choices are no longer open design questions:
+No longer open design questions:
 
 1. The graph is education-first.
 2. The first vertical slice is supervised-learning foundations.
 3. The core relation set is `is_a`, `part_of`, and `prerequisite_of`.
 4. Knowledge-structure and learning-order accuracy take priority over broad
    functional or analogy relations.
-5. MiniMax M3 may extract, translate, normalize, and review, but a model judgment
-   is never an independent source.
+5. MiniMax M3 may extract, translate, normalize, and review, but a model
+   judgment is never an independent source.
 6. Exact canonical or verified-alias matches are the entity-resolution fast
    path; fuzzy matching only retrieves candidates.
-7. Automatic publication remains in shadow mode until benchmarked policy
-   buckets meet the quality threshold.
+7. Automatic publication remains in shadow mode until benchmarked policy buckets
+   meet the quality threshold.
 8. `config/relation-registry.yaml` is the only place where relation semantics
    and evidence-type strength are defined. Code reads it; code does not restate
    it.

@@ -515,12 +515,17 @@ def evidence_endpoint_mentions(conn, evidence_row) -> dict:
     }
 
 
+# 已被并入别的实体、或已被拒的实体不能再作为消歧目标。merged 实体的规范名在
+# 合并时已经转成目标实体的 verified alias，所以排除它不会丢掉这个名字的可达性。
+LOOKUP_EXCLUDED_STATUSES = ("rejected", "merged")
+
+
 def find_canonical_entity(conn, name: str) -> models.Entity | None:
     """只查规范名。规范名全局唯一，是实体解析的最高优先级。"""
     normalized = normalize_name(name)
     row = conn.execute(
         "SELECT * FROM entities"
-        " WHERE status!='rejected' AND normalized_name=?",
+        " WHERE status NOT IN ('rejected','merged') AND normalized_name=?",
         (normalized,)).fetchone()
     return _entity(row) if row else None
 
@@ -531,7 +536,7 @@ def find_verified_alias_entities(conn, name: str) -> list[models.Entity]:
     rows = conn.execute(
         "SELECT DISTINCT e.* FROM entities e"
         " JOIN aliases a ON a.entity_id=e.id"
-        " WHERE e.status!='rejected'"
+        " WHERE e.status NOT IN ('rejected','merged')"
         " AND a.status='verified' AND a.normalized_name=?"
         " ORDER BY e.id",
         (normalized,)).fetchall()

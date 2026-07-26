@@ -9,7 +9,9 @@ from . import claims, coverage, decision, observations, store, validators
 from .ontology import registry
 
 
-ALGORITHM_VERSION = "grounded-pipeline-3"
+# 4：split_text 不再硬切自然段；claim 端点可退回库里已有实体的确定性精确匹配。
+# 两处都会改变同一份语料的抽取结果，所以必须换版本号，已处理过的来源才会重跑。
+ALGORITHM_VERSION = "grounded-pipeline-4"
 
 
 def read_file(conn, path: str, *, source_slug: str, source_name: str,

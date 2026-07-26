@@ -40,12 +40,23 @@ Weak types are arrangement rather than assertion: `toc_order`, `hyperlink`,
 neighborhood overlap fall here as well. Weak evidence may prioritize reading or
 review, but never counts toward the approval threshold of a typed claim.
 
-Strength is per relation, not global. A type is strong for a claim only if it
-appears in that relation's `accepted_evidence_types`. `explicit_function` is
-strong for `used_for` and is excluded from `part_of`, because "A is used for B"
-is exactly the reading `part_of` is defined to rule out. A relation may accept
-only a subset of the strong types, and the ones it does not accept contribute
-nothing — they are not downgraded to weak, they are ignored.
+These two properties answer different questions and must not be collapsed.
+
+Global strength answers **is this text an assertion at all**. Weak types are
+arrangement, not assertion, so they can neither support nor oppose a claim. A
+co-occurrence proves nothing in either direction.
+
+`accepted_evidence_types` answers **can this kind of assertion establish this
+relation**. It filters supporting evidence only. `explicit_function` is strong
+for `used_for` and excluded from `part_of`, because "A is used for B" is exactly
+the reading `part_of` rules out. A relation may accept only a subset of the
+strong types; the ones it does not accept contribute nothing to the threshold —
+they are not downgraded to weak, they are ignored.
+
+Being unable to establish a relation does not make an assertion unable to
+oppose it. A definition of `特征` as "the independent variables a prediction is
+based on" cannot establish `特征 part_of 样本`, but it is a valid rebuttal of
+it. Opposing evidence is filtered by global strength only.
 
 ## Relation-Specific Authority
 
