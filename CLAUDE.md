@@ -34,8 +34,10 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 5. `agent.md` — agent 工作守则（下面第二节是它的提炼）
 6. `design/ontology.md`、`design/evidence-policy.md` — 实体/关系语义、证据强度、
    独立性（人读版）
-7. `config/relation-registry.yaml`（当前 v4）— 关系、实体类型、证据类型词表与
-   强弱的**机器权威**；`config/ai-coverage-taxonomy.yaml` — 覆盖主题树
+7. `config/relation-registry.yaml`（当前 v5）— 关系、实体主类型判据、证据类型
+   词表与强弱的**机器权威**；`config/ai-coverage-taxonomy.yaml` — 覆盖主题树
+   （实体类型改造的全过程与未决项见 `design/entity-type-v5.md`，实施完并入
+   `design/ontology.md` 后删除）
 8. 本文件 — 发现它和代码不一致时，以代码为准，并顺手改它
 
 2 和 3 分工：架构讲**代码怎么组织**，算法讲**每一步算什么**。改了算法两边都要动。
@@ -97,8 +99,10 @@ venv 在项目根目录；调 LLM 的命令需要 `MINIMAX_API_KEY`。数据库�
 | `reshadow` | 按当前策略重判全部 claim，只写 Shadow decision。默认零 LLM；`--force-entailment` 重判全部证据，`--only-stale` 只重判版本落后的 |
 | `survey` / `target` | 定向补证：`survey` 零 LLM 列出卡在门槛下的 claim 及候选段落；`target` 对这些段落抽取。`--limit N` `--passages N` |
 | `identity` | 报告哪些 evidence 摘录里没出现端点身份名——只读体检 |
+| `taxonomy-types` | 报告两端主类型不同的 `is_a`——只读体检，零 LLM |
 | `duplicates` / `alias-declarations` | 前者列疑似重复实体；后者零 LLM 扫语料里的别名声明句式 |
 | `merge --source-entity A --target-entity B --reason R` / `revert-merge --merge-event N` | 人工确认后的实体合并与撤销 |
+| `retype --entity N --to T [--definition D] --reason R` / `revert-retype --revision N` / `revisions [--entity N]` | 人工修订主类型与定义，留痕可撤销 |
 | `migrate` / `--apply` | 旧 nodes/edges 幂等迁移；无法安全判断的进 `migration_issues` |
 
 通用：`--max-entities` / `--max-claims` 是**每个文本块**的上限；`--no-verify-llm`
@@ -132,10 +136,15 @@ rollback / calibrate / check / viz / export / stats / embed`。
   只能绑定一个 entity 或 claim。
 - **独立性只来自 `sources.independence_group`**，不是摘录条数、不是同一模型的
   多次判断。翻译、镜像、同一本书的不同章节都不算独立来源。
-- **注册表是唯一事实来源。** 关系语义、实体类型、证据类型词表与强弱全在
+- **注册表是唯一事实来源。** 关系语义、实体主类型判据、证据类型词表与强弱全在
   `config/relation-registry.yaml`。代码读它，不复述它——第二份词表会被
   `tests/test_core_isolation.py` 抓到。注册表里也不放没有消费者的字段，死配置
   会让人以为某条规则在生效。
+- **主类型是单值六类，判据从注册表注入提示词。** `resource / criterion / data /
+  task / solution / concept`，按优先序判、命中即停；`concept` 是兜底不是备选。
+  **判型的输入是定义，不是名字**——抽取时先写 `definition` 再据它判型，定义说不出
+  内容的实体整条丢弃。主类型只表达规范主类别，不声称表达全部用途，其他面向是
+  邻边的模式，不存成节点属性。写入后只能经 `pipeline retype` 修订，留痕可撤销。
 - **证据计数是两层，别把它们混成一层。** 全局 `strength`
   （`is_assertive_evidence`）决定一段文字算不算断言，编排类（目录序/超链接/共现）
   支持和反对**两侧**都不计；关系白名单（`is_strong_evidence`）决定这类断言能不能

@@ -7,11 +7,13 @@ from kg.ontology import registry
 SOURCE = "分类是一个研究领域。监督学习是机器学习的一部分。线性代数是学习线性回归的前置知识。"
 
 
-def _entity(name, entity_type, evidence):
+def _entity(name, entity_type, evidence, definition=""):
     return {
         "name": name,
         "entity_type": entity_type,
-        "definition": "",
+        # 定义是判类型的输入，空定义会被 definition_is_informative 挡住，
+        # 所以夹具必须给一条能据以判型的定义。
+        "definition": definition or f"{name}：{evidence}",
         "aliases": [],
         "evidence": evidence,
         "location": "§1",
@@ -20,12 +22,12 @@ def _entity(name, entity_type, evidence):
 
 def _payload(relation, subject, object_, qualifiers=None):
     entities = {
-        "分类": _entity("分类", "field", "分类是一个研究领域"),
-        "研究领域": _entity("研究领域", "field", "分类是一个研究领域"),
-        "监督学习": _entity("监督学习", "method", "监督学习是机器学习的一部分"),
-        "机器学习": _entity("机器学习", "method", "监督学习是机器学习的一部分"),
+        "分类": _entity("分类", "concept", "分类是一个研究领域"),
+        "研究领域": _entity("研究领域", "concept", "分类是一个研究领域"),
+        "监督学习": _entity("监督学习", "solution", "监督学习是机器学习的一部分"),
+        "机器学习": _entity("机器学习", "solution", "监督学习是机器学习的一部分"),
         "线性代数": _entity("线性代数", "concept", "线性代数是学习线性回归的前置知识"),
-        "线性回归": _entity("线性回归", "method", "线性代数是学习线性回归的前置知识"),
+        "线性回归": _entity("线性回归", "solution", "线性代数是学习线性回归的前置知识"),
     }
     return {
         "entities": [entities[subject], entities[object_]],
@@ -151,7 +153,7 @@ class RelationV1ContractTests(unittest.TestCase):
 
         batch = parse_payload(
             payload, SOURCE,
-            known_entity_types={"linear regression": "method"})
+            known_entity_types={"linear regression": "solution"})
 
         self.assertEqual(1, len(batch.claims))
         self.assertFalse(batch.rejected)
@@ -177,7 +179,7 @@ class RelationV1ContractTests(unittest.TestCase):
             payload, SOURCE,
             known_entity_types={
                 "线性代数": "concept",
-                "线性回归": "method",
+                "线性回归": "solution",
             })
 
         self.assertFalse(batch.claims)

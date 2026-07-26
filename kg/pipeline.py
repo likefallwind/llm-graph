@@ -10,8 +10,10 @@ from .ontology import registry
 
 
 # 5：名称引用只忽略空白；Claim 至少一个端点来自本块，另一个可唯一命中既有身份名。
+# 6：实体主类型换成六类（注册表 v5）；判据随提示词注入；定义先写、类型据定义判；
+#    定义过不了下限的实体整条丢弃。
 # 这些规则会改变同一份语料的抽取结果，所以必须换版本号，已处理来源才会重跑。
-ALGORITHM_VERSION = "grounded-pipeline-5"
+ALGORITHM_VERSION = "grounded-pipeline-6"
 
 
 def read_file(conn, path: str, *, source_slug: str, source_name: str,
@@ -57,7 +59,7 @@ def read_text(conn, text: str, *, source_slug: str, source_name: str,
         storage_ref=storage_ref, metadata=metadata)
     run_id = store.create_run(
         conn, "extraction", ALGORITHM_VERSION,
-        prompt_version="grounded-extract-4",
+        prompt_version="grounded-extract-5",
         config={
             "topic": topic,
             "source_snapshot_id": snapshot.id,
@@ -321,6 +323,41 @@ def identity_report(conn, *, limit: int = 200) -> dict:
         "supports_but_unmentioned": sum(
             1 for item in missing if item["entailment"] == "supports"),
         "items": missing[:limit],
+    }
+
+
+def taxonomy_type_report(conn, *, limit: int = 200) -> dict:
+    """`is_a` 两端主类型必须相同——只读体检，零 LLM。
+
+    `is_a` 说的是"同一类东西的更具体一种"，而主类型判据一致执行的结果就是子类
+    与父类落在同一格：交叉熵损失与损失函数同为 criterion，线性回归与模型同为
+    solution。所以跨类型的 `is_a` 是个确定性的可疑信号。
+
+    **越界更可能说明某一端的类型标错了，不是这条 claim 是错的**，所以这里只报告
+    不裁决——修法是 `pipeline retype`，不是拒掉这条边。少数越界是关系用错了：
+    「线性回归 is_a 回归」若两端分属 solution 与 task，那条边本来该是 used_for。
+    """
+    rows = conn.execute(
+        "SELECT c.id,c.status,"
+        " s.id sid,s.canonical_name sname,s.entity_type stype,"
+        " o.id oid,o.canonical_name oname,o.entity_type otype"
+        " FROM claims c"
+        " JOIN entities s ON s.id=c.subject_id"
+        " JOIN entities o ON o.id=c.object_id"
+        " WHERE c.relation='is_a' ORDER BY c.id").fetchall()
+    crossing = [{
+        "claim_id": row["id"], "status": row["status"],
+        "edge": f"{row['sname']}({row['stype']}) is_a {row['oname']}({row['otype']})",
+        "subject": {"id": row["sid"], "name": row["sname"],
+                    "entity_type": row["stype"]},
+        "object": {"id": row["oid"], "name": row["oname"],
+                   "entity_type": row["otype"]},
+    } for row in rows if row["stype"] != row["otype"]]
+    return {
+        "is_a_claims": len(rows),
+        "type_crossing": len(crossing),
+        "next": "越界项用 pipeline retype 改型，或改用 used_for / solves 等关系",
+        "items": crossing[:limit],
     }
 
 

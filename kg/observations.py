@@ -13,10 +13,16 @@ from .ontology import registry
 EXTRACT_PROMPT = """你是有据抽取器。只允许依据给出的语料，不得使用模型记忆补充知识。
 
 覆盖主题：{topic}
-允许的实体类型：{entity_types}
 允许的关系及限定字段契约：{relations}
 
+实体主类型判据（单值必填，按编号顺序判，命中即停）：
+{entity_types}
+
 要求：
+0. 每个实体先按正文写 definition，再**仅依据这条 definition** 按上面的判据判
+   entity_type。不要看名字的字面就定类型：名字里有「函数」不代表它是 concept，
+   有「算法」不代表它是 solution。definition 要能让人据以判型——只说「本章要介绍
+   的核心主题」这种写法判不出任何东西，宁可不收这个实体。
 1. 每个实体和 Claim 都必须附语料中的逐字摘录 evidence。
 2. 每个 Claim 至少一个端点必须出现在本块 entities 中；另一个端点可以引用此前已经
    建立的实体，但名称必须可由规范名或 verified alias 唯一解析。
@@ -30,9 +36,9 @@ EXTRACT_PROMPT = """你是有据抽取器。只允许依据给出的语料，不
 {{
   "entities": [
     {{
-      "name": "规范名称",
-      "entity_type": "允许的类型",
-      "definition": "仅按正文概括",
+      "name": "规范名称，照语料用词，不要把「回归问题」截短成「回归」",
+      "definition": "仅按正文概括，写在 entity_type 之前，判型只依据它",
+      "entity_type": "按判据编号顺序判出的那一类",
       "aliases": [],
       "evidence": "逐字摘录",
       "location": "章节或段落说明"
@@ -110,6 +116,43 @@ def evidence_in_text(excerpt: str, text: str) -> bool:
     return bool(parts) and all(part in normalized for part in parts)
 
 
+MIN_DEFINITION_LENGTH = 6
+# 只指路、不说内容的定义。判类型的输入是定义，这类写法判不出任何一格，收进来
+# 只会让主类型变成瞎猜——而主类型一旦写入就只能靠 retype 改。
+#
+# 判据是**中心词是否空洞**，不是句式。「一类方法」「一种损失函数」都说明了是
+# 什么，放行；「核心主题」「实用技能之一」只说明了位置，拦下。
+# 指向章节的定位从句。它们本身不说明内容，但常常包着真内容——「本章要完整介绍的
+# 神经网络训练过程，包含定义架构、数据处理……」是一条好定义。所以先剥掉从句，
+# 再看剩下的够不够，而不是见到定位语就整条丢弃。
+POINTER_CLAUSES = (
+    r"[，,]\s*(是|属于)?本[书章节课][^，,。.]*",
+    r"^本[书章节课][^，,。.]*?的",
+    r"^(后续|下一?[章节])[^，,。.]*?的",
+)
+# 剥完之后中心词仍然空洞的：只说了位置，没说是什么。
+EMPTY_DEFINITION_PATTERNS = (
+    r"(核心|主要|重要)?(主题|内容|技能|要点|议题|话题)(之一)?[。.]?$",
+)
+
+
+def definition_is_informative(name: str, definition: str) -> bool:
+    """这条定义够不够判类型。
+
+    不判对错，只挡住三种明显判不了的写法：太短、只是重复名字本身、只说
+    「本章要介绍的……」这类指路语。
+    """
+    compact = re.sub(r"\s+", "", definition.strip())
+    for clause in POINTER_CLAUSES:
+        compact = re.sub(clause, "", compact)
+    if len(compact.strip("。.，,")) < MIN_DEFINITION_LENGTH:
+        return False
+    if compact.strip("。.") == re.sub(r"\s+", "", name.strip()):
+        return False
+    return not any(re.search(pattern, compact)
+                   for pattern in EMPTY_DEFINITION_PATTERNS)
+
+
 def parse_payload(payload: dict, source_text: str, *,
                   known_entity_types: dict[str, str] | None = None) -> ObservationBatch:
     reg = registry()
@@ -135,6 +178,11 @@ def parse_payload(payload: dict, source_text: str, *,
         if not name or not evidence_in_text(evidence, source_text):
             rejected.append(f"entity[{index}] 名称为空或 evidence 无法在语料中定位")
             continue
+        definition = str(raw.get("definition", "")).strip()
+        if not definition_is_informative(name, definition):
+            rejected.append(
+                f"entity[{index}]「{name}」定义不足以判定主类型：{definition!r}")
+            continue
         key = store.reference_key(name)
         if key in entity_names:
             rejected.append(f"entity[{index}] 重复实体「{name}」")
@@ -142,7 +190,7 @@ def parse_payload(payload: dict, source_text: str, *,
         entity_names.add(key)
         entities.append(EntityObservation(
             name=name, entity_type=entity_type,
-            definition=str(raw.get("definition", "")).strip(),
+            definition=definition,
             aliases=tuple(str(a).strip() for a in raw.get("aliases", []) if str(a).strip()),
             evidence=evidence, location=str(raw.get("location", "")).strip(), raw=raw))
 
@@ -214,7 +262,7 @@ def extract(source_text: str, topic: str, *, max_entities: int = 20,
     def extract_one(chunk: str) -> ObservationBatch:
         prompt = EXTRACT_PROMPT.format(
             topic=topic,
-            entity_types="、".join(reg.entity_types),
+            entity_types=reg.entity_type_contract(),
             evidence_types="|".join(reg.evidence_type_names()),
             relations=reg.extraction_contract(),
             max_entities=max_entities, max_claims=max_claims, text=chunk)

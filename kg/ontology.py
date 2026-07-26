@@ -35,6 +35,19 @@ class Registry:
     def _validate_definition(self) -> None:
         known = set(self.entity_types)
         known_evidence = set(self.evidence_types)
+        # 判据由这些字段生成并注入提示词。缺一个就等于让模型凭字面猜类型，
+        # 那正是六类改造要消灭的失败模式，所以在加载期就失败。
+        priorities = []
+        for name, spec in self.entity_types.items():
+            for field in ("priority", "description", "positive", "negative"):
+                if not spec.get(field):
+                    raise OntologyError(f"实体类型 {name} 缺少字段 {field}")
+            priorities.append(spec["priority"])
+        if sorted(priorities) != list(range(1, len(known) + 1)):
+            raise OntologyError(
+                f"实体类型 priority 必须是 1..{len(known)} 的排列: {sorted(priorities)}")
+        if not self.entity_type_disambiguation:
+            raise OntologyError("缺少 disambiguation 消歧从句")
         for name, spec in self.evidence_types.items():
             if spec.get("strength") not in {"strong", "weak"}:
                 raise OntologyError(

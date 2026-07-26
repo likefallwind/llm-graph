@@ -257,9 +257,16 @@ emit(current) if current
 
 提示词里的三份词表全部由 `registry()` 生成：
 
-- 允许的实体类型 ← `reg.entity_types`
+- 实体主类型判据 ← `reg.entity_type_contract()`
 - 关系及限定字段契约 ← `reg.extraction_contract()`
 - 证据类型可选值 ← `reg.evidence_type_names()`
+
+主类型判据不是一张类型名清单，而是六类的定义、正反例和消歧从句全文（注册表
+v5 起）。只给类型名的旧写法等于让模型凭字面猜，那是 16.7% 类型冲突率的来源。
+
+抽取输出是**有序两步**：先按正文写 `definition`，再仅依据这条 definition 判
+`entity_type`。名字的字面不参与判型——「Softmax 函数」不因为带「函数」就是
+concept，「反向传播算法」也不因为带「算法」就是 solution。
 
 **代码里不许写第二份词表**，`tests/test_core_isolation.py` 会扫出来。
 
@@ -297,12 +304,18 @@ reference_key(s)  = normalize_name(s) → 删除全部空白
 
 只容忍空白差异和省略号分段。**不做模糊匹配，不做编辑距离。**
 
-### `parse_payload` 的五道闸
+### `parse_payload` 的六道闸
 
 全部零 LLM，不合格的整条进 `rejected`：
 
 1. `entity_type` 必须在注册表里
 2. 实体的 evidence 必须 `evidence_in_text` 通过；名字不能为空；同批不能重名
+2b. `definition_is_informative` 必须通过。判类型的输入是定义，定义说不出内容就
+   判不出类型，而主类型写一次就只能靠 `retype` 改，所以宁可整条丢弃。
+   判据是**中心词是否空洞**而不是句式：先剥掉「本章要介绍的……」「，是本书第 4 章
+   主题」这类定位从句——它们常常包着真内容——再看剩下的够不够长、是不是只重复了
+   名字本身、中心词是不是「核心主题」「实用技能之一」这种只说位置不说内容的词。
+   拿库里 114 条真实定义验过：拦下 5 条，全部确实判不了，无误伤。
 3. claim 必须至少一个端点出现在本块有效 entities；另一个端点可以来自只读 identity
    快照。两个端点都不在本块则视为偏离本批发现范围
 4. `validate_claim_endpoint_types(..., active_only=True)` 只放行 `lifecycle: core`
@@ -367,6 +380,20 @@ problem method algorithm model function task estimation
 ```
 
 所以 `分类` 和 `分类问题` 的词根集都含 `分类`，判为 name_variant。
+
+**但被剥掉的后缀恰好是主类型的标记**：问题／任务→task，方法／算法／模型→
+solution，函数→多半 concept。所以剥后缀会抹掉六类要表达的区别——「回归问题」是
+task 而「回归」是 solution，「概率模型」是 solution 而「概率」是 concept。因此加
+一道类型闸：**两端主类型不同时不给快路资格**，退回累计对齐，别名留在 proposed
+等复核。不做否定结论，因为观察类型是 LLM 给的、可能错。
+
+判据是「剥掉后缀会不会改变主类型」：不变说明后缀冗余（反向传播算法／反向传播），
+变了说明后缀带类型。拿库里 21 条现有 `name_variant` 别名验过：20 条类型一致原样
+保留，只拦下「交叉熵」→「交叉熵损失」（concept vs criterion）一条，误伤为零。
+
+这道闸只在两端类型都已知时生效。`review_proposed_aliases` 和
+`review_suspected_alignments` 两个队列里，别名只是个名字、没有独立类型，那里无从
+比较，只能靠提示词里的同一条规则。
 
 **命中是充分条件，不是必要条件。** 命中不了**不能**推出「不是同一个概念」——那种
 情况走 §3.5 的语料声明累计。把充分条件当必要条件用，是这套算法上一版真实犯过的

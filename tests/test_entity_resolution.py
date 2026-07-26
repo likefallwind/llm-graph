@@ -2,7 +2,7 @@ import sqlite3
 import unittest
 from unittest.mock import patch
 
-from kg import claims, entity_resolution, review_queues, schema, store
+from kg import claims, entity_resolution, pipeline, review_queues, schema, store
 from kg.observations import (
     ClaimObservation,
     EntityObservation,
@@ -39,20 +39,20 @@ class EntityResolutionTests(unittest.TestCase):
             self.conn, source_id, "v1", content=f"{slug} content")
 
     def test_canonical_exact_has_priority_over_alias(self):
-        canonical = store.add_entity(self.conn, "机器学习", "field")
-        other = store.add_entity(self.conn, "机器学习方法", "method")
+        canonical = store.add_entity(self.conn, "机器学习", "concept")
+        other = store.add_entity(self.conn, "机器学习方法", "solution")
         with self.assertRaisesRegex(ValueError, "规范名冲突"):
             store.add_alias(
                 self.conn, other.id, "机器学习", status="verified")
 
         result = entity_resolution.resolve(
-            self.conn, observation(" 机器学习 ", "field"))
+            self.conn, observation(" 机器学习 ", "concept"))
 
         self.assertEqual(canonical.id, result.entity_id)
         self.assertEqual("canonical_exact", result.matched_by)
 
     def test_verified_alias_is_reused_without_llm(self):
-        entity = store.add_entity(self.conn, "监督学习", "method")
+        entity = store.add_entity(self.conn, "监督学习", "solution")
         store.add_alias(
             self.conn, entity.id, "Supervised Learning",
             language="en", status="verified")
@@ -61,15 +61,15 @@ class EntityResolutionTests(unittest.TestCase):
             self.fail("verified alias 命中时不应调用 LLM")
 
         result = entity_resolution.resolve(
-            self.conn, observation("supervised learning", "method"),
+            self.conn, observation("supervised learning", "solution"),
             llm_normalizer=fail_if_called)
 
         self.assertEqual(entity.id, result.entity_id)
         self.assertEqual("verified_alias_exact", result.matched_by)
 
     def test_whitespace_reference_catalog_keeps_competing_entities_ambiguous(self):
-        first = store.add_entity(self.conn, "li nearregression", "method")
-        second = store.add_entity(self.conn, "linear regression", "method")
+        first = store.add_entity(self.conn, "li nearregression", "solution")
+        second = store.add_entity(self.conn, "linear regression", "solution")
 
         hits = store.find_reference_entities(self.conn, "linearreg ression")
 
@@ -79,13 +79,13 @@ class EntityResolutionTests(unittest.TestCase):
             store.unique_identity_types(self.conn))
 
     def test_proposed_alias_does_not_auto_match(self):
-        entity = store.add_entity(self.conn, "监督学习", "method")
+        entity = store.add_entity(self.conn, "监督学习", "solution")
         store.add_alias(
             self.conn, entity.id, "Supervised Learning",
             language="en", status="proposed")
 
         result = entity_resolution.resolve(
-            self.conn, observation("Supervised Learning", "method"),
+            self.conn, observation("Supervised Learning", "solution"),
             llm_normalizer=lambda _observation, _candidates: {
                 "decision": "ambiguous",
                 "canonical_name": "",
@@ -112,11 +112,11 @@ class EntityResolutionTests(unittest.TestCase):
         self.assertEqual("concept", assertion["observed_type"])
 
     def test_llm_canonicalization_can_reuse_existing_entity(self):
-        entity = store.add_entity(self.conn, "监督学习", "method")
+        entity = store.add_entity(self.conn, "监督学习", "solution")
         snapshot = self.add_snapshot("book-a", "book:a")
 
         result = entity_resolution.resolve(
-            self.conn, observation("Supervised Learning", "method"),
+            self.conn, observation("Supervised Learning", "solution"),
             source_snapshot_id=snapshot.id,
             llm_normalizer=lambda _observation, _candidates: {
                 "decision": "existing",
@@ -170,11 +170,11 @@ class EntityResolutionTests(unittest.TestCase):
         self.assertEqual("verified", candidate["status"])
 
     def test_high_confidence_abbreviation_is_not_immediately_verified(self):
-        entity = store.add_entity(self.conn, "交叉熵损失", "loss")
+        entity = store.add_entity(self.conn, "交叉熵损失", "criterion")
         snapshot = self.add_snapshot("book-a", "book:a")
 
         result = entity_resolution.resolve(
-            self.conn, observation("CE", "loss"),
+            self.conn, observation("CE", "criterion"),
             source_snapshot_id=snapshot.id,
             llm_normalizer=lambda _observation, _candidates: {
                 "decision": "existing",
@@ -194,11 +194,11 @@ class EntityResolutionTests(unittest.TestCase):
         self.assertEqual("abbreviation", alias["alias_type"])
 
     def test_semantic_prefix_cannot_masquerade_as_name_variant(self):
-        entity = store.add_entity(self.conn, "交叉熵损失", "loss")
+        entity = store.add_entity(self.conn, "交叉熵损失", "criterion")
         snapshot = self.add_snapshot("book-a", "book:a")
 
         result = entity_resolution.resolve(
-            self.conn, observation("softmax-交叉熵损失", "loss"),
+            self.conn, observation("softmax-交叉熵损失", "criterion"),
             source_snapshot_id=snapshot.id,
             llm_normalizer=lambda _observation, _candidates: {
                 "decision": "existing",
@@ -288,10 +288,10 @@ class EntityResolutionTests(unittest.TestCase):
         self.assertEqual("llm_invalid_response", result.matched_by)
 
     def test_low_confidence_llm_does_not_merge(self):
-        existing = store.add_entity(self.conn, "监督学习", "method")
+        existing = store.add_entity(self.conn, "监督学习", "solution")
 
         result = entity_resolution.resolve(
-            self.conn, observation("有监督学习", "method"),
+            self.conn, observation("有监督学习", "solution"),
             llm_normalizer=lambda _observation, _candidates: {
                 "decision": "existing",
                 "candidate_id": existing.id,
@@ -303,10 +303,10 @@ class EntityResolutionTests(unittest.TestCase):
         self.assertIsNone(result.entity_id)
 
     def test_llm_ambiguous_does_not_merge_despite_existing_canonical_name(self):
-        store.add_entity(self.conn, "监督学习", "method")
+        store.add_entity(self.conn, "监督学习", "solution")
 
         result = entity_resolution.resolve(
-            self.conn, observation("Supervised Learning", "method"),
+            self.conn, observation("Supervised Learning", "solution"),
             llm_normalizer=lambda _observation, _candidates: {
                 "decision": "ambiguous",
                 "canonical_name": "监督学习",
@@ -318,13 +318,13 @@ class EntityResolutionTests(unittest.TestCase):
         self.assertEqual("llm_ambiguous", result.matched_by)
 
     def test_ambiguous_verified_alias_can_be_disambiguated_by_llm(self):
-        first = store.add_entity(self.conn, "梯度方法", "method")
+        first = store.add_entity(self.conn, "梯度方法", "solution")
         second = store.add_entity(self.conn, "统计梯度", "concept")
         store.add_alias(self.conn, first.id, "SG", status="verified")
         store.add_alias(self.conn, second.id, "SG", status="verified")
 
         result = entity_resolution.resolve(
-            self.conn, observation("SG", "method"),
+            self.conn, observation("SG", "solution"),
             llm_normalizer=lambda _observation, candidates: {
                 "decision": "existing",
                 "candidate_id": first.id,
@@ -339,7 +339,7 @@ class EntityResolutionTests(unittest.TestCase):
 
     def test_high_confidence_llm_new_creates_canonical_and_proposed_alias(self):
         result = entity_resolution.resolve(
-            self.conn, observation("RLHF", "method"),
+            self.conn, observation("RLHF", "solution"),
             llm_normalizer=lambda _observation, _candidates: {
                 "decision": "new",
                 "canonical_name": "基于人类反馈的强化学习",
@@ -439,7 +439,7 @@ class EntityResolutionTests(unittest.TestCase):
         self.assertEqual(1, candidate["independent_sources"])
 
     def test_alias_identical_to_canonical_is_not_stored(self):
-        entity = store.add_entity(self.conn, "牛顿法", "method")
+        entity = store.add_entity(self.conn, "牛顿法", "solution")
 
         alias_id = store.add_alias(
             self.conn, entity.id, " 牛顿法 ", status="proposed")
@@ -483,7 +483,7 @@ class ExistingSchemaMigrationTests(unittest.TestCase):
                 UNIQUE(entity_id, normalized_name, language)
             );
             INSERT INTO entities VALUES
-                (1,'监督学习','监督学习','method','','proposed',NULL,'{}',0,0);
+                (1,'监督学习','监督学习','solution','','proposed',NULL,'{}',0,0);
             INSERT INTO aliases VALUES
                 (1,1,'Supervised Learning','supervised learning','en','alias',NULL,0);
         """)
@@ -849,7 +849,7 @@ class ProposedAliasReviewTests(unittest.TestCase):
             independence_group="book:a")
         self.snapshot = store.add_source_snapshot(
             self.conn, source_id, "v1", content="术语材料")
-        self.entity = store.add_entity(self.conn, "梯度上升", "method")
+        self.entity = store.add_entity(self.conn, "梯度上升", "solution")
         store.add_alias(
             self.conn, self.entity.id, "Gradient ascent",
             source_snapshot_id=self.snapshot.id, status="proposed")
@@ -878,7 +878,7 @@ class ProposedAliasReviewTests(unittest.TestCase):
         self.assertEqual("translation_alias", alias["alias_type"])
 
     def test_single_llm_failure_does_not_abort_alias_review_batch(self):
-        other = store.add_entity(self.conn, "牛顿法", "method")
+        other = store.add_entity(self.conn, "牛顿法", "solution")
         store.add_alias(
             self.conn, other.id, "Newton's method",
             source_snapshot_id=self.snapshot.id, status="proposed")
@@ -914,10 +914,31 @@ class QueueProcessingTests(unittest.TestCase):
             independence_group="book:a")
         self.snapshot = store.add_source_snapshot(
             self.conn, source_id, "v1", content="分类材料")
-        self.run_id = store.create_run(self.conn, "test", "test-version")
+        # 类型冲突队列只看当前算法版本产出的断言，所以夹具的 run 必须用当前版本。
+        self.run_id = store.create_run(
+            self.conn, "test", pipeline.ALGORITHM_VERSION)
 
     def tearDown(self):
         self.conn.close()
+
+    def _type_conflict(self, name, primary_type, observed_type, *, run_id=None):
+        entity = store.add_entity(self.conn, name, primary_type)
+        observation_id = store.add_observation(
+            self.conn, run_id or self.run_id, self.snapshot.id,
+            subject_text=name, subject_type=observed_type,
+            excerpt=f"教材讨论{name}。")
+        store.add_type_assertion(
+            self.conn, entity.id, observed_type,
+            source_snapshot_id=self.snapshot.id,
+            observation_id=observation_id, status="conflict")
+        return entity
+
+    def test_type_conflict_from_a_stale_algorithm_version_is_not_queued(self):
+        """换词表之后，旧版本记的观察类型跟新主类型比对没有意义，不能塞进队列。"""
+        stale_run = store.create_run(self.conn, "test", "grounded-pipeline-3")
+        self._type_conflict("感知器损失", "criterion", "concept", run_id=stale_run)
+
+        self.assertEqual([], review_queues.review_type_conflicts(self.conn))
 
     def test_suspected_name_variant_review_is_verified_but_model_review_is_not_source(self):
         entity = store.add_entity(self.conn, "Softmax 函数", "concept")
@@ -984,7 +1005,7 @@ class QueueProcessingTests(unittest.TestCase):
             "SELECT subject_id FROM claims").fetchone()[0])
 
     def test_type_conflict_review_records_evidence_without_changing_primary_type(self):
-        entity = store.add_entity(self.conn, "损失函数", "loss")
+        entity = store.add_entity(self.conn, "损失函数", "criterion")
         observation_id = store.add_observation(
             self.conn, self.run_id, self.snapshot.id,
             subject_text="损失函数", subject_type="concept",
@@ -998,15 +1019,15 @@ class QueueProcessingTests(unittest.TestCase):
                 "kg.review_queues._review_type_with_llm",
                 return_value={
                     "verdict": "keep_primary",
-                    "suggested_type": "loss",
+                    "suggested_type": "criterion",
                     "confidence": 0.99,
                     "reason": "loss 比 concept 更具体",
                 }):
             result = review_queues.review_type_conflicts(self.conn)
 
-        self.assertEqual("loss", result[0]["suggested_type"])
+        self.assertEqual("criterion", result[0]["suggested_type"])
         self.assertFalse(result[0]["auto_changed"])
-        self.assertEqual("loss", store.get_entity(self.conn, entity.id).entity_type)
+        self.assertEqual("criterion", store.get_entity(self.conn, entity.id).entity_type)
         review = self.conn.execute(
             "SELECT * FROM model_queue_reviews").fetchone()
         self.assertEqual("type_conflict", review["queue_type"])

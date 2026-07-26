@@ -7,8 +7,8 @@ from kg import decision, pipeline, schema, store, validators
 
 
 def _evidence(conn, *, entailment="unreviewed"):
-    subject = store.add_entity(conn, "review-subject", "method")
-    object_ = store.add_entity(conn, "review-object", "method")
+    subject = store.add_entity(conn, "review-subject", "solution")
+    object_ = store.add_entity(conn, "review-object", "solution")
     claim = store.add_claim(conn, subject.id, "alternative_to", object_.id)
     source_id = store.upsert_source(
         conn, "review-source", "review-source", "textbook",
@@ -230,8 +230,8 @@ class BatchConcurrencyTests(unittest.TestCase):
         snapshot = store.add_source_snapshot(
             self.conn, source_id, "v1", content="batch evidence text")
         for index in range(count):
-            subject = store.add_entity(self.conn, f"batch-subject-{index}", "method")
-            object_ = store.add_entity(self.conn, f"batch-object-{index}", "method")
+            subject = store.add_entity(self.conn, f"batch-subject-{index}", "solution")
+            object_ = store.add_entity(self.conn, f"batch-object-{index}", "solution")
             claim = store.add_claim(
                 self.conn, subject.id, "alternative_to", object_.id)
             store.add_evidence(

@@ -60,6 +60,15 @@ and `prerequisite_of`. The first version is meant to recover knowledge structure
 and learning order. Relations that are hard to distinguish at scale should be
 merged into these where valid, or omitted until later.
 
+Entity types follow the same principle and were cut from eleven to six in
+registry v5: `resource`, `criterion`, `data`, `task`, `solution`, `concept`.
+The eleven-type vocabulary produced a 16.7% type-conflict rate because adjacent
+categories overlapped and the prompt shipped bare type names with no criteria.
+The six are one dimension decided by priority order, and the criteria — with
+positive and negative examples — are generated from the registry into every
+prompt that judges a type. `design/entity-type-v5.md` records the migration,
+the four rounds of criteria iteration that produced it, and what is still open.
+
 Ten relations stay registered as `experimental` and are not available to the
 extraction path: `subfield_of`, `often_confused_with`,
 `pedagogical_contrast_with`, `alternative_to`, `used_for`, `solves`,

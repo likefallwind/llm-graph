@@ -23,7 +23,7 @@ def _setup(conn):
 
 
 def _pair(conn):
-    subject = store.add_entity(conn, "线性回归", "method")
+    subject = store.add_entity(conn, "线性回归", "solution")
     object_ = store.add_entity(conn, "回归", "task")
     claim = store.add_claim(conn, subject.id, "is_a", object_.id)
     return subject, object_, claim
@@ -231,8 +231,8 @@ class NeutralExtractionTests(unittest.TestCase):
         self.assertEqual(parsed["object_id"], subject.id)
 
     def test_rejects_experimental_relation(self):
-        left = store.add_entity(self.conn, "批量梯度下降", "method")
-        right = store.add_entity(self.conn, "随机梯度下降", "method")
+        left = store.add_entity(self.conn, "批量梯度下降", "solution")
+        right = store.add_entity(self.conn, "随机梯度下降", "solution")
         payload = {
             "relation": "alternative_to", "subject": "批量梯度下降",
             "object": "随机梯度下降", "evidence": "两者是不同的做法。"}
@@ -299,7 +299,7 @@ class RunSelectionTests(unittest.TestCase):
         pmap.return_value = []
         # 两条没有候选段落的 claim，id 排在有段落的那条前面。
         for name in ("甲", "乙"):
-            left = store.add_entity(self.conn, f"{name}左", "method")
+            left = store.add_entity(self.conn, f"{name}左", "solution")
             right = store.add_entity(self.conn, f"{name}右", "task")
             claim = store.add_claim(self.conn, left.id, "is_a", right.id)
             store.decide(self.conn, "claim", claim.id, "needs_more_evidence",
@@ -327,8 +327,8 @@ class DuplicateScanTests(unittest.TestCase):
         self.conn.close()
 
     def test_reports_similar_names(self):
-        store.add_entity(self.conn, "梯度下降", "method")
-        store.add_entity(self.conn, "梯度下降法", "method")
+        store.add_entity(self.conn, "梯度下降", "solution")
+        store.add_entity(self.conn, "梯度下降法", "solution")
 
         pairs = entity_resolution.find_duplicate_candidates(self.conn)
 
@@ -337,8 +337,8 @@ class DuplicateScanTests(unittest.TestCase):
             for item in pairs))
 
     def test_low_confidence_creations_are_ranked_first(self):
-        store.add_entity(self.conn, "感知机", "model")
-        store.add_entity(self.conn, "感知器", "model",
+        store.add_entity(self.conn, "感知机", "solution")
+        store.add_entity(self.conn, "感知器", "solution",
                          metadata={"below_auto_link_confidence": True})
         store.add_entity(self.conn, "向量", "concept")
         store.add_entity(self.conn, "向量空间", "concept")
@@ -348,8 +348,8 @@ class DuplicateScanTests(unittest.TestCase):
         self.assertTrue(pairs[0]["low_confidence_creation"])
 
     def test_unrelated_entities_are_not_reported(self):
-        store.add_entity(self.conn, "线性回归", "method")
-        store.add_entity(self.conn, "卷积神经网络", "architecture")
+        store.add_entity(self.conn, "线性回归", "solution")
+        store.add_entity(self.conn, "卷积神经网络", "solution")
 
         self.assertEqual(entity_resolution.find_duplicate_candidates(self.conn), [])
 

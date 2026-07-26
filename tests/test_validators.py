@@ -7,9 +7,9 @@ from kg import schema, store, validators
 
 def _claim(conn, relation="alternative_to"):
     if relation == "subfield_of":
-        subject_type = object_type = "field"
+        subject_type = object_type = "concept"
     else:
-        subject_type = object_type = "method"
+        subject_type = object_type = "solution"
 
     subject = store.add_entity(conn, f"{relation}-subject", subject_type)
     object_ = store.add_entity(conn, f"{relation}-object", object_type)

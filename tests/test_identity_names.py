@@ -14,7 +14,7 @@ class IdentityNameTests(unittest.TestCase):
         self.conn.close()
 
     def test_identity_is_canonical_plus_verified_aliases_only(self):
-        entity = store.add_entity(self.conn, "支持向量机", "model")
+        entity = store.add_entity(self.conn, "支持向量机", "solution")
         store.add_alias(self.conn, entity.id, "SVM", status="proposed")
         store.add_alias(
             self.conn, entity.id, "Support Vector Machine", status="verified")
@@ -26,7 +26,7 @@ class IdentityNameTests(unittest.TestCase):
         self.assertNotIn("svm", names)
 
     def test_rejected_alias_is_not_identity(self):
-        entity = store.add_entity(self.conn, "线性回归", "method")
+        entity = store.add_entity(self.conn, "线性回归", "solution")
         store.add_alias(self.conn, entity.id, "回归", status="rejected")
 
         self.assertNotIn("回归", store.identity_names(self.conn, entity.id))
@@ -39,7 +39,7 @@ class IdentityNameTests(unittest.TestCase):
         self.assertFalse(store.mentions_identity("我们讨论线性回归", names))
 
     def test_proposed_alias_in_text_does_not_count_as_a_mention(self):
-        entity = store.add_entity(self.conn, "支持向量机", "model")
+        entity = store.add_entity(self.conn, "支持向量机", "solution")
         store.add_alias(self.conn, entity.id, "SVM", status="proposed")
 
         names = store.identity_names(self.conn, entity.id)
@@ -49,7 +49,7 @@ class IdentityNameTests(unittest.TestCase):
             "我们介绍了线性分类器中两个常用的损失函数：SVM和Softmax", names))
 
     def test_verifying_the_alias_makes_the_mention_count(self):
-        entity = store.add_entity(self.conn, "支持向量机", "model")
+        entity = store.add_entity(self.conn, "支持向量机", "solution")
         alias_id = store.add_alias(self.conn, entity.id, "SVM", status="proposed")
         store.set_alias_status(self.conn, alias_id, "verified")
 

@@ -3,23 +3,56 @@
 ## Purpose
 
 This ontology is education-first while retaining first-class entities for the
-methods, tasks, models, datasets, metrics, and systems needed to describe the AI
-field accurately. The machine-readable authority is
-`config/relation-registry.yaml`.
+solutions, tasks, data, and criteria needed to describe the AI field accurately.
+The machine-readable authority is `config/relation-registry.yaml`.
 
 ## Entity Types
 
-- `field`: recognized research or teaching area.
-- `concept`: abstract idea, property, mathematical object, or phenomenon.
-- `method`: reusable algorithm, procedure, training strategy, or technique.
-- `task`: problem definition with inputs, outputs, or a success criterion.
-- `model`: named model family or concrete learned or specified model.
-- `architecture`: reusable structural design for models or systems.
-- `dataset`: named data collection used for training or evaluation.
-- `metric`: defined evaluation measurement.
-- `loss`: optimization objective or loss function.
-- `system`: implemented framework, pipeline, training, or serving system.
-- `resource`: paper, textbook, course, specification, or documentation.
+One dimension, six values, single-valued and required. They are decided by a
+priority order, first match wins:
+
+1. `resource`: something people read, study, or cite.
+2. `criterion`: a standard, metric, objective, or protocol used to optimize,
+   compare, score, or evaluate.
+3. `data`: a collection of samples, records, instances, or observations.
+4. `task`: a problem with a goal, inputs and outputs, or a success condition.
+5. `solution`: an algorithm, process, model, architecture, system, or tool used
+   to solve or support a task. The test is whether it has executable steps or
+   structure.
+6. `concept`: an abstract knowledge object that occupies none of the five slots
+   above — a mathematical object, operation, property, law, phenomenon, or
+   quantity.
+
+The priority order exists for one reason: `concept` co-applies with every other
+slot, since a loss function is also a concept and backpropagation is also a
+concept. The order says that occupying a functional slot wins. It is not a
+tie-break among the first five — those should never tie, and a tie means two
+things are sharing one name.
+
+The full criteria, with positive and negative examples for each type and five
+cross-cutting disambiguation clauses, live in `config/relation-registry.yaml`
+and reach the model through `Registry.entity_type_contract()`. That file is the
+only copy; prompts generate from it rather than restating it.
+
+The primary type names an entity's canonical category so that resolution,
+conflict detection, and relation constraints have something deterministic to
+work with. It does not claim to capture everything the entity is used for —
+those other facets are the pattern of its neighbouring edges, which is why they
+are not stored as node attributes.
+
+Type is judged from the entity's definition, never from the spelling of its
+name. An entity whose definition is too thin to judge is dropped rather than
+guessed at, because the primary type is written once at creation and can only
+be changed afterwards through `kg pipeline retype`.
+
+Two deterministic checks fall out of a stable type system, both zero-LLM. `is_a`
+must not cross types, since a subtype and its supertype occupy the same slot;
+crossings are reported by `kg pipeline taxonomy-types`. And suffix-stripped name
+variants (`回归问题` → `回归`) must not cross types either, since the stripped
+suffixes are exactly the type markers.
+
+The migration from the previous eleven-type vocabulary is recorded in
+`design/entity-type-v5.md`.
 
 ## Granularity
 
@@ -48,8 +81,13 @@ It is not facet promotion.
 
 ### Taxonomy
 
-- `is_a`: subject is a more specific kind of object.
+- `is_a`: subject is a more specific kind of object. Both endpoints must have
+  the same primary type.
 - `subfield_of`: subject field is conventionally organized under object field.
+  Retiring this is proposed in `design/entity-type-v5.md`: with `field` folded
+  into `concept` its signature is `concept → concept`, indistinguishable from
+  `is_a`, and `tests/test_relation_contract.py` already asserts that field
+  taxonomy travels through `is_a`.
 
 Taxonomy is not topical co-occurrence or composition.
 
@@ -71,13 +109,19 @@ a prerequisite.
 
 ### Functional
 
-- `alternative_to`: subject and object are alternative methods, models, or
-  systems for substantially the same task or objective.
+- `alternative_to`: two solutions are alternatives for substantially the same
+  task or objective.
 - `used_for`: subject supports or performs object task.
 - `solves`: subject is explicitly presented as solving object task.
-- `evaluated_by`: subject is evaluated using object metric.
-- `trained_on`: subject model is trained or fine-tuned on object dataset.
-- `optimizes`: subject method optimizes object loss or objective.
+- `evaluated_by`: subject is evaluated using object criterion.
+- `trained_on`: subject solution is trained or fine-tuned on object data.
+- `optimizes`: subject solution optimizes object criterion or objective concept.
+
+These are the relations the functional slots exist to constrain — `task` is what
+`solves` and `used_for` point at, `data` is what `trained_on` points at,
+`criterion` is what `evaluated_by` and `optimizes` point at. All six are still
+`experimental` and therefore outside the extraction path, so those constraints
+do not bite yet.
 
 ### Historical
 

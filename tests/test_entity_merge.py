@@ -17,13 +17,13 @@ class EntityMergeTests(unittest.TestCase):
     def tearDown(self):
         self.conn.close()
 
-    def _entity(self, name, entity_type="method"):
+    def _entity(self, name, entity_type="solution"):
         return store.add_entity(self.conn, name, entity_type)
 
     def test_merge_moves_aliases_evidence_and_claims(self):
-        source = self._entity("感知机", "model")
-        target = self._entity("感知器", "model")
-        other = self._entity("线性分类器", "model")
+        source = self._entity("感知机", "solution")
+        target = self._entity("感知器", "solution")
+        other = self._entity("线性分类器", "solution")
         store.add_alias(self.conn, source.id, "Perceptron", status="verified")
         store.add_evidence(
             self.conn, self.snapshot.id, "感知机是一种线性分类模型",
@@ -41,17 +41,17 @@ class EntityMergeTests(unittest.TestCase):
         self.assertEqual(store.get_entity(self.conn, source.id).status, "merged")
 
     def test_original_canonical_name_survives_as_alias(self):
-        source = self._entity("感知机", "model")
-        target = self._entity("感知器", "model")
+        source = self._entity("感知机", "solution")
+        target = self._entity("感知器", "solution")
 
         store.merge_entities(self.conn, source.id, target.id)
 
         self.assertIn("感知机", store.identity_names(self.conn, target.id))
 
     def test_duplicate_claim_after_merge_is_rejected_not_crashed(self):
-        source = self._entity("感知机", "model")
-        target = self._entity("感知器", "model")
-        other = self._entity("线性分类器", "model")
+        source = self._entity("感知机", "solution")
+        target = self._entity("感知器", "solution")
+        other = self._entity("线性分类器", "solution")
         duplicate = store.add_claim(self.conn, source.id, "is_a", other.id)
         store.add_claim(self.conn, target.id, "is_a", other.id)
 
@@ -61,8 +61,8 @@ class EntityMergeTests(unittest.TestCase):
         self.assertEqual(store.get_claim(self.conn, duplicate.id).status, "rejected")
 
     def test_self_referencing_claim_is_dropped(self):
-        source = self._entity("感知机", "model")
-        target = self._entity("感知器", "model")
+        source = self._entity("感知机", "solution")
+        target = self._entity("感知器", "solution")
         claim = store.add_claim(self.conn, source.id, "is_a", target.id)
 
         result = store.merge_entities(self.conn, source.id, target.id)
@@ -70,9 +70,9 @@ class EntityMergeTests(unittest.TestCase):
         self.assertEqual(result["claims_dropped"], [claim.id])
 
     def test_merge_is_reversible(self):
-        source = self._entity("感知机", "model")
-        target = self._entity("感知器", "model")
-        other = self._entity("线性分类器", "model")
+        source = self._entity("感知机", "solution")
+        target = self._entity("感知器", "solution")
+        other = self._entity("线性分类器", "solution")
         alias_id = store.add_alias(
             self.conn, source.id, "Perceptron", status="verified")
         claim = store.add_claim(self.conn, source.id, "is_a", other.id)
@@ -89,9 +89,9 @@ class EntityMergeTests(unittest.TestCase):
         self.assertNotIn("感知机", store.identity_names(self.conn, target.id))
 
     def test_revert_restores_dropped_claims(self):
-        source = self._entity("感知机", "model")
-        target = self._entity("感知器", "model")
-        other = self._entity("线性分类器", "model")
+        source = self._entity("感知机", "solution")
+        target = self._entity("感知器", "solution")
+        other = self._entity("线性分类器", "solution")
         duplicate = store.add_claim(self.conn, source.id, "is_a", other.id)
         store.add_claim(self.conn, target.id, "is_a", other.id)
         result = store.merge_entities(self.conn, source.id, target.id)
@@ -101,14 +101,14 @@ class EntityMergeTests(unittest.TestCase):
         self.assertEqual(store.get_claim(self.conn, duplicate.id).status, "proposed")
 
     def test_cannot_merge_entity_into_itself(self):
-        entity = self._entity("感知机", "model")
+        entity = self._entity("感知机", "solution")
 
         with self.assertRaises(ValueError):
             store.merge_entities(self.conn, entity.id, entity.id)
 
     def test_cannot_revert_twice(self):
-        source = self._entity("感知机", "model")
-        target = self._entity("感知器", "model")
+        source = self._entity("感知机", "solution")
+        target = self._entity("感知器", "solution")
         result = store.merge_entities(self.conn, source.id, target.id)
         store.revert_merge(self.conn, result["merge_event_id"])
 
@@ -116,9 +116,9 @@ class EntityMergeTests(unittest.TestCase):
             store.revert_merge(self.conn, result["merge_event_id"])
 
     def test_merged_entity_cannot_be_merged_again(self):
-        source = self._entity("感知机", "model")
-        target = self._entity("感知器", "model")
-        third = self._entity("感知网络", "model")
+        source = self._entity("感知机", "solution")
+        target = self._entity("感知器", "solution")
+        third = self._entity("感知网络", "solution")
         store.merge_entities(self.conn, source.id, target.id)
 
         with self.assertRaises(ValueError):

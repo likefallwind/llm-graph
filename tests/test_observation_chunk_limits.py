@@ -45,7 +45,7 @@ def payload(name: str, evidence: str) -> dict:
         "entities": [{
             "name": name,
             "entity_type": "concept",
-            "definition": "",
+            "definition": f"{name}是本用例构造的一个抽象概念",
             "aliases": [],
             "evidence": evidence,
             "location": "test",

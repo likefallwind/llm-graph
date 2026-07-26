@@ -82,13 +82,26 @@ def _has_cjk(value: str) -> bool:
 
 
 def _validated_direct_match_type(alias: str, canonical: str,
-                                 claimed_type: str) -> str | None:
+                                 claimed_type: str, *,
+                                 observed_type: str = "",
+                                 entity_type: str = "") -> str | None:
     """LLM 只能提议快捷类型；最终资格由确定性字符串规则确认。
 
     这是**充分条件**：命中即可判定同名。命中不了不代表不同名——那种情况走
     alias_evidence 的语料声明累计，不要当成否定结论。
+
+    `NAME_VARIANT_SUFFIXES` 剥掉的恰好是类型标记（问题／任务→task，
+    方法／算法／模型→solution，函数→多半 concept），所以后缀剥离会抹掉主类型
+    要表达的区别：「回归问题」是 task 而「回归」是 solution，「概率模型」是
+    solution 而「概率」是 concept。判据因此是**剥掉后缀会不会改变主类型**——
+    不变说明后缀冗余，该合；变了说明后缀带类型，不能走自动执行的快路。
+
+    只在两边类型都已知时才拦。观察类型是 LLM 给的、可能错，所以这里不做否定
+    结论，只是取消快路资格：调用方会退回累计对齐，别名留在 proposed 等复核。
     """
     if _name_variant_roots(alias) & _name_variant_roots(canonical):
+        if observed_type and entity_type and observed_type != entity_type:
+            return None
         return "name_variant"
     if (claimed_type == "translation_alias"
             and _has_cjk(alias) != _has_cjk(canonical)):
@@ -210,7 +223,10 @@ def _llm_normalize(observation: EntityObservation,
 5. canonical_name 是你建议的简洁规范名称；若选择 existing，candidate_id 必须来自候选列表。
 6. 中英文直接互译且概念完全相同时，match_type=translation_alias。
 7. 中文名称仅增加或省略“问题、方法、算法、模型、函数、任务”等词，
-   且上下文含义没有变化时，match_type=name_variant。
+   且上下文含义没有变化时，match_type=name_variant。但如果增删该词改变了实体的
+   主类型，含义就变了，不是 name_variant——“回归问题”是 task 而“回归”是
+   solution，“概率模型”是 solution 而“概率”是 concept，这类必须判 different
+   或 ambiguous。
 8. 缩写、符号、组合概念、多义词分别标为 abbreviation、symbol、composite、
    semantic_alias；不得伪装成 translation_alias 或 name_variant。
 
@@ -389,7 +405,9 @@ def resolve(conn, observation: EntityObservation, *,
         if selected.id not in candidate_ids:
             candidate_ids = (*candidate_ids, selected.id)
         direct_match_type = _validated_direct_match_type(
-            observation.name, selected.canonical_name, match_type)
+            observation.name, selected.canonical_name, match_type,
+            observed_type=observation.entity_type,
+            entity_type=selected.entity_type)
         safe_direct = (
             direct_match_type in SAFE_DIRECT_MATCH_TYPES
             and confidence >= LLM_AUTO_LINK_CONFIDENCE)
@@ -587,7 +605,8 @@ def _review_alignment_with_llm(row: dict) -> dict:
 1. 只有指向完全同一概念才是 same；相关、上下位、组成关系都是 different。
 2. 中英文直接互译可标 translation_alias。
 3. 仅增加或省略“问题、方法、算法、模型、函数、运算、任务”等类别词，
-   且含义不变，可标 name_variant。
+   且含义不变，可标 name_variant。若增删该词改变了实体主类型（“回归问题”是
+   task 而“回归”是 solution），含义就变了，不能标 name_variant。
 4. 缩写、符号、语义别名、组合概念分别如实标注，不得伪装成直接译名或名称变体。
 5. 证据不足必须 uncertain。
 

@@ -80,7 +80,7 @@ class AccumulationTests(unittest.TestCase):
         schema.ensure(self.conn)
         self.conn.executescript(DOC_SCHEMA)
         self.conn.commit()
-        self.entity = store.add_entity(self.conn, "支持向量机", "model")
+        self.entity = store.add_entity(self.conn, "支持向量机", "solution")
         self.alias_id = store.add_alias(
             self.conn, self.entity.id, "SVM", status="proposed",
             alias_type="abbreviation")

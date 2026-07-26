@@ -25,28 +25,28 @@ class EntityRevisionTests(unittest.TestCase):
         entity = self._entity()
 
         result = store.revise_entity(
-            self.conn, entity.id, entity_type="method", reason="是算法不是概念")
+            self.conn, entity.id, entity_type="solution", reason="是算法不是概念")
 
         self.assertEqual(
-            store.get_entity(self.conn, entity.id).entity_type, "method")
+            store.get_entity(self.conn, entity.id).entity_type, "solution")
         self.assertEqual(result["before"], {"entity_type": "concept"})
-        self.assertEqual(result["after"], {"entity_type": "method"})
+        self.assertEqual(result["after"], {"entity_type": "solution"})
 
     def test_definition_is_revisable_together_with_type(self):
         entity = self._entity()
 
         store.revise_entity(
-            self.conn, entity.id, entity_type="method", definition="新定义",
+            self.conn, entity.id, entity_type="solution", definition="新定义",
             reason="定义改了类型跟着改")
 
         revised = store.get_entity(self.conn, entity.id)
-        self.assertEqual(revised.entity_type, "method")
+        self.assertEqual(revised.entity_type, "solution")
         self.assertEqual(revised.definition, "新定义")
 
     def test_revision_is_reversible(self):
         entity = self._entity()
         result = store.revise_entity(
-            self.conn, entity.id, entity_type="method", definition="新定义",
+            self.conn, entity.id, entity_type="solution", definition="新定义",
             reason="先改再撤")
 
         store.revert_revision(self.conn, result["revision_id"])
@@ -58,7 +58,7 @@ class EntityRevisionTests(unittest.TestCase):
     def test_cannot_revert_twice(self):
         entity = self._entity()
         result = store.revise_entity(
-            self.conn, entity.id, entity_type="method", reason="改一次")
+            self.conn, entity.id, entity_type="solution", reason="改一次")
         store.revert_revision(self.conn, result["revision_id"])
 
         with self.assertRaises(ValueError):
@@ -69,7 +69,7 @@ class EntityRevisionTests(unittest.TestCase):
 
         with self.assertRaises(ValueError):
             store.revise_entity(
-                self.conn, entity.id, entity_type="method", reason="   ")
+                self.conn, entity.id, entity_type="solution", reason="   ")
 
     def test_unknown_entity_type_is_rejected(self):
         entity = self._entity()
@@ -96,18 +96,18 @@ class EntityRevisionTests(unittest.TestCase):
                 reason="什么也没改")
 
     def test_merged_entity_cannot_be_revised(self):
-        source = self._entity("感知机", "model")
-        target = self._entity("感知器", "model")
+        source = self._entity("感知机", "solution")
+        target = self._entity("感知器", "solution")
         store.merge_entities(self.conn, source.id, target.id)
 
         with self.assertRaises(ValueError):
             store.revise_entity(
-                self.conn, source.id, entity_type="method", reason="已合并")
+                self.conn, source.id, entity_type="solution", reason="已合并")
 
     def test_history_keeps_reverted_revisions(self):
         entity = self._entity()
         first = store.revise_entity(
-            self.conn, entity.id, entity_type="method", reason="第一次")
+            self.conn, entity.id, entity_type="solution", reason="第一次")
         store.revert_revision(self.conn, first["revision_id"])
         store.revise_entity(
             self.conn, entity.id, entity_type="task", reason="第二次")
@@ -123,9 +123,9 @@ class EntityRevisionTests(unittest.TestCase):
         run_id = store.create_run(self.conn, "extract", "test-1")
         observation_id = store.add_observation(
             self.conn, run_id, self.snapshot.id, subject_text="反向传播",
-            subject_type="method", excerpt="正文")
+            subject_type="solution", excerpt="正文")
         store.add_type_assertion(
-            self.conn, entity.id, "method", observation_id=observation_id,
+            self.conn, entity.id, "solution", observation_id=observation_id,
             status="conflict", reason="观察类型与主类型不一致")
         pending = self.conn.execute(
             "SELECT COUNT(*) FROM entity_type_assertions a"
@@ -135,7 +135,7 @@ class EntityRevisionTests(unittest.TestCase):
         self.assertEqual(pending, 1)
 
         store.revise_entity(
-            self.conn, entity.id, entity_type="method", reason="观察是对的")
+            self.conn, entity.id, entity_type="solution", reason="观察是对的")
 
         self.assertEqual(review_queues.review_type_conflicts(self.conn), [])
         # 断言本身是观察史，不因改型而被改写。
