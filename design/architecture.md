@@ -1,7 +1,10 @@
 # 新核心架构
 
-按数据流组织，描述**当前代码实际做什么**。设计意图见 `development-plan.md`，
-关系与证据语义见 `design/ontology.md`、`design/evidence-policy.md`，机器权威是
+按数据流组织，讲**代码怎么分层、数据怎么流**。每一步具体算什么——判据、公式、
+阈值、复杂度、全部可调参数——见 `design/algorithm.md`。
+
+设计意图与未完成的部分见 `development-plan.md`；关系与证据语义见
+`design/ontology.md`、`design/evidence-policy.md`；机器权威是
 `config/relation-registry.yaml`。
 
 和代码不一致时以代码为准，并顺手改本文件。
@@ -76,9 +79,6 @@ prompt 版本（`grounded-extract-3`）、注册表版本。
 `split_text` 按自然段分块，**12000 是目标不是硬边界**：一段跨过上限时在这一段的
 后面断开（取长的那一侧），永远不在段落中间切。在前面断会留下一个刚好卡在上限的
 短块，而抽取质量对上下文完整度敏感，对块长不敏感。
-
-整段就超过上限的退一步按句子断——当前语料没有这种段落（最长 6401 字），这条路
-只是防止将来某个畸形输入把一整节拖垮。
 
 每块一次 LLM 调用，走 `llm.pmap` 并发，然后跨块去重合并。
 

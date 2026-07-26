@@ -26,17 +26,20 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 ### 文档权威顺序
 
 1. **代码和数据库** — 唯一的事实来源
-2. `design/architecture.md` — 新核心当前实际怎么跑：数据流、判据顺序、版本号、
-   硬闸与可调策略的边界、已知结构性限制
-3. `development-plan.md` — 目标、10 条不变式、未完成的设计、阶段状态、下一步迭代
-4. `agent.md` — agent 工作守则（下面第二节是它的提炼）
-5. `design/ontology.md`、`design/evidence-policy.md` — 实体/关系语义、证据强度、
+2. `design/architecture.md` — 新核心怎么分层、数据怎么流：模块职责、两条入口、
+   硬闸与可调策略的边界
+3. `design/algorithm.md` — 新核心每一步**具体算什么**：判据、公式、阈值、复杂度、
+   全部可调参数、已知算法缺口
+4. `development-plan.md` — 目标、10 条不变式、未完成的设计、阶段状态、下一步迭代
+5. `agent.md` — agent 工作守则（下面第二节是它的提炼）
+6. `design/ontology.md`、`design/evidence-policy.md` — 实体/关系语义、证据强度、
    独立性（人读版）
-6. `config/relation-registry.yaml`（当前 v4）— 关系、实体类型、证据类型词表与
+7. `config/relation-registry.yaml`（当前 v4）— 关系、实体类型、证据类型词表与
    强弱的**机器权威**；`config/ai-coverage-taxonomy.yaml` — 覆盖主题树
-7. `plan.md`、`algorithm.md` — 只描述旧核心，且早于重构。改旧核心算法时同步
-   `algorithm.md`；改新核心不必动它们
 8. 本文件 — 发现它和代码不一致时，以代码为准，并顺手改它
+
+2 和 3 分工：架构讲**代码怎么组织**，算法讲**每一步算什么**。改了算法两边都要动。
+`TODO.md` 里对根目录 `algorithm.md` 的章节引用指向重写前的旧核心版本，已失效。
 
 ### ⚠️ 陈旧状态陷阱
 
@@ -180,7 +183,9 @@ rollback / calibrate / check / viz / export / stats / embed`。
 的 `误区:` 前缀 facet 不迁移——误区在新核心是普通实体，靠 `often_confused_with`
 关联，而那条关系目前是 `experimental`，要用得先按正常流程转正。
 
-完整算法见 `algorithm.md`。当前仍成立的骨架：
+旧核心的算法不再有文档——原来的 `algorithm.md` 已改写成新核心的规格并移到
+`design/`。要查旧逻辑直接读 `kg/ingest.py` / `kg/verify.py` / `kg/guards.py`。
+当前仍成立的骨架：
 
 - **状态工作流**：LLM 产物入库为 `proposed`，只有 seed/approved
   （`db.visible_statuses()`）参与图算法和教学导出；生效两条路——人工 `review`，或

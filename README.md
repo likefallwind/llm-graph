@@ -5,7 +5,8 @@
 
 设计与开发约束：
 
-- [design/architecture.md](design/architecture.md) — 新核心当前实际怎么跑
+- [design/architecture.md](design/architecture.md) — 代码怎么分层，数据怎么流
+- [design/algorithm.md](design/algorithm.md) — 每一步具体算什么：判据、公式、阈值、参数表
 - [development-plan.md](development-plan.md) — 还没做的部分
 - [design/ontology.md](design/ontology.md)
 - [design/evidence-policy.md](design/evidence-policy.md)
