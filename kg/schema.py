@@ -63,6 +63,25 @@ def _migrate_entity_resolution(conn) -> None:
         "INSERT OR IGNORE INTO schema_migrations(version,name,applied_at)"
         " VALUES (6,'accumulating_entity_alignment',?)",
         (time.time(),))
+    policy_migration = conn.execute(
+        "SELECT 1 FROM schema_migrations WHERE version=11").fetchone()
+    if not policy_migration:
+        # 旧策略把所有 ambiguous 都当成 observation 无效并进入 rejected。
+        # 新定义下它们只是尚不能安全落地，应重新开放给新 resolver 或人工复核。
+        conn.execute(
+            "UPDATE observations SET status='pending'"
+            " WHERE status='rejected' AND relation=''"
+            " AND EXISTS ("
+            "   SELECT 1 FROM entity_resolution_events current"
+            "   WHERE current.observation_id=observations.id"
+            "   AND current.id=("
+            "     SELECT MAX(latest.id) FROM entity_resolution_events latest"
+            "     WHERE latest.observation_id=observations.id)"
+            "   AND current.outcome='ambiguous')")
+        conn.execute(
+            "INSERT INTO schema_migrations(version,name,applied_at)"
+            " VALUES (11,'nonterminal_entity_resolution',?)",
+            (time.time(),))
 
 
 def _migrate_entailment_reviews(conn) -> None:

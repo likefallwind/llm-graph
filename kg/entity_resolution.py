@@ -11,14 +11,25 @@ from . import alias_evidence, llm, store
 from .observations import EntityObservation
 
 
-RESOLVER_VERSION = "entity-resolver-5"
+RESOLVER_VERSION = "entity-resolver-6"
 ALIGNMENT_POLICY_VERSION = "entity-alignment-policy-3"
 LLM_SUSPECT_CONFIDENCE = 0.80
 LLM_AUTO_LINK_CONFIDENCE = 0.95
-# 新建实体与合并到已有实体的风险不对称：合并判错会污染图谱，新建判错只是多一个
-# proposed 实体，由重复清扫和对齐队列兜底。所以新建用较低的门槛。
-LLM_NEW_ENTITY_CONFIDENCE = LLM_SUSPECT_CONFIDENCE
+# existing 和 new 都只有达到统一的自动执行门槛才允许落地。低于门槛说明系统
+# 暂时不能安全执行，不说明 observation 无效。
+LLM_NEW_ENTITY_CONFIDENCE = LLM_AUTO_LINK_CONFIDENCE
 MAX_CANDIDATES = 5
+# 这些 outcome 都没有否定 observation 本身，不能把 observation 标成 rejected。
+NON_TERMINAL_OUTCOMES = frozenset({
+    "suspected_same_entity",
+    "ambiguous",
+    "below_confidence",
+    "resolver_error",
+    "invalid_response",
+})
+# 这两类已有语义判断，但不足以自动执行。同一 resolver 版本下不反复花费 LLM，
+# 等人工复核、策略升级或 resolver 版本变化后再重放。
+NEEDS_REVIEW_OUTCOMES = frozenset({"ambiguous", "below_confidence"})
 SAFE_DIRECT_MATCH_TYPES = {"translation_alias", "name_variant"}
 MATCH_TYPES = {
     "translation_alias", "name_variant", "abbreviation", "symbol",
@@ -124,8 +135,8 @@ def find_duplicate_candidates(conn, *, threshold: float = DUPLICATE_SCAN_THRESHO
                               limit: int = 50) -> list[dict]:
     """机械扫描已有实体里的疑似重复对（零 LLM，只报告不改数据）。
 
-    降低新建门槛之后重复实体会变多，而 entity_alignment_candidates 只在 resolve
-    时由 LLM 提议才产生，不会回头看已有实体。这个扫描补上那一半。
+    entity_alignment_candidates 只在 resolve 时由 LLM 提议才产生，不会回头看
+    已有实体；即使采用高门槛，新建仍可能重复。这个扫描补上事后发现通道。
     """
     rows = conn.execute(
         "SELECT id,canonical_name,normalized_name,entity_type,definition,metadata"
@@ -307,8 +318,10 @@ def resolve(conn, observation: EntityObservation, *,
     try:
         normalized = normalizer(observation, candidates)
     except Exception as exc:
+        # 调用失败不是结论——模型没说这个名字有歧义，它根本没回答。传输层已经退避
+        # 重试过（llm._post），走到这里说明重试也没成，留给下一轮重放，不是 ambiguous。
         result = Resolution(
-            None, "ambiguous", f"LLM 规范化失败：{exc}",
+            None, "resolver_error", f"LLM 规范化失败：{exc}",
             matched_by="llm_error", normalized_name=deterministic_name,
             candidate_ids=candidate_ids)
         return _record(
@@ -339,6 +352,38 @@ def resolve(conn, observation: EntityObservation, *,
             selected_id = 0
         if selected_id in candidate_ids:
             selected = store.get_entity(conn, selected_id)
+
+    if decision == "ambiguous":
+        result = Resolution(
+            None, "ambiguous", reason,
+            matched_by="llm_ambiguous",
+            normalized_name=canonical_name or deterministic_name,
+            candidate_ids=candidate_ids, confidence=confidence)
+        return _record(
+            conn, observation, result, source_snapshot_id=source_snapshot_id,
+            observation_id=observation_id)
+
+    if decision not in {"existing", "new"}:
+        result = Resolution(
+            None, "invalid_response",
+            f"{reason}；decision 必须是 existing、new 或 ambiguous",
+            matched_by="llm_invalid_response",
+            normalized_name=canonical_name or deterministic_name,
+            candidate_ids=candidate_ids, confidence=confidence)
+        return _record(
+            conn, observation, result, source_snapshot_id=source_snapshot_id,
+            observation_id=observation_id)
+
+    if decision == "existing" and not selected:
+        result = Resolution(
+            None, "invalid_response",
+            f"{reason}；existing 必须指向候选实体",
+            matched_by="llm_invalid_response",
+            normalized_name=canonical_name or deterministic_name,
+            candidate_ids=candidate_ids, confidence=confidence)
+        return _record(
+            conn, observation, result, source_snapshot_id=source_snapshot_id,
+            observation_id=observation_id)
 
     if selected and confidence >= LLM_SUSPECT_CONFIDENCE:
         if selected.id not in candidate_ids:
@@ -393,7 +438,18 @@ def resolve(conn, observation: EntityObservation, *,
             conn, observation, result, source_snapshot_id=source_snapshot_id,
             observation_id=observation_id)
 
-    if decision == "new" and canonical_name and confidence >= LLM_NEW_ENTITY_CONFIDENCE:
+    if decision == "new" and not canonical_name:
+        result = Resolution(
+            None, "invalid_response",
+            f"{reason}；new 必须提供 canonical_name",
+            matched_by="llm_invalid_response",
+            normalized_name=deterministic_name,
+            candidate_ids=candidate_ids, confidence=confidence)
+        return _record(
+            conn, observation, result, source_snapshot_id=source_snapshot_id,
+            observation_id=observation_id)
+
+    if decision == "new" and confidence >= LLM_NEW_ENTITY_CONFIDENCE:
         entity = store.add_entity(
             conn, canonical_name, observation.entity_type,
             definition=observation.definition, status="proposed",
@@ -418,10 +474,11 @@ def resolve(conn, observation: EntityObservation, *,
             observation_id=observation_id)
 
     result = Resolution(
-        None, "ambiguous",
-        f"{reason}；置信度 {confidence:.2f} 未达到自动对齐阈值"
-        if decision in {"existing", "new"} else reason,
-        matched_by="llm_ambiguous", normalized_name=canonical_name or deterministic_name,
+        None, "below_confidence",
+        f"{reason}；置信度 {confidence:.2f} 未达到自动执行阈值"
+        f" {LLM_AUTO_LINK_CONFIDENCE:.2f}",
+        matched_by="llm_below_confidence",
+        normalized_name=canonical_name or deterministic_name,
         candidate_ids=candidate_ids, confidence=confidence)
     return _record(
         conn, observation, result, source_snapshot_id=source_snapshot_id,

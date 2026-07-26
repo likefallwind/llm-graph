@@ -34,8 +34,14 @@ def materialize(conn, batch: ObservationBatch, *, source_snapshot_id: int,
             observation_id=observation_id)
         if result.entity_id is None:
             if result.outcome == "suspected_same_entity":
+                # 正在等对齐裁决，本批任何 Claim 都不许替它认领实体。
                 suspected.add(item.name.casefold())
                 rejected.append(f"实体「{item.name}」疑似对齐，等待更多证据：{result.reason}")
+            elif result.outcome in entity_resolution.NON_TERMINAL_OUTCOMES:
+                # 没有否定 observation 本身，留在 pending。它不进 suspected：
+                # 库里已有实体的确定性精确匹配和这次未落地无关，端点仍可正常落地。
+                rejected.append(
+                    f"实体「{item.name}」消歧未完成，留待复核或重放：{result.reason}")
             else:
                 store.resolve_observation(conn, observation_id, False)
                 rejected.append(f"实体「{item.name}」消歧失败：{result.reason}")
@@ -134,8 +140,19 @@ def replay_pending(conn, limit: int = 100) -> dict:
     resolved_claims: list[int] = []
     rejected: list[dict] = []
     still_pending: list[int] = []
+    needs_review: list[int] = []
 
     for row in (item for item in rows if not item["relation"]):
+        latest = conn.execute(
+            "SELECT outcome,resolver_version FROM entity_resolution_events"
+            " WHERE observation_id=? ORDER BY id DESC LIMIT 1",
+            (row["id"],)).fetchone()
+        if (latest
+                and latest["resolver_version"] == entity_resolution.RESOLVER_VERSION
+                and latest["outcome"] in entity_resolution.NEEDS_REVIEW_OUTCOMES):
+            still_pending.append(row["id"])
+            needs_review.append(row["id"])
+            continue
         raw = json.loads(row["payload"])
         observation = EntityObservation(
             name=row["subject_text"],
@@ -149,7 +166,14 @@ def replay_pending(conn, limit: int = 100) -> dict:
             conn, observation, source_snapshot_id=row["source_snapshot_id"],
             observation_id=row["id"])
         if result.entity_id is None:
-            still_pending.append(row["id"])
+            if result.outcome in entity_resolution.NON_TERMINAL_OUTCOMES:
+                still_pending.append(row["id"])
+                if result.outcome in entity_resolution.NEEDS_REVIEW_OUTCOMES:
+                    needs_review.append(row["id"])
+            else:
+                # 只有 observation 本身无效时才允许进入 rejected 终态。
+                store.resolve_observation(conn, row["id"], False)
+                rejected.append({"observation_id": row["id"], "reason": result.reason})
             continue
         store.add_evidence(
             conn, row["source_snapshot_id"], row["excerpt"],
@@ -212,4 +236,5 @@ def replay_pending(conn, limit: int = 100) -> dict:
         "resolved_claims": list(dict.fromkeys(resolved_claims)),
         "rejected": rejected,
         "still_pending": list(dict.fromkeys(still_pending)),
+        "needs_review": list(dict.fromkeys(needs_review)),
     }

@@ -212,7 +212,7 @@ evidence 逐字可定位、关系/qualifiers/证据类型过注册表。
 3. `_candidate_rows` 用 `SequenceMatcher` 召回 ≤5 个候选。
    **相似度只召回，永远不证明同一性**
 4. LLM 分类，返回 `existing|new|ambiguous` + `match_type` + `confidence`
-5. existing 且 conf ≥ `LLM_SUSPECT_CONFIDENCE`(0.80)：
+5. existing 且 conf ≥ `LLM_SUSPECT_CONFIDENCE`(0.80)：只允许记录疑似对齐证据；
    `_validated_direct_match_type` (`kg/entity_resolution.py:73`) 是**充分条件**
    ——命中 `translation_alias`/`name_variant` 且 conf ≥
    `LLM_AUTO_LINK_CONFIDENCE`(0.95) 就自动 verified。
@@ -220,12 +220,15 @@ evidence 逐字可定位、关系/qualifiers/证据类型过注册表。
 6. `store.add_alignment_evidence` (`kg/store.py:587`) 累计：
    `score = 1 - Π(1 - conf_group)`，每个独立来源组只取最高分。需 ≥2 组、
    score ≥ 0.95、且无竞争候选才升级为 verified
-7. new 且 conf ≥ `LLM_NEW_ENTITY_CONFIDENCE`(0.80) → 建实体，标
-   `below_auto_link_confidence` 供重复清扫优先看
-8. 其余 ambiguous
+7. new 且 conf ≥ `LLM_NEW_ENTITY_CONFIDENCE`(0.95) → 建 proposed 实体
+8. new 低于 0.95，或 existing 低于疑似队列门槛 → `below_confidence`，
+   observation 保持 pending
+9. 模型明确拿不准 → `ambiguous`，observation 保持 pending
+10. decision、候选或 canonical_name 违反输出契约 → `invalid_response`，允许重试
 
-新建门槛（0.80）低于合并门槛（0.95），因为风险不对称：合并判错污染图谱，新建
-判错只是多一个 proposed 实体，由重复清扫和对齐队列兜底。
+所有自动落地采用统一的 0.95 门槛。0.80 只决定一个 existing 建议是否值得进入疑似
+证据累计，不会据此链接实体。置信度不足和真实歧义都不表示 observation 无效，因此
+不能进入 rejected。
 
 缩写、符号、语义别名、复合名不靠一次模型判断合并。
 
@@ -318,7 +321,7 @@ evidence 逐字可定位、关系/qualifiers/证据类型过注册表。
 **可调，改了要有基准证据**：
 
 - `minimum_evidence`：当前 2 个独立组 + 1 条高权威
-- `LLM_AUTO_LINK_CONFIDENCE` 0.95 / `LLM_NEW_ENTITY_CONFIDENCE` 0.80
+- `LLM_AUTO_LINK_CONFIDENCE` 0.95 / `LLM_NEW_ENTITY_CONFIDENCE` 0.95
 - 累计对齐的 ≥2 组 + ≥0.95
 - `targeting.WINDOW` 600 / `CONTEXT` 300 / `SNAP_LIMIT` 400
 - `observations.split_text` 的 12000

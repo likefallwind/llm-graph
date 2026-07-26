@@ -232,33 +232,49 @@ class EntityResolutionTests(unittest.TestCase):
         self.assertEqual("name_variant", alias["alias_type"])
 
     def test_new_entity_is_created_above_the_creation_threshold(self):
-        # 新建判错只是多一个 proposed 实体，门槛低于合并；见 LLM_NEW_ENTITY_CONFIDENCE。
+        # 只有达到统一的自动执行门槛，才允许创建 proposed 实体。
         result = entity_resolution.resolve(
             self.conn, observation("全新术语"),
             llm_normalizer=lambda _observation, _candidates: {
                 "decision": "new",
                 "canonical_name": "全新术语",
-                "confidence": 0.8,
-                "reason": "可能是新概念",
+                "confidence": 0.95,
+                "reason": "确定是新概念",
             })
 
         self.assertIsNotNone(result.entity_id)
         created = store.find_canonical_entity(self.conn, "全新术语")
         self.assertEqual(created.status, "proposed")
-        self.assertTrue(created.metadata["below_auto_link_confidence"])
+        self.assertFalse(created.metadata["below_auto_link_confidence"])
 
-    def test_new_entity_is_dropped_below_the_creation_threshold(self):
+    def test_new_entity_below_creation_threshold_needs_review(self):
         result = entity_resolution.resolve(
             self.conn, observation("全新术语"),
             llm_normalizer=lambda _observation, _candidates: {
                 "decision": "new",
                 "canonical_name": "全新术语",
-                "confidence": 0.5,
-                "reason": "不确定",
+                "confidence": 0.92,
+                "reason": "像是新概念，但不足以自动执行",
             })
 
         self.assertIsNone(result.entity_id)
+        self.assertEqual("below_confidence", result.outcome)
         self.assertIsNone(store.find_canonical_entity(self.conn, "全新术语"))
+
+    def test_invalid_existing_response_is_not_semantic_ambiguity(self):
+        result = entity_resolution.resolve(
+            self.conn, observation("未知术语"),
+            llm_normalizer=lambda _observation, _candidates: {
+                "decision": "existing",
+                "candidate_id": 999,
+                "canonical_name": "不存在的候选",
+                "confidence": 0.99,
+                "reason": "错误地引用候选",
+            })
+
+        self.assertIsNone(result.entity_id)
+        self.assertEqual("invalid_response", result.outcome)
+        self.assertEqual("llm_invalid_response", result.matched_by)
 
     def test_low_confidence_llm_does_not_merge(self):
         existing = store.add_entity(self.conn, "监督学习", "method")
@@ -536,6 +552,137 @@ class SuspectedMaterializationTests(unittest.TestCase):
             "SELECT status FROM observations WHERE run_id=? AND relation='is_a'",
             (self.run_id,)).fetchone()["status"]
         self.assertEqual("pending", claim_status)
+
+    def test_resolver_call_failure_leaves_the_observation_pending(self):
+        """调用失败不是结论，观察必须留给 replay，不能进 rejected 终态。"""
+        batch = ObservationBatch(
+            entities=(observation("感知机", "concept"),),
+            claims=(), next_reading_targets=(), rejected=())
+
+        with patch(
+                "kg.entity_resolution._llm_normalize",
+                side_effect=RuntimeError("连接被重置")):
+            result = claims.materialize(
+                self.conn, batch, source_snapshot_id=self.snapshot.id,
+                run_id=self.run_id)
+
+        self.assertEqual((), result.entity_ids)
+        self.assertEqual("pending", self.conn.execute(
+            "SELECT status FROM observations WHERE subject_text='感知机'",
+        ).fetchone()["status"])
+        self.assertEqual("resolver_error", self.conn.execute(
+            "SELECT outcome FROM entity_resolution_events WHERE raw_name='感知机'",
+        ).fetchone()["outcome"])
+
+    def test_explicit_ambiguity_leaves_the_observation_pending(self):
+        batch = ObservationBatch(
+            entities=(observation("感知机", "concept"),),
+            claims=(), next_reading_targets=(), rejected=())
+
+        with patch(
+                "kg.entity_resolution._llm_normalize",
+                return_value={
+                    "decision": "ambiguous",
+                    "canonical_name": "",
+                    "confidence": 0.6,
+                    "reason": "上下文不足",
+                }):
+            claims.materialize(
+                self.conn, batch, source_snapshot_id=self.snapshot.id,
+                run_id=self.run_id)
+
+        self.assertEqual("pending", self.conn.execute(
+            "SELECT status FROM observations WHERE subject_text='感知机'",
+        ).fetchone()["status"])
+
+    def test_resolver_failure_does_not_block_endpoints_from_landing(self):
+        """失败的名字不进 suspected：既有实体的精确匹配和这次失败无关。"""
+        store.add_entity(self.conn, "感知机", "concept")
+        batch = ObservationBatch(
+            entities=(observation("感知机", "concept"),),
+            claims=(
+                ClaimObservation(
+                    subject="二分类", relation="is_a", object="感知机",
+                    qualifiers={}, evidence_type="explicit_taxonomy",
+                    evidence="二分类属于感知机。", location="§1", raw={}),
+            ),
+            next_reading_targets=(), rejected=())
+
+        with patch(
+                "kg.entity_resolution._llm_normalize",
+                side_effect=RuntimeError("连接被重置")):
+            result = claims.materialize(
+                self.conn, batch, source_snapshot_id=self.snapshot.id,
+                run_id=self.run_id)
+
+        self.assertEqual(1, len(result.claim_ids))
+
+    def test_replayed_low_confidence_observation_remains_pending(self):
+        """置信度不足不是 observation 无效，重放后仍应等待复核。"""
+        store.add_entity(self.conn, "感知器", "concept")
+        observation_id = store.add_observation(
+            self.conn, self.run_id, self.snapshot.id,
+            subject_text="感知机", subject_type="concept",
+            excerpt="教材明确讨论了感知机。",
+            payload={"name": "感知机", "entity_type": "concept", "aliases": []})
+
+        with patch(
+                "kg.entity_resolution._llm_normalize",
+                return_value={
+                    "decision": "existing", "candidate_id": 1,
+                    "canonical_name": "感知器", "confidence": 0.4,
+                    "reason": "不确定",
+                }):
+            report = claims.replay_pending(self.conn)
+
+        self.assertEqual([observation_id], report["still_pending"])
+        self.assertEqual([observation_id], report["needs_review"])
+        self.assertEqual([], report["rejected"])
+        self.assertEqual("pending", self.conn.execute(
+            "SELECT status FROM observations WHERE id=?",
+            (observation_id,)).fetchone()["status"])
+
+    def test_same_resolver_does_not_repeat_needs_review_llm_call(self):
+        observation_id = store.add_observation(
+            self.conn, self.run_id, self.snapshot.id,
+            subject_text="软间隔", subject_type="concept",
+            excerpt="教材明确讨论了软间隔。",
+            payload={"name": "软间隔", "entity_type": "concept", "aliases": []})
+
+        with patch(
+                "kg.entity_resolution._llm_normalize",
+                return_value={
+                    "decision": "new", "canonical_name": "软间隔",
+                    "confidence": 0.92, "reason": "应当新建",
+                }) as normalizer:
+            first = claims.replay_pending(self.conn)
+            second = claims.replay_pending(self.conn)
+
+        self.assertEqual(1, normalizer.call_count)
+        self.assertEqual([observation_id], first["needs_review"])
+        self.assertEqual([observation_id], second["needs_review"])
+
+    def test_policy_migration_reopens_legacy_ambiguous_observation(self):
+        observation_id = store.add_observation(
+            self.conn, self.run_id, self.snapshot.id,
+            subject_text="软间隔", subject_type="concept",
+            excerpt="教材明确讨论了软间隔。",
+            payload={"name": "软间隔", "entity_type": "concept", "aliases": []})
+        store.resolve_observation(self.conn, observation_id, False)
+        store.add_resolution_event(
+            self.conn, raw_name="软间隔", deterministic_name="软间隔",
+            entity_id=None, outcome="ambiguous", matched_by="llm_ambiguous",
+            candidate_ids=[], confidence=0.92, reason="旧策略门槛不足",
+            resolver_version="entity-resolver-5",
+            source_snapshot_id=self.snapshot.id, observation_id=observation_id)
+        self.conn.execute("DELETE FROM schema_migrations WHERE version=11")
+        self.conn.commit()
+
+        schema.ensure(self.conn)
+
+        self.assertEqual("pending", self.conn.execute(
+            "SELECT status FROM observations WHERE id=?",
+            (observation_id,)).fetchone()["status"])
 
 
 class EndpointFallbackTests(unittest.TestCase):

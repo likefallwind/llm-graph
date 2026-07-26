@@ -78,11 +78,36 @@
 ```
 pending ──端点落地──▶ resolved
    │
-   └──契约违例──▶ rejected（终态，没有任何路径会重看）
+   ├──暂不能安全落地──▶ 留在 pending
+   │   ├──needs_review：真实歧义 / 置信度不足
+   │   └──retryable：端点未建 / 调用失败 / 输出契约错误
+   │
+   └──observation 本身无效──▶ rejected（终态，没有路径会重看）
 ```
 
-端点暂时落不了地时**保持 pending**，等 `replay-pending` 重放。只有确定违反契约的
-才 rejected。
+分界是**失败否定的是 observation 本身，还是只说明系统暂时不能安全执行**：
+
+- 关系不在 core、qualifier 缺必填等事实或契约违例，说明 observation 本身无效，
+  才进入 rejected
+- `decision=ambiguous`、`existing|new` 但置信度不足、名字正等对齐裁决、消歧器调用
+  失败，都没有否定 observation，留在 pending
+
+数据库不另加 `needs_review` 状态：`observations.status` 仍为 `pending`，由最后一条
+`entity_resolution_events.outcome` 区分。`replay_pending` 的报告单独返回
+`needs_review` 列表；同一 resolver 版本不会反复调用这些项，等人工复核、策略变化或
+resolver 升版后再重放。
+
+`entity_resolution.NON_TERMINAL_OUTCOMES` 是这条分界在代码里的唯一定义，
+`materialize` 和 `replay_pending` 共用它，所以同一个观察在两条路径上命运相同。
+
+LLM 调用失败走 `resolver_error` 而不是 `ambiguous`：模型没说这个名字有歧义，它根本
+没回答。传输层（`llm._post`）对 429/5xx **和连接层故障**都做 4 次指数退避，走到
+`resolver_error` 说明重试也没成。这和 `targeting` 的既有规则同源——§3.9 的「LLM
+调用失败不记 probe」是同一条原则。
+
+注意 `parse_payload` 的五道闸（§3.3）跑在建行**之前**，被它拦下的根本不产生
+observation 行。表里的 rejected 行只来自上面第二类，以及重放时才发现注册表已收窄的
+claim。
 
 **Entity**
 
@@ -286,15 +311,22 @@ normalize_name(s) = NFKC → strip → casefold → 空白折叠为单个空格
 2. find_verified_alias_entities(...) 恰好 1 个        命中 → same_entity
 3. _candidate_rows：SequenceMatcher 召回 ≤5 个候选     ← 只召回
 4. LLM 分类 → {decision, candidate_id, canonical_name, match_type, confidence}
-5. decision=existing 且 conf ≥ 0.80：
+5. decision=existing 且 conf ≥ 0.80：只允许记录疑似对齐证据
        direct = _validated_direct_match_type(name, canonical, match_type)
        safe   = direct ∈ {translation_alias, name_variant} 且 conf ≥ 0.95
        safe → alias 直接 verified，返回 same_entity
 6. 否则 add_alignment_evidence 累计 → 达标才 verified
        未达标 → suspected_same_entity（claim 端点进 pending 等）
-7. decision=new 且 conf ≥ 0.80 → 建实体
-8. 其余 → ambiguous
+7. decision=new 且 conf ≥ 0.95 → 建 proposed 实体
+8. decision=new 但 conf < 0.95，或 existing 低于疑似队列门槛 → below_confidence
+9. decision=ambiguous → ambiguous
+10. decision/候选/canonical_name 违反输出契约 → invalid_response
 ```
+
+第 4 步抛异常（重试后仍失败、返回非 JSON）→ `resolver_error`，**不是 `ambiguous`**。
+`ambiguous`、`below_confidence`、`invalid_response` 和 `resolver_error` 都不否定
+observation 本身，因此都不进入 rejected。前两者等待复核；后两者允许自动重试
+（§1.4）。
 
 第 1、2 步排除 `status IN ('rejected','merged')` 的实体。merged 实体的规范名在
 合并时已经转成目标实体的 verified alias，排除它不丢可达性。
@@ -351,17 +383,16 @@ score ≥ 0.95
 
 没有 `independence_group` 的证据（比如没绑快照的模型判断）**不参与**分组计数。
 
-### 两个门槛不对称
+### 自动执行门槛与疑似队列门槛
 
 ```
-LLM_NEW_ENTITY_CONFIDENCE = 0.80   建新实体
+LLM_NEW_ENTITY_CONFIDENCE = 0.95   自动建 proposed 实体
 LLM_SUSPECT_CONFIDENCE    = 0.80   进入疑似队列
 LLM_AUTO_LINK_CONFIDENCE  = 0.95   自动合并到已有实体
 ```
 
-风险不对称：合并判错会污染图谱且难发现；新建判错只是多一个 proposed 实体，由重复
-清扫（§3.10）和对齐队列兜底。低于 0.95 建出来的实体标
-`below_auto_link_confidence`，重复清扫优先看它们。
+`0.80` 只允许把 existing 建议送进疑似证据累计，不会自动落地。新建和直接链接都采用
+统一的 `0.95` 自动执行门槛。低于门槛的建议保留为 `below_confidence`，不是 rejected。
 
 ## 3.5 别名的语料声明通道 `alias_evidence`
 
@@ -647,7 +678,8 @@ LLM 调用失败**不记 probe**——返回非法 JSON 不是结论，下一轮
 排序：低置信度新建的排前 → 有共享名字的排前 → 分数高的排前。
 
 存在的理由：`entity_alignment_candidates` 只在 `resolve` 时由 LLM 提议才产生，
-**不会回头看已有实体**。降低新建门槛之后重复会变多，这个扫描补上那一半。
+**不会回头看已有实体**。即使采用 0.95 门槛，新建实体仍可能与旧实体重复，这个扫描
+补上事后发现通道。
 
 ## 3.11 实体合并 `merge_entities` / `revert_merge`
 
@@ -731,8 +763,8 @@ LLM 调用是实际的时间成本，不是算法复杂度。M3 一次抽取 1~3
 | 参数 | 位置 | 当前值 | 作用 |
 |---|---|---|---|
 | `limit` | `observations.split_text` | 12000 | 分块目标长度 |
-| `LLM_NEW_ENTITY_CONFIDENCE` | `entity_resolution` | 0.80 | 建新实体门槛 |
-| `LLM_SUSPECT_CONFIDENCE` | `entity_resolution` | 0.80 | 进疑似队列门槛 |
+| `LLM_NEW_ENTITY_CONFIDENCE` | `entity_resolution` | 0.95 | 自动建 proposed 实体门槛 |
+| `LLM_SUSPECT_CONFIDENCE` | `entity_resolution` | 0.80 | 进疑似证据队列门槛，不落地 |
 | `LLM_AUTO_LINK_CONFIDENCE` | `entity_resolution` | 0.95 | 自动合并门槛 |
 | `MAX_CANDIDATES` | `entity_resolution` | 5 | 给 LLM 看几个候选 |
 | `DUPLICATE_SCAN_THRESHOLD` | `entity_resolution` | 0.6 | 重复清扫相似度阈值 |
