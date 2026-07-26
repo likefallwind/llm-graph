@@ -9,9 +9,9 @@ from . import claims, coverage, decision, observations, store, validators
 from .ontology import registry
 
 
-# 4：split_text 不再硬切自然段；claim 端点可退回库里已有实体的确定性精确匹配。
-# 两处都会改变同一份语料的抽取结果，所以必须换版本号，已处理过的来源才会重跑。
-ALGORITHM_VERSION = "grounded-pipeline-4"
+# 5：名称引用只忽略空白；Claim 至少一个端点来自本块，另一个可唯一命中既有身份名。
+# 这些规则会改变同一份语料的抽取结果，所以必须换版本号，已处理来源才会重跑。
+ALGORITHM_VERSION = "grounded-pipeline-5"
 
 
 def read_file(conn, path: str, *, source_slug: str, source_name: str,
@@ -57,19 +57,22 @@ def read_text(conn, text: str, *, source_slug: str, source_name: str,
         storage_ref=storage_ref, metadata=metadata)
     run_id = store.create_run(
         conn, "extraction", ALGORITHM_VERSION,
-        prompt_version="grounded-extract-3",
+        prompt_version="grounded-extract-4",
         config={
             "topic": topic,
             "source_snapshot_id": snapshot.id,
             "relation_registry_version": registry().version,
         })
     try:
+        known_entity_types = store.unique_identity_types(conn)
         if observations_path:
             payload = json.loads(Path(observations_path).read_text(encoding="utf-8"))
-            batch = observations.parse_payload(payload, text)
+            batch = observations.parse_payload(
+                payload, text, known_entity_types=known_entity_types)
         else:
             batch = observations.extract(
-                text, topic, max_entities=max_entities, max_claims=max_claims)
+                text, topic, max_entities=max_entities, max_claims=max_claims,
+                known_entity_types=known_entity_types)
         materialized = claims.materialize(
             conn, batch, source_snapshot_id=snapshot.id, run_id=run_id)
         entailment_lines = []

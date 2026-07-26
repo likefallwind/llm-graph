@@ -148,11 +148,11 @@ uncertain 只增不减，后来的既不覆盖也不丢弃先来的。
 
 | 版本号 | 当前值 | 改了以后 |
 |---|---|---|
-| `pipeline.ALGORITHM_VERSION` | `grounded-pipeline-4` | 已处理过的 `(快照, 主题)` 重新变成可读 |
+| `pipeline.ALGORITHM_VERSION` | `grounded-pipeline-5` | 已处理过的 `(快照, 主题)` 重新变成可读 |
 | `validators.VALIDATOR_VERSION` | `entailment-validator-1` | `reshadow --only-stale` 认为旧蕴含判定过期 |
 | `validators.ENTAILMENT_PROMPT_VERSION` | `entailment-judge-2` | 同上 |
 | `decision.POLICY_VERSION` | `claim-policy-4` | 只给裁决打标签，不触发重跑 |
-| `entity_resolution.RESOLVER_VERSION` | `entity-resolver-5` | 消歧事件记录的版本 |
+| `entity_resolution.RESOLVER_VERSION` | `entity-resolver-6` | 消歧事件记录的版本 |
 | `entity_resolution.ALIGNMENT_POLICY_VERSION` | `entity-alignment-policy-3` | 对齐证据记录的版本 |
 | `targeting.ALGORITHM_VERSION` | `claim-targeting-2` | 定向补证的探测记录 |
 | 注册表 `version` | `4` | 每次 `db.connect()` 同步进 `relation_definitions` |
@@ -265,19 +265,27 @@ emit(current) if current
 
 跨块合并按名字 / 三元组去重，先出现的胜出。
 
+每次开始抽取前，主线程从数据库生成一份只读 identity 快照：active canonical +
+verified alias 按 `reference_key` 分组，只有唯一指向一个实体的键才把类型交给并行抽取
+线程。快照是普通字典，`llm.pmap` 的线程不接触 sqlite。
+
 ## 3.3 机械校验
 
-### 两套归一化，不能混用
+### 三种名称处理，不能混用
 
 ```python
 _norm(s)          = re.sub(r"\s+", "", s).casefold()
 normalize_name(s) = NFKC → strip → casefold → 空白折叠为单个空格
+reference_key(s)  = normalize_name(s) → 删除全部空白
 ```
 
 证据定位用 `_norm`：可以完全无视空白，因为 PDF 抽出来的换行位置不可靠。
 
-身份判定用 `normalize_name`：要保留词间空格，`linear regression` 不等于
-`linearregression`。
+数据库规范名和别名仍用 `normalize_name` 保存，展示名称和空格不变。
+
+抽取引用匹配用 `reference_key`：只在本块去重、claim 端点引用和确定性身份回退时忽略
+空白，因此 `linear regression` 与 `linearregression` 可指向同一名称。它不删除
+连字符、括号或加号；若同一个 key 指向多个实体，视为歧义，不认领。
 
 ### `evidence_in_text(excerpt, text)`
 
@@ -295,12 +303,15 @@ normalize_name(s) = NFKC → strip → casefold → 空白折叠为单个空格
 
 1. `entity_type` 必须在注册表里
 2. 实体的 evidence 必须 `evidence_in_text` 通过；名字不能为空；同批不能重名
-3. claim 的 subject 和 object 必须**同时**出现在本批有效 entities 里
-4. `validate_claim(..., active_only=True)` 只放行 `lifecycle: core` 的关系；
-   qualifiers 按契约校验（含必填）；`evidence_type` 必须在注册表词表里
+3. claim 必须至少一个端点出现在本块有效 entities；另一个端点可以来自只读 identity
+   快照。两个端点都不在本块则视为偏离本批发现范围
+4. `validate_claim_endpoint_types(..., active_only=True)` 只放行 `lifecycle: core`
+   的关系，并校验所有已知端点类型；qualifiers 按契约校验（含必填）；
+   `evidence_type` 必须在注册表词表里
 5. `next_reading_targets` 的 query 必须在正文出现，否则不登记
 
-第 3 条是硬闸，也是当前召回上的主要限制（见 §6.2）。
+非本块端点暂时无法唯一命中时，claim 仍保留；`materialize` 为它建立 pending
+observation，后续实体出现后由 `replay-pending` 捡回。机械解析不会猜实体。
 
 ## 3.4 实体消歧 `resolve`
 
@@ -435,8 +446,11 @@ claim 的端点解析 `_endpoint_id`，两级：
 
 ```
 1. 本批 resolved 字典
-2. 退回库里已有实体的确定性精确匹配（规范名 / 唯一 verified alias）
-   —— 只走确定性快路，不做相似度、不调 LLM
+2. 退回库里已有实体的确定性身份匹配：
+   a. `normalize_name` 精确规范名
+   b. 唯一 verified alias
+   c. `reference_key` 只忽略空白后仍唯一指向一个 canonical/verified identity
+   —— 不做相似度、不调 LLM
 ```
 
 端点正在等疑似对齐裁决时**跳过第 2 级**：此时认领任何实体都可能抢在裁决之前替它
@@ -782,7 +796,7 @@ LLM 调用是实际的时间成本，不是算法复杂度。M3 一次抽取 1~3
 **不在这张表里的都是硬闸**，不能为了提召回放宽：
 
 - evidence 逐字定位
-- claim 端点必须在本批有效 entities 里
+- claim 至少一个端点来自本块；另一个只走唯一确定性身份匹配
 - 独立性只来自 `independence_group`
 - 消歧快路只认精确匹配
 - 一切裁决先 Shadow
@@ -799,10 +813,10 @@ LLM 调用是实际的时间成本，不是算法复杂度。M3 一次抽取 1~3
 同一节里离得远但相关的段落取不到，换个说法的表述也取不到。`llm.py` 有 embo-01，
 新核心没用它。
 
-**6.2 端点必须在本批 entities 里。** 模型没把某个概念列进 entities（比如撞上
-`--max-entities` 上限），即使库里早有这个实体，claim 也会在 `parse_payload` 就被
-丢掉。放宽它是可以论证的——端点实体已经带着自己的 evidence 存在库里，claim 自己
-的 evidence 仍然逐字校验——但这是文档里写死的硬闸，改之前要先决定。
+**6.2 非本块端点只走确定性身份匹配。** 当前允许 claim 的一个端点引用既有
+canonical/verified alias；无法唯一解析就保持 pending，不用相似度或 LLM 猜。两个端点
+都不在本块仍视为偏离本批发现范围。这个范围政策会漏掉“本段只发现两个旧实体之间新
+关系”的情况，是有意保留的召回边界。
 
 **6.3 身份名与证据脱节。** 一条证据可以既通过 `evidence_in_text`、又被判为
 supports，却整段没提到端点的身份名。`pipeline identity` 报告当前 57 条 claim 证据

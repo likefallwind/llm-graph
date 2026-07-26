@@ -115,6 +115,98 @@ class RelationV1ContractTests(unittest.TestCase):
         self.assertFalse(batch.claims)
         self.assertTrue(any("未知 qualifiers" in item for item in batch.rejected))
 
+    def test_claim_endpoint_matching_ignores_whitespace_only(self):
+        payload = _payload("is_a", "线性回归", "机器学习")
+        payload["entities"][0]["name"] = "linear regression"
+        payload["entities"][0]["evidence"] = "监督学习是机器学习的一部分"
+        payload["claims"][0].update({
+            "subject": "linearregression",
+            "object": "机器学习",
+            "evidence": "监督学习是机器学习的一部分",
+        })
+
+        batch = parse_payload(payload, SOURCE)
+
+        self.assertEqual(1, len(batch.claims))
+        self.assertFalse(batch.rejected)
+
+    def test_claim_can_reference_one_unique_existing_endpoint(self):
+        payload = {
+            "entities": [
+                _entity("线性代数", "concept", "线性代数是学习线性回归的前置知识"),
+            ],
+            "claims": [{
+                "subject": "线性代数",
+                "relation": "prerequisite_of",
+                "object": "linearregression",
+                "qualifiers": {
+                    "kind": "conceptual",
+                    "strength": "required",
+                },
+                "evidence_type": "explicit_prerequisite",
+                "evidence": "线性代数是学习线性回归的前置知识",
+                "location": "§1",
+            }],
+        }
+
+        batch = parse_payload(
+            payload, SOURCE,
+            known_entity_types={"linear regression": "method"})
+
+        self.assertEqual(1, len(batch.claims))
+        self.assertFalse(batch.rejected)
+
+    def test_claim_with_no_batch_endpoint_is_out_of_scope(self):
+        payload = {
+            "entities": [],
+            "claims": [{
+                "subject": "线性代数",
+                "relation": "prerequisite_of",
+                "object": "线性回归",
+                "qualifiers": {
+                    "kind": "conceptual",
+                    "strength": "required",
+                },
+                "evidence_type": "explicit_prerequisite",
+                "evidence": "线性代数是学习线性回归的前置知识",
+                "location": "§1",
+            }],
+        }
+
+        batch = parse_payload(
+            payload, SOURCE,
+            known_entity_types={
+                "线性代数": "concept",
+                "线性回归": "method",
+            })
+
+        self.assertFalse(batch.claims)
+        self.assertTrue(any("至少一个端点" in item for item in batch.rejected))
+
+    def test_unresolved_non_batch_endpoint_is_kept_for_pending_replay(self):
+        payload = {
+            "entities": [
+                _entity("线性代数", "concept", "线性代数是学习线性回归的前置知识"),
+            ],
+            "claims": [{
+                "subject": "线性代数",
+                "relation": "prerequisite_of",
+                "object": "线性回归",
+                "qualifiers": {
+                    "kind": "conceptual",
+                    "strength": "required",
+                },
+                "evidence_type": "explicit_prerequisite",
+                "evidence": "线性代数是学习线性回归的前置知识",
+                "location": "§1",
+            }],
+        }
+
+        batch = parse_payload(payload, SOURCE)
+
+        self.assertEqual(1, len(batch.claims))
+        self.assertFalse(batch.rejected)
+
 
 if __name__ == "__main__":
     unittest.main()

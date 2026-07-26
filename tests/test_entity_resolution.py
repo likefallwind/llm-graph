@@ -67,6 +67,17 @@ class EntityResolutionTests(unittest.TestCase):
         self.assertEqual(entity.id, result.entity_id)
         self.assertEqual("verified_alias_exact", result.matched_by)
 
+    def test_whitespace_reference_catalog_keeps_competing_entities_ambiguous(self):
+        first = store.add_entity(self.conn, "li nearregression", "method")
+        second = store.add_entity(self.conn, "linear regression", "method")
+
+        hits = store.find_reference_entities(self.conn, "linearreg ression")
+
+        self.assertEqual({first.id, second.id}, {item.id for item in hits})
+        self.assertNotIn(
+            store.reference_key("linearregression"),
+            store.unique_identity_types(self.conn))
+
     def test_proposed_alias_does_not_auto_match(self):
         entity = store.add_entity(self.conn, "监督学习", "method")
         store.add_alias(
@@ -739,6 +750,30 @@ class EndpointFallbackTests(unittest.TestCase):
         store.add_alias(self.conn, existing.id, "分类", status="verified")
 
         result = self._materialize_with_one_endpoint_failing()
+
+        self.assertEqual(1, len(result.claim_ids))
+        self.assertEqual(
+            existing.id, store.get_claim(self.conn, result.claim_ids[0]).object_id)
+
+    def test_whitespace_only_difference_reaches_existing_endpoint(self):
+        existing = store.add_entity(self.conn, "linear regression", "task")
+        batch = ObservationBatch(
+            entities=(observation("二分类", "task"),),
+            claims=(ClaimObservation(
+                subject="二分类", relation="is_a", object="linearregression",
+                qualifiers={}, evidence_type="explicit_taxonomy",
+                evidence="二分类属于线性回归。", location="§1", raw={}),),
+            next_reading_targets=(), rejected=())
+
+        with patch(
+                "kg.entity_resolution._llm_normalize",
+                return_value={
+                    "decision": "new", "canonical_name": "二分类",
+                    "confidence": 0.99, "reason": "新概念",
+                }):
+            result = claims.materialize(
+                self.conn, batch, source_snapshot_id=self.snapshot.id,
+                run_id=self.run_id)
 
         self.assertEqual(1, len(result.claim_ids))
         self.assertEqual(

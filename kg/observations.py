@@ -6,7 +6,7 @@ import re
 from dataclasses import dataclass, field
 from typing import Any
 
-from . import llm
+from . import llm, store
 from .ontology import registry
 
 
@@ -18,7 +18,8 @@ EXTRACT_PROMPT = """你是有据抽取器。只允许依据给出的语料，不
 
 要求：
 1. 每个实体和 Claim 都必须附语料中的逐字摘录 evidence。
-2. 每个 Claim 的 subject 和 object 必须同时出现在 entities 中。
+2. 每个 Claim 至少一个端点必须出现在本块 entities 中；另一个端点可以引用此前已经
+   建立的实体，但名称必须可由规范名或 verified alias 唯一解析。
 3. 不确定时不输出；不得把超链接、共现或章节顺序直接当成类型化关系。
 4. evidence_type 只能描述证据实际表达的类型，不得夸大。
 5. prerequisite_of 必须按契约填写 kind 和 strength；scope 仅在语料明确限定课程、章节或学习阶段时填写。
@@ -109,8 +110,13 @@ def evidence_in_text(excerpt: str, text: str) -> bool:
     return bool(parts) and all(part in normalized for part in parts)
 
 
-def parse_payload(payload: dict, source_text: str) -> ObservationBatch:
+def parse_payload(payload: dict, source_text: str, *,
+                  known_entity_types: dict[str, str] | None = None) -> ObservationBatch:
     reg = registry()
+    known_types = {
+        store.reference_key(name): entity_type
+        for name, entity_type in (known_entity_types or {}).items()
+    }
     entities: list[EntityObservation] = []
     claims: list[ClaimObservation] = []
     targets: list[ReadingTarget] = []
@@ -129,7 +135,7 @@ def parse_payload(payload: dict, source_text: str) -> ObservationBatch:
         if not name or not evidence_in_text(evidence, source_text):
             rejected.append(f"entity[{index}] 名称为空或 evidence 无法在语料中定位")
             continue
-        key = name.casefold()
+        key = store.reference_key(name)
         if key in entity_names:
             rejected.append(f"entity[{index}] 重复实体「{name}」")
             continue
@@ -140,22 +146,27 @@ def parse_payload(payload: dict, source_text: str) -> ObservationBatch:
             aliases=tuple(str(a).strip() for a in raw.get("aliases", []) if str(a).strip()),
             evidence=evidence, location=str(raw.get("location", "")).strip(), raw=raw))
 
-    entity_by_name = {item.name.casefold(): item for item in entities}
+    entity_by_name = {store.reference_key(item.name): item for item in entities}
     for index, raw in enumerate(payload.get("claims", [])):
         subject = str(raw.get("subject", "")).strip()
         object_ = str(raw.get("object", "")).strip()
         relation = str(raw.get("relation", "")).strip()
         evidence = str(raw.get("evidence", "")).strip()
-        left = entity_by_name.get(subject.casefold())
-        right = entity_by_name.get(object_.casefold())
-        if not left or not right:
-            rejected.append(f"claim[{index}] 端点必须同时出现在有效 entities 中")
+        subject_key = store.reference_key(subject)
+        object_key = store.reference_key(object_)
+        left = entity_by_name.get(subject_key)
+        right = entity_by_name.get(object_key)
+        if not left and not right:
+            rejected.append(
+                f"claim[{index}] 至少一个端点必须出现在本块有效 entities 中")
             continue
+        subject_type = left.entity_type if left else known_types.get(subject_key)
+        object_type = right.entity_type if right else known_types.get(object_key)
         qualifiers = (
             raw.get("qualifiers") if isinstance(raw.get("qualifiers"), dict) else {})
         try:
-            reg.validate_claim(
-                left.entity_type, relation, right.entity_type, active_only=True)
+            reg.validate_claim_endpoint_types(
+                subject_type, relation, object_type, active_only=True)
             reg.validate_qualifiers(
                 relation, qualifiers, require_required=True)
         except ValueError as exc:
@@ -190,7 +201,8 @@ def parse_payload(payload: dict, source_text: str) -> ObservationBatch:
 
 
 def extract(source_text: str, topic: str, *, max_entities: int = 20,
-            max_claims: int = 30) -> ObservationBatch:
+            max_claims: int = 30,
+            known_entity_types: dict[str, str] | None = None) -> ObservationBatch:
     """分块限额抽取，再跨块去重合并。
 
     ``max_entities`` 和 ``max_claims`` 是单个文本块的上限，而不是整章
@@ -209,7 +221,8 @@ def extract(source_text: str, topic: str, *, max_entities: int = 20,
         payload = llm.chat_json([{"role": "user", "content": prompt}])
         if not isinstance(payload, dict):
             raise ValueError("抽取器必须返回 JSON object")
-        return parse_payload(payload, chunk)
+        return parse_payload(
+            payload, chunk, known_entity_types=known_entity_types)
 
     batches = llm.pmap(extract_one, chunks)
     entities: dict[str, EntityObservation] = {}
@@ -218,10 +231,11 @@ def extract(source_text: str, topic: str, *, max_entities: int = 20,
     rejected: list[str] = []
     for batch in batches:
         for item in batch.entities:
-            entities.setdefault(item.name.casefold(), item)
+            entities.setdefault(store.reference_key(item.name), item)
         for item in batch.claims:
             key = json.dumps(
-                [item.subject.casefold(), item.relation, item.object.casefold(),
+                [store.reference_key(item.subject), item.relation,
+                 store.reference_key(item.object),
                  item.qualifiers],
                 ensure_ascii=False, sort_keys=True)
             claims.setdefault(key, item)

@@ -69,8 +69,8 @@ AST 扫新核心每个模块，import 了旧核心、或 SQL 里出现 `nodes / 
 `store.upsert_source` + `store.add_source_snapshot`（按 content_hash 去重）+
 `store.create_run`。
 
-run 记下 `pipeline.ALGORITHM_VERSION`（当前 `grounded-pipeline-4`）、
-prompt 版本（`grounded-extract-3`）、注册表版本。
+run 记下 `pipeline.ALGORITHM_VERSION`（当前 `grounded-pipeline-5`）、
+prompt 版本（`grounded-extract-4`）、注册表版本。
 
 ### 2. 抽取
 
@@ -81,6 +81,10 @@ prompt 版本（`grounded-extract-3`）、注册表版本。
 短块，而抽取质量对上下文完整度敏感，对块长不敏感。
 
 每块一次 LLM 调用，走 `llm.pmap` 并发，然后跨块去重合并。
+
+并发前由主线程生成 active canonical + verified alias 的只读 identity 快照。名称比较
+只额外忽略空白；同一引用键指向多个实体时不进入快照。并行线程只读普通字典，不触碰
+sqlite。
 
 **限额是每块的，不是整章的**（`--max-entities` / `--max-claims`）。长章节的后半段
 不能因为分块被丢掉。
@@ -95,9 +99,11 @@ prompt 版本（`grounded-extract-3`）、注册表版本。
 
 1. `entity_type` 必须在注册表里
 2. evidence 必须 `evidence_in_text` 逐字定位——只容忍空白差异和 `...`/`…` 分段
-3. claim 的 subject/object 必须同时出现在**本批有效 entities** 里
-4. relation 走 `validate_claim(..., active_only=True)`，只放行 `lifecycle: core`；
-   qualifiers 按契约必填校验；`evidence_type` 必须在注册表词表里
+3. claim 至少一个端点必须出现在**本块有效 entities**；另一个可引用 identity 快照；
+   两端都不在本块则视为偏离本批发现范围
+4. relation 走 `validate_claim_endpoint_types(..., active_only=True)`，只放行
+   `lifecycle: core` 并校验所有已知端点类型；qualifiers 按契约必填校验；
+   `evidence_type` 必须在注册表词表里
 5. `next_reading_targets` 必须在正文出现才登记
 
 ### 4. 落库
@@ -311,7 +317,7 @@ evidence 逐字可定位、关系/qualifiers/证据类型过注册表。
 **硬闸，不能为了提召回放宽**：
 
 - evidence 逐字定位（`observations.evidence_in_text`）
-- claim 端点必须在本批有效 entities 里
+- claim 至少一个端点来自本块；另一端只认唯一 canonical/verified identity
 - 独立性只来自 `sources.independence_group`
 - 消歧快路只认精确匹配，相似度只召回
 - 一切裁决先 Shadow
@@ -333,12 +339,13 @@ evidence 逐字可定位、关系/qualifiers/证据类型过注册表。
 
 按模块列，都是读代码看出来的，不是猜测。
 
-**`observations.parse_payload` 的端点约束** — claim 的两端必须同时出现在**本批
-entities** 里。模型没把某个概念列进 entities（比如撞上 `--max-entities` 上限），
-即使库里早有这个实体，这条 claim 也会在机械校验阶段就被丢掉。
+**`observations.parse_payload` 的范围约束** — claim 至少一个端点必须来自本块有效
+entities；另一端可通过只读 identity 快照引用唯一已有实体。两端都不在本块的 claim
+仍会被排除，即使关系可能正确，因为当前发现入口把它视为偏离本批主题。这是一条明确
+的范围政策，不是实体解析能力限制。
 
-放宽它是可以论证的：端点实体已经带着自己的 evidence 存在库里，claim 自己的
-evidence 仍然逐字校验。但这条是文档里写死的硬闸，改之前要先决定，不要顺手放。
+非本块端点无法唯一解析时不会被拒绝：claim observation 保持 pending，等后续实体
+出现或 identity 歧义解除后由 `replay-pending` 捡回。
 
 **`targeting.find_passages`** — 每次调用都把全部语料读进内存
 （`local_corpus.passages`），复杂度 O(claims × corpus)。语料规模上去要建倒排。

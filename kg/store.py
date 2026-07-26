@@ -25,6 +25,11 @@ def normalize_name(value: str) -> str:
     return re.sub(r"\s+", " ", value)
 
 
+def reference_key(value: str) -> str:
+    """抽取引用比较键：仅额外忽略空白，不改变实际保存的名称。"""
+    return re.sub(r"\s+", "", normalize_name(value))
+
+
 def _sha256(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8")).hexdigest()
 
@@ -547,6 +552,43 @@ def find_entities(conn, name: str) -> list[models.Entity]:
     """规范名优先；仅在规范名未命中时查询已验证 alias。"""
     canonical = find_canonical_entity(conn, name)
     return [canonical] if canonical else find_verified_alias_entities(conn, name)
+
+
+def identity_catalog(conn) -> dict[str, tuple[models.Entity, ...]]:
+    """按空白不敏感引用键汇总 active canonical 与 verified alias。
+
+    一个键可能仍指向多个实体；调用方只能在结果长度为 1 时确定性认领。
+    """
+    rows = conn.execute(
+        "SELECT e.*,e.canonical_name identity_name FROM entities e"
+        " WHERE e.status NOT IN ('rejected','merged')"
+        " UNION ALL"
+        " SELECT e.*,a.name identity_name FROM entities e"
+        " JOIN aliases a ON a.entity_id=e.id"
+        " WHERE e.status NOT IN ('rejected','merged') AND a.status='verified'"
+        " ORDER BY id").fetchall()
+    by_key: dict[str, dict[int, models.Entity]] = {}
+    for row in rows:
+        by_key.setdefault(reference_key(row["identity_name"]), {})[
+            row["id"]] = _entity(row)
+    return {
+        key: tuple(by_id[index] for index in sorted(by_id))
+        for key, by_id in by_key.items() if key
+    }
+
+
+def unique_identity_types(conn) -> dict[str, str]:
+    """给并行抽取线程使用的只读快照；歧义 identity 不进入快照。"""
+    return {
+        key: entities[0].entity_type
+        for key, entities in identity_catalog(conn).items()
+        if len(entities) == 1
+    }
+
+
+def find_reference_entities(conn, name: str) -> list[models.Entity]:
+    """只忽略空白查 active canonical/verified alias；不做任何模糊匹配。"""
+    return list(identity_catalog(conn).get(reference_key(name), ()))
 
 
 def add_type_assertion(conn, entity_id: int, observed_type: str, *,

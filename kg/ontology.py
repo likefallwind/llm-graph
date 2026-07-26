@@ -123,15 +123,24 @@ class Registry:
 
     def validate_claim(self, subject_type: str, relation: str, object_type: str,
                        *, active_only: bool = False) -> None:
-        self.validate_entity_type(subject_type)
-        self.validate_entity_type(object_type)
+        self.validate_claim_endpoint_types(
+            subject_type, relation, object_type, active_only=active_only)
+
+    def validate_claim_endpoint_types(
+            self, subject_type: str | None, relation: str,
+            object_type: str | None, *, active_only: bool = False) -> None:
+        """校验已知端点类型；None 表示端点尚待确定性解析。"""
         policy = self.relation(relation)
         if active_only and policy["lifecycle"] != "core":
             raise OntologyError(f"关系 {relation} 不在默认抽取的核心关系中")
-        if subject_type not in policy["subject_types"]:
+        if subject_type is not None:
+            self.validate_entity_type(subject_type)
+        if object_type is not None:
+            self.validate_entity_type(object_type)
+        if subject_type is not None and subject_type not in policy["subject_types"]:
             raise OntologyError(
                 f"关系 {relation} 不允许 subject 类型 {subject_type}")
-        if object_type not in policy["object_types"]:
+        if object_type is not None and object_type not in policy["object_types"]:
             raise OntologyError(
                 f"关系 {relation} 不允许 object 类型 {object_type}")
 
