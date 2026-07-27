@@ -1,0 +1,312 @@
+# 关系与实体类型的机器权威。kg/ontology.py 加载并强制执行。
+#
+# 规则：这里只放有消费者的字段。没有代码读的字段不要加——死配置会让人以为
+# 某条规则在生效，实际没有。新增关系必须补齐 ontology._validate_definition
+# 要求的全部字段，缺一个就加载失败。
+#
+# ⚠️ typical_subject_types / typical_object_types 是**引导不是硬闸**。它们写进
+# 抽取契约给模型看，端点不合典型只会被 `pipeline endpoint-types` 报告，不会拒收。
+# 原因：主类型表达实体的规范身份，而关系问的是它在这句话里承担什么角色，拿身份
+# 闸角色必然误伤——「正则化 solves 过拟合」「模型 evaluated_by ImageNet」
+# 「语言模型 trained_on 某教材」三句都成立，旧的硬闸三句都拒。关系成不成立由
+# 证据和蕴含验证判定。
+version: 5
+
+# 抽取器允许输出的全部证据类型。提示词里的可选值和强弱判定都从这里生成，
+# 不在这张表里的值一律不合法。
+evidence_types:
+  explicit_definition:
+    strength: strong
+    description: 正文给出定义，且定义本身包含待验证的关系。
+  explicit_taxonomy:
+    strength: strong
+    description: 正文明确表述种属或分类归属。
+  explicit_composition:
+    strength: strong
+    description: 正文明确表述结构组成或流程阶段。
+  explicit_function:
+    strength: strong
+    description: 正文明确表述用途、功能或作用对象。
+  explicit_prerequisite:
+    strength: strong
+    description: 正文明确表述学习顺序或概念依赖。
+  explicit_comparison:
+    strength: strong
+    description: 正文明确对比两者或指出二者可互相替代。
+  explicit_derivation:
+    strength: strong
+    description: 正文明确表述推导、扩展或改编自。
+  toc_order:
+    strength: weak
+    description: 目录或章节编号顺序。
+  hyperlink:
+    strength: weak
+    description: 超链接指向。
+  cooccurrence:
+    strength: weak
+    description: 仅在同一段落出现。
+
+# 单值必填的实体主类型，六类，按 priority 升序判定，命中即停。判据全文与正反例
+# 见 design/entity-type-v5.md；抽取与复核 prompt 从这里生成，不另抄一份。
+#
+# priority 只用来让前五格压过 concept——concept 与前五格永远同时成立，它是兜底
+# 而不是"也说得通"的备选。一个名字同时符合多格时按优先序取主面——主类型不声称
+# 表达实体的全部用途，另一面由它的邻边表达。多义不在这里判，见下面 disambiguation。
+#
+# disambiguation 是跨类别的消歧从句，全部由双轮判定实测暴露，不是预设的。
+# 抽取与复核 prompt 把它们和每一类的 positive/negative 一起注入。
+disambiguation:
+  - 判规范身份，不判局部用途。正文说 X“用于分类”，不足以把 X 判成 solution。
+  - 类别名跟它统辖的那一类落在同一格，不因为“是个类别”就退回 concept。模型、概率模型、深度神经网络、非参数算法都是 solution；损失函数、替代损失函数是 criterion；数据集是 data。这条只在成员是可指认的具体东西时适用。
+  - 研究领域、学科方向、技术范畴、能力设想不是有成功条件的问题，判 concept。人工智能、机器学习、深度学习、自然语言处理、计算机视觉、微积分、线性代数、人工通用智能、生成式人工智能、深度伪造都是 concept，不是 task 也不是 solution。
+  - 被某个 solution 内部采用的数学构造仍是 concept。核函数、激活函数、假设函数、决策函数、计算图、张量都是。solution 判据里的“有结构”指有可执行的组成步骤，不指它本身是一种结构。
+  - 一个名字同时符合多格时按优先序取主面，不要判 ambiguous。主类型只表达规范主类别，不声称表达全部用途，另一面由邻边表达。
+  - 不要凭对术语的世界知识声称一个名字有多个含义。多义要靠两处相互不相容的语料证据才能确立，单看一条定义和少量摘录判不出多义。
+  - ambiguous 只留给“给出的定义信息不足，哪一格都判不出来”，表示这条定义判不了，不表示这个词有多个含义。
+entity_types:
+  resource:
+    priority: 1
+    description: 供人阅读、学习或引用的知识载体。
+    positive: [论文, 教材, 课程, 规范文档, 教程, API 文档]
+    negative:
+      - ImageNet 是被消费的数据，不是读物，属 data
+      - 深度学习框架是工具，属 solution
+  criterion:
+    priority: 2
+    description: 用于优化、比较、评分或评测的标准、指标、目标、协议。
+    positive: [交叉熵损失, 平方损失, Hinge 损失, 损失函数, 替代损失函数, 准确率, BLEU, 困惑度]
+    negative:
+      - 梯度是数学对象，属 concept
+      - 熵是数学量，只有被当成被优化的目标时才算标准，属 concept
+  data:
+    priority: 3
+    description: 样本、记录、实例或观测值的集合。
+    positive: [ImageNet, COCO, 训练数据集, 验证数据集, 数据集, 训练数据]
+    negative:
+      - 样本、特征、标签是集合里的成分而不是集合，属 concept
+      - 数据预处理、数据操作是过程，属 solution
+  task:
+    priority: 4
+    description: 需要解决的问题，有目标、输入输出或成功条件。
+    positive: [图像分类, 机器翻译, 二分类, 多类分类, 分类问题, 预测, 结构化学习]
+    negative:
+      - 分类器、线性分类器是解法，属 solution
+      - 标签是任务的产物而不是任务，属 concept
+  solution:
+    priority: 5
+    description: 用于解决或支撑任务的算法、过程、模型、架构、系统、工具；判据是有步骤或有结构。
+    positive: [梯度下降, 反向传播, 自动微分, 线性回归, 支持向量机, 人工神经网络, Transformer, PyTorch, 知识蒸馏]
+    negative:
+      - Softmax 函数、链式法则、Hadamard 积、仿射变换、导数、范数是数学对象、运算或定律，属 concept
+      - 过拟合、泛化是现象与性质，属 concept
+      - 被某个 solution 内部采用的数学构造仍是 concept；核函数、激活函数、假设函数、决策函数都是
+  concept:
+    priority: 6
+    description: 前五格都不占的抽象知识对象：数学对象、运算、性质、定律、现象、量。
+    positive: [过拟合, 欠拟合, 泛化, 熵, 概率, 梯度, 矩阵, 张量, 范数, 线性可分, 超参数, 微积分, 线性代数, Softmax 函数, 链式法则]
+    negative:
+      - 反向传播是算法，属 solution
+      - 损失函数是标准，属 criterion
+      - 预测是问题，属 task
+      - 数据集是集合，属 data
+
+relations:
+  is_a:
+    lifecycle: core
+    family: taxonomy
+    description: Subject is a more specific kind of object.
+    typical_subject_types: [resource, criterion, data, task, solution, concept]
+    typical_object_types: [resource, criterion, data, task, solution, concept]
+    symmetric: false
+    transitive: true
+    acyclic: true
+    accepted_evidence_types: [explicit_taxonomy, explicit_definition]
+    minimum_evidence: {explicit_high_authority: 1, independent_standard_sources: 2}
+    validator_version: entailment-validator-1
+    high_impact_review: true
+
+  part_of:
+    lifecycle: core
+    family: composition
+    description: Subject is an actual structural constituent or explicitly identified stage of object; usage, dependency, participation, construction, input/output, attributes, and subtype relations are not composition.
+    typical_subject_types: [concept, solution, criterion, data]
+    typical_object_types: [concept, solution, data]
+    symmetric: false
+    transitive: contextual
+    acyclic: true
+    # 只有明确的组成表述算数。explicit_function（用于/作用）恰恰是 description
+    # 里点名排除的那类语义，不能计入。
+    accepted_evidence_types: [explicit_composition]
+    minimum_evidence: {explicit_high_authority: 1, independent_standard_sources: 2}
+    validator_version: part-of-validator-1
+    high_impact_review: true
+
+  prerequisite_of:
+    lifecycle: core
+    family: educational
+    description: Subject should be learned before object because of a conceptual dependency, explicit derivation, or curriculum recommendation.
+    typical_subject_types: [concept, solution, criterion]
+    typical_object_types: [concept, solution, criterion, task]
+    symmetric: false
+    transitive: contextual
+    acyclic: true
+    qualifiers: [kind, strength, scope]
+    required_qualifiers: [kind, strength]
+    qualifier_values:
+      kind: [conceptual, derivational, curricular]
+      strength: [required, recommended]
+    accepted_evidence_types: [explicit_prerequisite, explicit_derivation]
+    minimum_evidence: {explicit_high_authority: 1, independent_curriculum_sources: 2}
+    validator_version: entailment-validator-1
+    high_impact_review: true
+
+  # ⚠️ 不可达，且没有转正路径。保留仅为记录这个设计选项，不要当成在生效的规则。
+  #
+  # 它出自 2026-07-23 的 development-plan-v2 关系草案，次日登记为 experimental，
+  # 从未进过抽取路径。原始验收条件的第三条是「distinction from is_a and part_of」，
+  # 而它跟 is_a 的唯一机械区别一直是端点类型限死在 field 上。
+  #
+  # 注册表 v5 把 field 并进 concept 之后，签名只能写成 concept -> concept，是
+  # is_a 签名的真子集；除 description 与 lifecycle 外，两条关系的全部字段
+  # （family / 证据类型 / minimum_evidence / validator / 传递性 / 无环 /
+  # high_impact_review）完全相同。也就是说它现在等于「两端都是 concept 的 is_a」，
+  # 能表达的边 is_a 都能表达，走一样的证据要求和验证器。
+  #
+  # tests/test_relation_contract.py:55 的 test_field_taxonomy_is_absorbed_by_is_a
+  # 已经断言领域分类走 is_a，下一条断言 subfield_of 在抽取边界被拒——既定行为。
+  #
+  # 要复活它，得先有一个不依赖 field 类型的区分判据。语料里如果出现「子领域」
+  # 确实需要单独表达的结构，那时再谈。
+  subfield_of:
+    lifecycle: experimental
+    family: taxonomy
+    description: Subject field is conventionally organized under object field.
+    typical_subject_types: [concept]
+    typical_object_types: [concept]
+    symmetric: false
+    transitive: true
+    acyclic: true
+    accepted_evidence_types: [explicit_taxonomy, explicit_definition]
+    minimum_evidence: {explicit_high_authority: 1, independent_standard_sources: 2}
+    validator_version: entailment-validator-1
+    high_impact_review: true
+
+  often_confused_with:
+    lifecycle: experimental
+    family: educational
+    description: Teaching material documents a common confusion.
+    typical_subject_types: [resource, criterion, data, task, solution, concept]
+    typical_object_types: [resource, criterion, data, task, solution, concept]
+    symmetric: true
+    transitive: false
+    acyclic: false
+    accepted_evidence_types: [explicit_comparison]
+    minimum_evidence: {explicit_high_authority: 1, independent_standard_sources: 2}
+    validator_version: entailment-validator-1
+
+  pedagogical_contrast_with:
+    lifecycle: experimental
+    family: educational
+    description: Teaching material explicitly compares the entities.
+    typical_subject_types: [resource, criterion, data, task, solution, concept]
+    typical_object_types: [resource, criterion, data, task, solution, concept]
+    symmetric: true
+    transitive: false
+    acyclic: false
+    accepted_evidence_types: [explicit_comparison]
+    minimum_evidence: {explicit_high_authority: 1, independent_standard_sources: 2}
+    validator_version: entailment-validator-1
+
+  alternative_to:
+    lifecycle: experimental
+    family: functional
+    description: Subject and object are explicit alternatives for substantially the same task or objective.
+    typical_subject_types: [solution]
+    typical_object_types: [solution]
+    symmetric: true
+    transitive: false
+    acyclic: false
+    qualifiers: [scope, condition]
+    accepted_evidence_types: [explicit_comparison]
+    minimum_evidence: {explicit_high_authority: 1, independent_standard_sources: 2}
+    validator_version: entailment-validator-1
+
+  used_for:
+    lifecycle: experimental
+    family: functional
+    description: Subject is used to perform or support object task.
+    typical_subject_types: [concept, solution]
+    typical_object_types: [task]
+    symmetric: false
+    transitive: false
+    acyclic: false
+    accepted_evidence_types: [explicit_function]
+    minimum_evidence: {explicit_high_authority: 1, independent_standard_sources: 2}
+    validator_version: entailment-validator-1
+
+  solves:
+    lifecycle: experimental
+    family: functional
+    description: Subject is explicitly presented as solving object task.
+    typical_subject_types: [solution]
+    typical_object_types: [task]
+    symmetric: false
+    transitive: false
+    acyclic: false
+    accepted_evidence_types: [explicit_function]
+    minimum_evidence: {explicit_high_authority: 1, independent_standard_sources: 2}
+    validator_version: entailment-validator-1
+
+  evaluated_by:
+    lifecycle: experimental
+    family: functional
+    description: Subject is evaluated using object metric.
+    typical_subject_types: [task, solution]
+    typical_object_types: [criterion]
+    symmetric: false
+    transitive: false
+    acyclic: false
+    accepted_evidence_types: [explicit_function]
+    minimum_evidence: {explicit_high_authority: 1, independent_standard_sources: 2}
+    validator_version: entailment-validator-1
+
+  trained_on:
+    lifecycle: experimental
+    family: functional
+    description: Subject model is trained or fine-tuned on object dataset.
+    typical_subject_types: [solution]
+    typical_object_types: [data]
+    symmetric: false
+    transitive: false
+    acyclic: false
+    qualifiers: [variant, time]
+    accepted_evidence_types: [explicit_function]
+    minimum_evidence: {explicit_high_authority: 1, independent_standard_sources: 2}
+    validator_version: entailment-validator-1
+
+  optimizes:
+    lifecycle: experimental
+    family: functional
+    description: Subject method optimizes object loss or objective concept.
+    typical_subject_types: [solution]
+    typical_object_types: [criterion, concept]
+    symmetric: false
+    transitive: false
+    acyclic: false
+    accepted_evidence_types: [explicit_function]
+    minimum_evidence: {explicit_high_authority: 1, independent_standard_sources: 2}
+    validator_version: entailment-validator-1
+
+  derived_from:
+    lifecycle: experimental
+    family: historical
+    description: Subject is explicitly derived, extended, or adapted from object.
+    typical_subject_types: [concept, solution, criterion]
+    typical_object_types: [concept, solution, criterion]
+    symmetric: false
+    transitive: false
+    acyclic: true
+    qualifiers: [time, variant]
+    accepted_evidence_types: [explicit_derivation]
+    minimum_evidence: {explicit_high_authority: 1, independent_standard_sources: 2}
+    validator_version: entailment-validator-1

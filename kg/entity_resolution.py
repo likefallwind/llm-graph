@@ -1,0 +1,715 @@
+"""实体对齐：确定性精确匹配优先，LLM 只处理未命中与歧义。"""
+from __future__ import annotations
+
+import json
+import re
+from dataclasses import dataclass
+from difflib import SequenceMatcher
+from typing import Callable
+
+from . import alias_evidence, llm, store
+from .observations import EntityObservation
+
+
+RESOLVER_VERSION = "entity-resolver-6"
+ALIGNMENT_POLICY_VERSION = "entity-alignment-policy-3"
+LLM_SUSPECT_CONFIDENCE = 0.80
+LLM_AUTO_LINK_CONFIDENCE = 0.95
+# existing 和 new 都只有达到统一的自动执行门槛才允许落地。低于门槛说明系统
+# 暂时不能安全执行，不说明 observation 无效。
+LLM_NEW_ENTITY_CONFIDENCE = LLM_AUTO_LINK_CONFIDENCE
+MAX_CANDIDATES = 5
+# 这些 outcome 都没有否定 observation 本身，不能把 observation 标成 rejected。
+NON_TERMINAL_OUTCOMES = frozenset({
+    "suspected_same_entity",
+    "ambiguous",
+    "below_confidence",
+    "resolver_error",
+    "invalid_response",
+})
+# 这两类已有语义判断，但不足以自动执行。同一 resolver 版本下不反复花费 LLM，
+# 等人工复核、策略升级或 resolver 版本变化后再重放。
+NEEDS_REVIEW_OUTCOMES = frozenset({"ambiguous", "below_confidence"})
+SAFE_DIRECT_MATCH_TYPES = {"translation_alias", "name_variant"}
+MATCH_TYPES = {
+    "translation_alias", "name_variant", "abbreviation", "symbol",
+    "composite", "semantic_alias", "none",
+}
+NAME_VARIANT_SUFFIXES = (
+    "问题", "方法", "算法", "模型", "函数", "运算", "任务", "估计",
+    "problem", "method", "algorithm", "model", "function", "task",
+    "estimation",
+)
+
+
+@dataclass(frozen=True)
+class Resolution:
+    entity_id: int | None
+    outcome: str
+    reason: str
+    matched_by: str = ""
+    normalized_name: str = ""
+    candidate_ids: tuple[int, ...] = ()
+    confidence: float | None = None
+    selected_candidate_id: int | None = None
+
+
+LLMNormalizer = Callable[[EntityObservation, list[dict]], dict]
+
+
+def _compact_name(value: str) -> str:
+    return re.sub(r"[\s`'\"_\-—–·()（）]+", "", value.casefold())
+
+
+def _name_variant_roots(value: str) -> set[str]:
+    roots = {_compact_name(value)}
+    changed = True
+    while changed:
+        changed = False
+        for root in tuple(roots):
+            for suffix in NAME_VARIANT_SUFFIXES:
+                compact_suffix = _compact_name(suffix)
+                if root.endswith(compact_suffix) and len(root) > len(compact_suffix):
+                    shorter = root[:-len(compact_suffix)]
+                    if shorter not in roots:
+                        roots.add(shorter)
+                        changed = True
+    return roots
+
+
+def _has_cjk(value: str) -> bool:
+    return bool(re.search(r"[\u3400-\u9fff]", value))
+
+
+def _validated_direct_match_type(alias: str, canonical: str,
+                                 claimed_type: str, *,
+                                 observed_type: str = "",
+                                 entity_type: str = "") -> str | None:
+    """LLM 只能提议快捷类型；最终资格由确定性字符串规则确认。
+
+    这是**充分条件**：命中即可判定同名。命中不了不代表不同名——那种情况走
+    alias_evidence 的语料声明累计，不要当成否定结论。
+
+    `NAME_VARIANT_SUFFIXES` 剥掉的恰好是类型标记（问题／任务→task，
+    方法／算法／模型→solution，函数→多半 concept），所以后缀剥离会抹掉主类型
+    要表达的区别：「回归问题」是 task 而「回归」是 solution，「概率模型」是
+    solution 而「概率」是 concept。判据因此是**剥掉后缀会不会改变主类型**——
+    不变说明后缀冗余，该合；变了说明后缀带类型，不能走自动执行的快路。
+
+    只在两边类型都已知时才拦。观察类型是 LLM 给的、可能错，所以这里不做否定
+    结论，只是取消快路资格：调用方会退回累计对齐，别名留在 proposed 等复核。
+    """
+    if _name_variant_roots(alias) & _name_variant_roots(canonical):
+        if observed_type and entity_type and observed_type != entity_type:
+            return None
+        return "name_variant"
+    if (claimed_type == "translation_alias"
+            and _has_cjk(alias) != _has_cjk(canonical)):
+        return "translation_alias"
+    return None
+
+
+def _candidate_rows(conn, name: str, limit: int = MAX_CANDIDATES) -> list[dict]:
+    """为 LLM 生成少量候选；相似度只召回，绝不直接决定合并。"""
+    query = store.normalize_name(name)
+    rows = conn.execute(
+        "SELECT e.id,e.canonical_name,e.normalized_name,e.entity_type,e.definition,"
+        " a.name alias_name,a.normalized_name alias_normalized,a.status alias_status"
+        " FROM entities e LEFT JOIN aliases a"
+        " ON a.entity_id=e.id AND a.status!='rejected'"
+        " WHERE e.status!='rejected'").fetchall()
+    by_entity: dict[int, dict] = {}
+    for row in rows:
+        candidate = by_entity.setdefault(row["id"], {
+            "id": row["id"],
+            "canonical_name": row["canonical_name"],
+            "entity_type": row["entity_type"],
+            "definition": row["definition"],
+            "matched_names": [],
+            "score": SequenceMatcher(None, query, row["normalized_name"]).ratio(),
+        })
+        if row["alias_normalized"]:
+            score = SequenceMatcher(None, query, row["alias_normalized"]).ratio()
+            candidate["score"] = max(candidate["score"], score)
+            candidate["matched_names"].append({
+                "name": row["alias_name"],
+                "status": row["alias_status"],
+            })
+    ranked = sorted(
+        by_entity.values(), key=lambda item: (-item["score"], item["id"]))
+    return ranked[:limit]
+
+
+# 中文短词的 SequenceMatcher 比值偏低（感知机/感知器只有 0.667），阈值按中文调。
+DUPLICATE_SCAN_THRESHOLD = 0.6
+
+
+def find_duplicate_candidates(conn, *, threshold: float = DUPLICATE_SCAN_THRESHOLD,
+                              limit: int = 50) -> list[dict]:
+    """机械扫描已有实体里的疑似重复对（零 LLM，只报告不改数据）。
+
+    entity_alignment_candidates 只在 resolve 时由 LLM 提议才产生，不会回头看
+    已有实体；即使采用高门槛，新建仍可能重复。这个扫描补上事后发现通道。
+    """
+    rows = conn.execute(
+        "SELECT id,canonical_name,normalized_name,entity_type,definition,metadata"
+        " FROM entities WHERE status!='rejected' ORDER BY id").fetchall()
+    aliases: dict[int, set[str]] = {}
+    for row in conn.execute(
+            "SELECT entity_id,normalized_name FROM aliases WHERE status!='rejected'"):
+        aliases.setdefault(row["entity_id"], set()).add(row["normalized_name"])
+    known = {
+        (item["observed_name"], item["entity_id"]) for item in conn.execute(
+            "SELECT observed_name,entity_id FROM entity_alignment_candidates")
+    }
+    pairs = []
+    for index, left in enumerate(rows):
+        for right in rows[index + 1:]:
+            names_left = {left["normalized_name"]} | aliases.get(left["id"], set())
+            names_right = {right["normalized_name"]} | aliases.get(right["id"], set())
+            shared = names_left & names_right
+            score = max(
+                (SequenceMatcher(None, a, b).ratio()
+                 for a in names_left for b in names_right), default=0.0)
+            # 一个名字完全包含另一个（回归/线性回归）也是常见的重复来源。
+            contained = any(
+                a != b and (a in b or b in a)
+                for a in names_left for b in names_right)
+            if not shared and not contained and score < threshold:
+                continue
+            metadata_left = json.loads(left["metadata"] or "{}")
+            metadata_right = json.loads(right["metadata"] or "{}")
+            pairs.append({
+                "left_id": left["id"], "left": left["canonical_name"],
+                "left_type": left["entity_type"],
+                "right_id": right["id"], "right": right["canonical_name"],
+                "right_type": right["entity_type"],
+                "score": round(score, 3),
+                "shared_names": sorted(shared),
+                "name_contained": contained,
+                "same_type": left["entity_type"] == right["entity_type"],
+                # 低置信度新建的实体重复风险更高，排前面。
+                "low_confidence_creation": bool(
+                    metadata_left.get("below_auto_link_confidence")
+                    or metadata_right.get("below_auto_link_confidence")),
+                "already_queued": bool(
+                    (right["canonical_name"], left["id"]) in known
+                    or (left["canonical_name"], right["id"]) in known),
+            })
+    pairs.sort(key=lambda item: (
+        not item["low_confidence_creation"], not item["shared_names"],
+        -item["score"]))
+    return pairs[:limit]
+
+
+def _llm_normalize(observation: EntityObservation,
+                   candidates: list[dict]) -> dict:
+    prompt = f"""你是知识图谱实体名称规范化与对齐器。
+
+观察实体：
+- 原始名称：{observation.name}
+- 观察类型：{observation.entity_type}
+- 定义：{observation.definition}
+- 原文证据：{observation.evidence}
+
+候选实体（字符串相似度仅用于召回，不代表相同）：
+{json.dumps(candidates, ensure_ascii=False)}
+
+规则：
+1. 同一概念的缩写、译名、全称、常见别名可判为 existing。
+2. 仅仅字符串相似、相关、上下位或同领域不能判为同一实体。
+3. 类型不同是冲突信号，但不能单独推导为不同实体。
+4. 不确定时必须输出 ambiguous。
+5. canonical_name 是你建议的简洁规范名称；若选择 existing，candidate_id 必须来自候选列表。
+6. 中英文直接互译且概念完全相同时，match_type=translation_alias。
+7. 中文名称仅增加或省略“问题、方法、算法、模型、函数、任务”等词，
+   且上下文含义没有变化时，match_type=name_variant。但如果增删该词改变了实体的
+   主类型，含义就变了，不是 name_variant——“回归问题”是 task 而“回归”是
+   solution，“概率模型”是 solution 而“概率”是 concept，这类必须判 different
+   或 ambiguous。
+8. 缩写、符号、组合概念、多义词分别标为 abbreviation、symbol、composite、
+   semantic_alias；不得伪装成 translation_alias 或 name_variant。
+
+只输出 JSON：
+{{
+  "decision": "existing|new|ambiguous",
+  "candidate_id": null,
+  "canonical_name": "规范名称",
+  "proposed_alias": "原始名称或空字符串",
+  "match_type": "translation_alias|name_variant|abbreviation|symbol|composite|semantic_alias|none",
+  "confidence": 0.0,
+  "reason": "简短理由"
+}}"""
+    payload = llm.chat_json([{"role": "user", "content": prompt}])
+    if not isinstance(payload, dict):
+        raise ValueError("实体规范化器必须返回 JSON object")
+    return payload
+
+
+def _record(conn, observation: EntityObservation, result: Resolution, *,
+            source_snapshot_id: int | None,
+            observation_id: int | None) -> Resolution:
+    store.add_resolution_event(
+        conn, raw_name=observation.name,
+        deterministic_name=store.normalize_name(observation.name),
+        llm_normalized_name=result.normalized_name,
+        entity_id=result.entity_id, outcome=result.outcome,
+        selected_candidate_id=result.selected_candidate_id,
+        matched_by=result.matched_by, candidate_ids=list(result.candidate_ids),
+        confidence=result.confidence, reason=result.reason,
+        resolver_version=RESOLVER_VERSION,
+        source_snapshot_id=source_snapshot_id, observation_id=observation_id)
+    if result.entity_id is not None:
+        entity = store.get_entity(conn, result.entity_id)
+        conflict = entity.entity_type != observation.entity_type
+        store.add_type_assertion(
+            conn, result.entity_id, observation.entity_type,
+            source_snapshot_id=source_snapshot_id, observation_id=observation_id,
+            status="conflict" if conflict else "consistent",
+            reason=(
+                f"实体主类型为 {entity.entity_type}，观察类型为 {observation.entity_type}"
+                if conflict else "观察类型与实体主类型一致"))
+    return result
+
+
+def _matched_result(entity, observation: EntityObservation, *, matched_by: str,
+                    reason: str, candidate_ids: tuple[int, ...] = (),
+                    confidence: float | None = None) -> Resolution:
+    conflict = entity.entity_type != observation.entity_type
+    return Resolution(
+        entity.id, "type_conflict" if conflict else "same_entity",
+        (
+            f"{reason}；已有实体类型 {entity.entity_type} 与观察类型"
+            f" {observation.entity_type} 冲突，已记录类型断言"
+            if conflict else reason
+        ),
+        matched_by=matched_by,
+        normalized_name=entity.normalized_name,
+        candidate_ids=candidate_ids,
+        confidence=confidence,
+        selected_candidate_id=entity.id if confidence is not None else None)
+
+
+def resolve(conn, observation: EntityObservation, *,
+            source_snapshot_id: int | None = None,
+            observation_id: int | None = None,
+            llm_normalizer: LLMNormalizer | None = None) -> Resolution:
+    deterministic_name = store.normalize_name(observation.name)
+
+    canonical = store.find_canonical_entity(conn, deterministic_name)
+    if canonical:
+        result = _matched_result(
+            canonical, observation, matched_by="canonical_exact",
+            reason="确定性规范化后精确命中 canonical name")
+        return _record(
+            conn, observation, result, source_snapshot_id=source_snapshot_id,
+            observation_id=observation_id)
+
+    alias_hits = store.find_verified_alias_entities(conn, deterministic_name)
+    if len(alias_hits) == 1:
+        result = _matched_result(
+            alias_hits[0], observation, matched_by="verified_alias_exact",
+            reason="确定性规范化后精确命中 verified alias")
+        return _record(
+            conn, observation, result, source_snapshot_id=source_snapshot_id,
+            observation_id=observation_id)
+
+    candidates = _candidate_rows(conn, deterministic_name)
+    # verified alias 的多实体命中必须全部进入消歧候选，即使字符串候选上限较小。
+    candidate_by_id = {item["id"]: item for item in candidates}
+    for entity in alias_hits:
+        candidate_by_id.setdefault(entity.id, {
+            "id": entity.id,
+            "canonical_name": entity.canonical_name,
+            "entity_type": entity.entity_type,
+            "definition": entity.definition,
+            "matched_names": [{"name": observation.name, "status": "verified"}],
+            "score": 1.0,
+        })
+    candidates = sorted(
+        candidate_by_id.values(), key=lambda item: (-item["score"], item["id"]))
+    candidate_ids = tuple(item["id"] for item in candidates)
+
+    normalizer = llm_normalizer or _llm_normalize
+    try:
+        normalized = normalizer(observation, candidates)
+    except Exception as exc:
+        # 调用失败不是结论——模型没说这个名字有歧义，它根本没回答。传输层已经退避
+        # 重试过（llm._post），走到这里说明重试也没成，留给下一轮重放，不是 ambiguous。
+        result = Resolution(
+            None, "resolver_error", f"LLM 规范化失败：{exc}",
+            matched_by="llm_error", normalized_name=deterministic_name,
+            candidate_ids=candidate_ids)
+        return _record(
+            conn, observation, result, source_snapshot_id=source_snapshot_id,
+            observation_id=observation_id)
+
+    decision = str(normalized.get("decision", "")).strip()
+    canonical_name = str(normalized.get("canonical_name", "")).strip()
+    reason = str(normalized.get("reason", "")).strip() or "LLM 未提供理由"
+    try:
+        confidence = float(normalized.get("confidence", 0.0))
+    except (TypeError, ValueError):
+        confidence = 0.0
+    confidence = min(1.0, max(0.0, confidence))
+    match_type = str(normalized.get("match_type", "semantic_alias")).strip()
+    if match_type not in MATCH_TYPES:
+        match_type = "semantic_alias"
+    reason = f"[{match_type}] {reason}"
+
+    # LLM 的规范名称也必须重新经过确定性精确检查。
+    normalized_hit = (
+        store.find_canonical_entity(conn, canonical_name) if canonical_name else None)
+    selected = normalized_hit if decision == "existing" else None
+    if decision == "existing" and not selected:
+        try:
+            selected_id = int(normalized.get("candidate_id"))
+        except (TypeError, ValueError):
+            selected_id = 0
+        if selected_id in candidate_ids:
+            selected = store.get_entity(conn, selected_id)
+
+    if decision == "ambiguous":
+        result = Resolution(
+            None, "ambiguous", reason,
+            matched_by="llm_ambiguous",
+            normalized_name=canonical_name or deterministic_name,
+            candidate_ids=candidate_ids, confidence=confidence)
+        return _record(
+            conn, observation, result, source_snapshot_id=source_snapshot_id,
+            observation_id=observation_id)
+
+    if decision not in {"existing", "new"}:
+        result = Resolution(
+            None, "invalid_response",
+            f"{reason}；decision 必须是 existing、new 或 ambiguous",
+            matched_by="llm_invalid_response",
+            normalized_name=canonical_name or deterministic_name,
+            candidate_ids=candidate_ids, confidence=confidence)
+        return _record(
+            conn, observation, result, source_snapshot_id=source_snapshot_id,
+            observation_id=observation_id)
+
+    if decision == "existing" and not selected:
+        result = Resolution(
+            None, "invalid_response",
+            f"{reason}；existing 必须指向候选实体",
+            matched_by="llm_invalid_response",
+            normalized_name=canonical_name or deterministic_name,
+            candidate_ids=candidate_ids, confidence=confidence)
+        return _record(
+            conn, observation, result, source_snapshot_id=source_snapshot_id,
+            observation_id=observation_id)
+
+    if selected and confidence >= LLM_SUSPECT_CONFIDENCE:
+        if selected.id not in candidate_ids:
+            candidate_ids = (*candidate_ids, selected.id)
+        direct_match_type = _validated_direct_match_type(
+            observation.name, selected.canonical_name, match_type,
+            observed_type=observation.entity_type,
+            entity_type=selected.entity_type)
+        safe_direct = (
+            direct_match_type in SAFE_DIRECT_MATCH_TYPES
+            and confidence >= LLM_AUTO_LINK_CONFIDENCE)
+        if safe_direct:
+            match_type = direct_match_type
+        if deterministic_name != selected.normalized_name:
+            store.add_alias(
+                conn, selected.id, observation.name,
+                source_snapshot_id=source_snapshot_id,
+                status="verified" if safe_direct else "proposed",
+                alias_type=match_type,
+                evidence_excerpt=observation.evidence)
+        alignment = store.add_alignment_evidence(
+            conn, observed_name=observation.name, entity_id=selected.id,
+            confidence=confidence, policy_version=ALIGNMENT_POLICY_VERSION,
+            resolver_version=RESOLVER_VERSION, reason=reason,
+            source_snapshot_id=source_snapshot_id,
+            observation_id=observation_id, direct_verify=safe_direct)
+        if safe_direct or alignment["status"] == "verified":
+            matched_by = (
+                f"llm_{match_type}"
+                if safe_direct else (
+                "accumulated_alignment"
+                if alignment["status"] == "verified"
+                and confidence < LLM_AUTO_LINK_CONFIDENCE
+                else (
+                    "llm_canonical_exact"
+                    if normalized_hit else "llm_candidate")))
+            result = _matched_result(
+                selected, observation, matched_by=matched_by,
+                reason=reason, candidate_ids=candidate_ids, confidence=confidence)
+            return _record(
+                conn, observation, result, source_snapshot_id=source_snapshot_id,
+                observation_id=observation_id)
+        result = Resolution(
+            None, "suspected_same_entity",
+            (
+                f"{reason}；已记录疑似同实体，累计分 {alignment['score']:.3f}，"
+                f"独立来源 {alignment['independent_sources']}/2"
+            ),
+            matched_by="llm_suspected",
+            normalized_name=canonical_name or deterministic_name,
+            candidate_ids=candidate_ids, confidence=confidence,
+            selected_candidate_id=selected.id)
+        return _record(
+            conn, observation, result, source_snapshot_id=source_snapshot_id,
+            observation_id=observation_id)
+
+    if decision == "new" and not canonical_name:
+        result = Resolution(
+            None, "invalid_response",
+            f"{reason}；new 必须提供 canonical_name",
+            matched_by="llm_invalid_response",
+            normalized_name=deterministic_name,
+            candidate_ids=candidate_ids, confidence=confidence)
+        return _record(
+            conn, observation, result, source_snapshot_id=source_snapshot_id,
+            observation_id=observation_id)
+
+    if decision == "new" and confidence >= LLM_NEW_ENTITY_CONFIDENCE:
+        entity = store.add_entity(
+            conn, canonical_name, observation.entity_type,
+            definition=observation.definition, status="proposed",
+            metadata={
+                "created_from": "llm_normalized_grounded_observation",
+                "creation_confidence": confidence,
+                # 低于合并门槛建出来的实体重复风险更高，标出来供重复清扫优先看。
+                "below_auto_link_confidence":
+                    confidence < LLM_AUTO_LINK_CONFIDENCE,
+            })
+        if store.normalize_name(observation.name) != entity.normalized_name:
+            store.add_alias(
+                conn, entity.id, observation.name,
+                source_snapshot_id=source_snapshot_id, status="proposed",
+                evidence_excerpt=observation.evidence)
+        result = Resolution(
+            entity.id, "created", reason, matched_by="llm_new",
+            normalized_name=entity.normalized_name, candidate_ids=candidate_ids,
+            confidence=confidence)
+        return _record(
+            conn, observation, result, source_snapshot_id=source_snapshot_id,
+            observation_id=observation_id)
+
+    result = Resolution(
+        None, "below_confidence",
+        f"{reason}；置信度 {confidence:.2f} 未达到自动执行阈值"
+        f" {LLM_AUTO_LINK_CONFIDENCE:.2f}",
+        matched_by="llm_below_confidence",
+        normalized_name=canonical_name or deterministic_name,
+        candidate_ids=candidate_ids, confidence=confidence)
+    return _record(
+        conn, observation, result, source_snapshot_id=source_snapshot_id,
+        observation_id=observation_id)
+
+
+def review_proposed_aliases(conn, limit: int = 50) -> list[dict]:
+    """用 LLM 批量复核现有 alias；仅安全直译/名称变体可自动验证。"""
+    rows = conn.execute(
+        "SELECT a.id alias_id,a.entity_id,a.name,a.evidence_excerpt,"
+        " a.source_snapshot_id,e.canonical_name,e.entity_type,e.definition"
+        " FROM aliases a JOIN entities e ON e.id=a.entity_id"
+        " WHERE a.status='proposed' ORDER BY a.id LIMIT ?",
+        (max(1, limit),)).fetchall()
+
+    def classify(row):
+        observation = EntityObservation(
+            name=row["name"], entity_type=row["entity_type"],
+            definition=row["definition"], aliases=(),
+            evidence=row["evidence_excerpt"], location="alias review", raw={})
+        candidate = [{
+            "id": row["entity_id"], "canonical_name": row["canonical_name"],
+            "entity_type": row["entity_type"], "definition": row["definition"],
+            "matched_names": [], "score": 1.0,
+        }]
+        try:
+            return _llm_normalize(observation, candidate)
+        except Exception as exc:
+            return {
+                "decision": "error",
+                "match_type": "none",
+                "confidence": 0.0,
+                "reason": f"LLM alias 复核失败：{exc}",
+            }
+
+    outputs = llm.pmap(classify, rows)
+    results = []
+    for row, output in zip(rows, outputs):
+        decision = str(output.get("decision", "")).strip()
+        match_type = str(output.get("match_type", "none")).strip()
+        if match_type not in MATCH_TYPES:
+            match_type = "none"
+        try:
+            confidence = min(1.0, max(0.0, float(output.get("confidence", 0.0))))
+        except (TypeError, ValueError):
+            confidence = 0.0
+        reason = str(output.get("reason", "")).strip()
+        direct_match_type = _validated_direct_match_type(
+            row["name"], row["canonical_name"], match_type)
+        safe = (
+            decision == "existing"
+            and direct_match_type in SAFE_DIRECT_MATCH_TYPES
+            and confidence >= LLM_AUTO_LINK_CONFIDENCE)
+        if safe:
+            match_type = direct_match_type
+        rejected = (
+            decision == "new"
+            and match_type in {"composite", "none"}
+            and confidence >= LLM_AUTO_LINK_CONFIDENCE)
+        status = "verified" if safe else "rejected" if rejected else "proposed"
+        store.update_alias_classification(
+            conn, row["alias_id"], status=status, alias_type=match_type)
+        corpus_evidence = None
+        if safe:
+            store.add_alignment_evidence(
+                conn, observed_name=row["name"], entity_id=row["entity_id"],
+                confidence=confidence,
+                policy_version=ALIGNMENT_POLICY_VERSION,
+                resolver_version=RESOLVER_VERSION,
+                reason=f"[{match_type}] {reason}",
+                source_snapshot_id=row["source_snapshot_id"],
+                direct_verify=True)
+        elif status == "proposed":
+            # 走不了确定性快路不等于不是别名。看语料有没有显式声明，
+            # 跨够独立来源组由累计逻辑转正。
+            corpus_evidence = alias_evidence.record(
+                conn, row["alias_id"],
+                policy_version=ALIGNMENT_POLICY_VERSION,
+                resolver_version=RESOLVER_VERSION)
+            status = corpus_evidence["status"]
+        results.append({
+            "alias_id": row["alias_id"],
+            "alias": row["name"],
+            "entity": row["canonical_name"],
+            "decision": decision,
+            "match_type": match_type,
+            "confidence": confidence,
+            "status": status,
+            "reason": reason,
+            "corpus_declarations": corpus_evidence,
+        })
+    return results
+
+
+def _review_alignment_with_llm(row: dict) -> dict:
+    prompt = f"""你在复核一个知识图谱的疑似同实体候选。
+
+观察名称：{row['observed_name']}
+目标规范名：{row['canonical_name']}
+目标类型：{row['entity_type']}
+目标定义：{row['definition']}
+已有来源证据：
+{json.dumps(row['evidence'], ensure_ascii=False)}
+
+严格规则：
+1. 只有指向完全同一概念才是 same；相关、上下位、组成关系都是 different。
+2. 中英文直接互译可标 translation_alias。
+3. 仅增加或省略“问题、方法、算法、模型、函数、运算、任务”等类别词，
+   且含义不变，可标 name_variant。若增删该词改变了实体主类型（“回归问题”是
+   task 而“回归”是 solution），含义就变了，不能标 name_variant。
+4. 缩写、符号、语义别名、组合概念分别如实标注，不得伪装成直接译名或名称变体。
+5. 证据不足必须 uncertain。
+
+只输出 JSON：
+{{
+  "verdict": "same|different|uncertain",
+  "match_type": "translation_alias|name_variant|abbreviation|symbol|composite|semantic_alias|none",
+  "confidence": 0.0,
+  "reason": "简短理由"
+}}"""
+    payload = llm.chat_json([{"role": "user", "content": prompt}])
+    if not isinstance(payload, dict):
+        raise ValueError("实体对齐复核器必须返回 JSON object")
+    return payload
+
+
+def review_suspected_alignments(conn, limit: int = 50) -> list[dict]:
+    """复核 suspected 对齐；M3 结论留痕，仅确定性可验证的直接别名自动升级。"""
+    rows = conn.execute(
+        "SELECT ac.id,ac.observed_name,ac.entity_id,ac.score,"
+        " e.canonical_name,e.entity_type,e.definition"
+        " FROM entity_alignment_candidates ac"
+        " JOIN entities e ON e.id=ac.entity_id"
+        " WHERE ac.status='suspected' ORDER BY ac.score DESC,ac.id"
+        " LIMIT ?", (max(1, limit),)).fetchall()
+    items = []
+    for source_row in rows:
+        row = dict(source_row)
+        row["evidence"] = [
+            dict(evidence) for evidence in conn.execute(
+                "SELECT ae.source_snapshot_id,ae.confidence,ae.reason,"
+                " s.slug source_slug,s.independence_group"
+                " FROM entity_alignment_evidence ae"
+                " LEFT JOIN source_snapshots ss ON ss.id=ae.source_snapshot_id"
+                " LEFT JOIN sources s ON s.id=ss.source_id"
+                " WHERE ae.candidate_id=? ORDER BY ae.id", (row["id"],))]
+        items.append(row)
+
+    def classify(row):
+        try:
+            return _review_alignment_with_llm(row)
+        except Exception as exc:
+            return {
+                "verdict": "error", "match_type": "none", "confidence": 0.0,
+                "reason": f"LLM 疑似对齐复核失败：{exc}",
+            }
+
+    outputs = llm.pmap(classify, items)
+    results = []
+    for row, output in zip(items, outputs):
+        verdict = str(output.get("verdict", "uncertain")).strip()
+        if verdict not in {"same", "different", "uncertain", "error"}:
+            verdict = "uncertain"
+        match_type = str(output.get("match_type", "none")).strip()
+        if match_type not in MATCH_TYPES:
+            match_type = "none"
+        try:
+            confidence = min(1.0, max(0.0, float(output.get("confidence", 0.0))))
+        except (TypeError, ValueError):
+            confidence = 0.0
+        reason = str(output.get("reason", "")).strip()
+        direct_match_type = _validated_direct_match_type(
+            row["observed_name"], row["canonical_name"], match_type)
+        safe = (
+            verdict == "same"
+            and direct_match_type in SAFE_DIRECT_MATCH_TYPES
+            and confidence >= LLM_AUTO_LINK_CONFIDENCE)
+        if safe:
+            match_type = direct_match_type
+            source_snapshot_id = next(
+                (item["source_snapshot_id"] for item in row["evidence"]
+                 if item["source_snapshot_id"] is not None), None)
+            store.add_alignment_evidence(
+                conn, observed_name=row["observed_name"],
+                entity_id=row["entity_id"], confidence=confidence,
+                policy_version=ALIGNMENT_POLICY_VERSION,
+                resolver_version=RESOLVER_VERSION,
+                reason=f"[{match_type}] M3 queue review: {reason}",
+                source_snapshot_id=source_snapshot_id, direct_verify=True)
+            alias = conn.execute(
+                "SELECT id FROM aliases WHERE entity_id=? AND normalized_name=?"
+                " AND status!='rejected'",
+                (row["entity_id"], store.normalize_name(row["observed_name"]))).fetchone()
+            if alias:
+                store.update_alias_classification(
+                    conn, alias["id"], status="verified", alias_type=match_type)
+        store.add_model_queue_review(
+            conn, queue_type="entity_alignment", item_id=row["id"],
+            model=llm.CHAT_MODEL, verdict=verdict, confidence=confidence,
+            reason=reason, payload={"match_type": match_type, "safe": safe},
+            policy_version=ALIGNMENT_POLICY_VERSION)
+        current = conn.execute(
+            "SELECT status FROM entity_alignment_candidates WHERE id=?",
+            (row["id"],)).fetchone()["status"]
+        results.append({
+            "candidate_id": row["id"],
+            "observed_name": row["observed_name"],
+            "entity": row["canonical_name"],
+            "verdict": verdict,
+            "match_type": match_type,
+            "confidence": confidence,
+            "status": current,
+            "auto_verified": safe,
+            "reason": reason,
+        })
+    return results

@@ -189,6 +189,180 @@ def cmd_mine(args):
     print(f"共 {len(lines)} 条" if lines else "无新发现")
 
 
+def cmd_pipeline(args):
+    from . import claims, decision, entity_resolution, legacy_migration, pipeline
+    from . import review_queues, store, validators
+    conn = db.connect()
+    if args.action == "status":
+        print(json.dumps(pipeline.status(conn), ensure_ascii=False, indent=2))
+        return
+    if args.action == "migrate":
+        if not args.apply:
+            result = legacy_migration.preview(conn)
+            result["next"] = "确认备份后加 --apply 执行；迁移幂等且所有非拒绝项保持 proposed"
+        else:
+            result = legacy_migration.apply(conn)
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return
+    if args.action == "align-aliases":
+        result = entity_resolution.review_proposed_aliases(
+            conn, limit=args.alignment_limit)
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return
+    if args.action == "review-alignments":
+        result = entity_resolution.review_suspected_alignments(
+            conn, limit=args.alignment_limit)
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return
+    if args.action == "replay-pending":
+        result = claims.replay_pending(conn, limit=args.alignment_limit)
+        entailment = validators.verify_entailment_batch(
+            conn, result["resolved_claims"])
+        shadows = [decision.shadow_claim(conn, claim_id)
+                   for claim_id in result["resolved_claims"]]
+        result["entailment"] = entailment
+        result["shadow_decisions"] = shadows
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return
+    if args.action == "survey":
+        from . import targeting
+        result = targeting.survey(conn, limit=args.limit, passages=args.passages)
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return
+    if args.action == "target":
+        from . import targeting
+        result = targeting.run(
+            conn, limit=args.limit, passages=args.passages,
+            verify_llm=not args.no_verify_llm)
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return
+    if args.action == "alias-declarations":
+        from . import alias_evidence
+        result = alias_evidence.scan(conn, limit=args.limit)
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return
+    if args.action == "identity":
+        result = pipeline.identity_report(conn)
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return
+    if args.action == "taxonomy-types":
+        result = pipeline.taxonomy_type_report(conn)
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return
+    if args.action == "endpoint-types":
+        result = pipeline.endpoint_type_report(conn)
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return
+    if args.action == "merge":
+        if not args.source_entity or not args.target_entity:
+            sys.exit("pipeline merge 需要 --source-entity 和 --target-entity")
+        result = store.merge_entities(
+            conn, args.source_entity, args.target_entity, reason=args.reason)
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return
+    if args.action == "revert-merge":
+        if not args.merge_event:
+            sys.exit("pipeline revert-merge 需要 --merge-event")
+        print(json.dumps(store.revert_merge(conn, args.merge_event),
+                         ensure_ascii=False, indent=2))
+        return
+    if args.action == "retype":
+        if not args.entity:
+            sys.exit("pipeline retype 需要 --entity")
+        if not args.to and args.definition is None:
+            sys.exit("pipeline retype 需要 --to 或 --definition 至少一项")
+        try:
+            result = store.revise_entity(
+                conn, args.entity, entity_type=args.to,
+                definition=args.definition, reason=args.reason)
+        except ValueError as exc:
+            sys.exit(str(exc))
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return
+    if args.action == "revert-retype":
+        if not args.revision:
+            sys.exit("pipeline revert-retype 需要 --revision")
+        try:
+            result = store.revert_revision(conn, args.revision)
+        except ValueError as exc:
+            sys.exit(str(exc))
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return
+    if args.action == "revisions":
+        print(json.dumps(store.entity_revisions(conn, args.entity),
+                         ensure_ascii=False, indent=2))
+        return
+    if args.action == "duplicates":
+        result = entity_resolution.find_duplicate_candidates(
+            conn, limit=args.limit or 50)
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return
+    if args.action == "reshadow":
+        result = pipeline.reshadow(
+            conn, force_entailment=args.force_entailment,
+            only_stale=args.only_stale, limit=args.limit)
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return
+    if args.action == "review-type-conflicts":
+        result = review_queues.review_type_conflicts(
+            conn, limit=args.alignment_limit)
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return
+    if args.action == "batch":
+        if not args.topic:
+            sys.exit("pipeline batch 需要 --topic")
+        result = pipeline.batch(
+            conn, topic=args.topic, doc_limit=args.docs,
+            wiki_limit=args.wiki_pages, max_entities=args.max_entities,
+            max_claims=args.max_claims, verify_llm=not args.no_verify_llm)
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return
+    common = {
+        "topic": args.topic,
+        "observations_path": args.observations,
+        "max_entities": args.max_entities,
+        "max_claims": args.max_claims,
+        "verify_llm": not args.no_verify_llm,
+    }
+    if args.action == "doc":
+        if not args.book or not args.sec or not args.topic:
+            sys.exit("pipeline doc 需要 --book、--sec、--topic")
+        result = pipeline.read_doc_section(
+            conn, args.book, args.sec, **common)
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return
+    if args.action == "wiki":
+        if not args.lang or not args.title or not args.topic:
+            sys.exit("pipeline wiki 需要 --lang、--title、--topic")
+        result = pipeline.read_wiki_page(
+            conn, args.lang, args.title, **common)
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return
+    required = {
+        "--file": args.file,
+        "--source": args.source,
+        "--topic": args.topic,
+    }
+    missing = [name for name, value in required.items() if not value]
+    if missing:
+        sys.exit("pipeline read 缺少参数: " + ", ".join(missing))
+    try:
+        authority = json.loads(args.authority)
+    except json.JSONDecodeError as exc:
+        sys.exit(f"--authority 不是合法 JSON: {exc}")
+    result = pipeline.read_file(
+        conn, args.file, source_slug=args.source,
+        source_name=args.source_name or args.source,
+        source_type=args.source_type,
+        independence_group=args.independence_group or args.source,
+        topic=args.topic, version=args.version, language=args.language,
+        authority_profile=authority,
+        observations_path=args.observations,
+        max_entities=args.max_entities, max_claims=args.max_claims,
+        verify_llm=not args.no_verify_llm)
+    print(json.dumps(result, ensure_ascii=False, indent=2))
+
+
 def _signal_line(conn, item_type, item_id) -> str:
     """review_signals 里若有佐证（kg verify 产出），拼一行展示。"""
     sig = db.get_signals(conn, item_type, item_id)
@@ -535,7 +709,7 @@ def main():
     s.add_argument("--dry-run", action="store_true", help="只做假设+语料验证，不提取入库")
     s.set_defaults(fn=cmd_expand)
 
-    s = sub.add_parser("ingest", help="从语料库围绕已有节点提取知识（有据可查，主通道）")
+    s = sub.add_parser("ingest", help="[旧流水线] 从语料库围绕已有节点提取知识")
     s.add_argument("name", nargs="?", help="锚点节点名（须已存在于图谱）")
     s.add_argument("--batch", type=int, help="缺口驱动自动选 N 个锚点批量提取")
     s.add_argument("--limit", type=int, default=6, help="每个锚点最多提取的概念数")
@@ -568,7 +742,7 @@ def main():
     s.add_argument("--audit", type=int, help="抽检 N 条自动放行的条目")
     s.set_defaults(fn=cmd_review)
 
-    s = sub.add_parser("verify", help="复核 proposed 条目：结构佐证（零 LLM）+ LLM 判断题复核；"
+    s = sub.add_parser("verify", help="[旧流水线] 复核 proposed 条目：结构佐证 + LLM 判断；"
                                       "--apply 双重一致自动裁决")
     s.add_argument("--limit", type=int, default=10, help="本次 LLM 复核条数上限")
     s.add_argument("--no-llm", action="store_true", help="只算结构佐证")
@@ -585,6 +759,67 @@ def main():
                                         "（不带参数列出批次；条目退回 proposed 重新人工审）")
     s.add_argument("batch_id", nargs="?", help="批次号（verify --apply 输出里的 auto-...）")
     s.set_defaults(fn=cmd_rollback)
+
+    s = sub.add_parser(
+        "pipeline",
+        help="新语料流水线：Snapshot -> Observation -> Claim/Evidence -> Shadow 决策")
+    s.add_argument(
+        "action",
+        choices=[
+            "read", "doc", "wiki", "batch", "migrate", "status", "reshadow",
+            "survey", "target", "duplicates", "identity", "taxonomy-types",
+            "endpoint-types",
+            "alias-declarations",
+            "merge", "revert-merge", "retype", "revert-retype", "revisions",
+            "align-aliases", "review-alignments", "replay-pending",
+            "review-type-conflicts",
+        ])
+    s.add_argument("--file", help="read: UTF-8 本地语料文件")
+    s.add_argument("--observations", help="read: 已有结构化 Observation JSON；缺省由 LLM 抽取")
+    s.add_argument("--source", help="read: 来源 slug")
+    s.add_argument("--source-name", help="read: 来源显示名")
+    s.add_argument("--source-type", default="document", help="read: textbook/paper/document/demo")
+    s.add_argument("--independence-group", help="read: 独立来源组；缺省等于 source slug")
+    s.add_argument("--authority", default="{}", help='read: 关系权威度 JSON，如 {"is_a":"high"}')
+    s.add_argument("--version", default="", help="read: 来源版本；缺省使用内容 hash")
+    s.add_argument("--language", default="", help="read: 原文语言")
+    s.add_argument("--topic", help="read: coverage topic id")
+    s.add_argument("--book", help="doc: 教材 book slug")
+    s.add_argument("--sec", help="doc: 章节号")
+    s.add_argument("--lang", choices=["zh", "en"], help="wiki: 语料语言")
+    s.add_argument("--title", help="wiki: 本地 corpus 页面标题")
+    s.add_argument("--apply", action="store_true",
+                   help="migrate: 实际执行幂等迁移；缺省只预览")
+    s.add_argument("--docs", type=int, default=1,
+                   help="batch: 本次处理的未读教材章节数")
+    s.add_argument("--wiki-pages", type=int, default=1,
+                   help="batch: 本次处理的未读 Wikipedia 页面数")
+    s.add_argument("--max-entities", type=int, default=20,
+                   help="每个文本块最多抽取的实体数（跨块去重后不再按全章截断）")
+    s.add_argument("--max-claims", type=int, default=30,
+                   help="每个文本块最多抽取的 Claim 数（跨块去重后不再按全章截断）")
+    s.add_argument(
+        "--alignment-limit", type=int, default=50,
+        help="队列动作本次最多处理的条目数")
+    s.add_argument("--no-verify-llm", action="store_true",
+                   help="不调用 LLM 蕴含验证；Claim 将保持 needs_more_evidence 的 Shadow 结果")
+    s.add_argument("--force-entailment", action="store_true",
+                   help="reshadow: 重判全部证据的蕴含（走 LLM）")
+    s.add_argument("--only-stale", action="store_true",
+                   help="reshadow: 只重判判定版本落后于当前 validator/prompt 的证据")
+    s.add_argument("--limit", type=int,
+                   help="reshadow/survey/target: claim 数上限；duplicates: 报告条数")
+    s.add_argument("--passages", type=int, default=2,
+                   help="survey/target: 每条 claim 最多探查的候选段落数")
+    s.add_argument("--source-entity", type=int, help="merge: 被并入的实体 id")
+    s.add_argument("--target-entity", type=int, help="merge: 保留的实体 id")
+    s.add_argument("--reason", default="", help="merge/retype: 操作理由；retype 必填")
+    s.add_argument("--merge-event", type=int, help="revert-merge: 合并事件 id")
+    s.add_argument("--entity", type=int, help="retype/revisions: 实体 id")
+    s.add_argument("--to", help="retype: 新的实体主类型")
+    s.add_argument("--definition", help="retype: 新的定义")
+    s.add_argument("--revision", type=int, help="revert-retype: 实体修订 id")
+    s.set_defaults(fn=cmd_pipeline)
 
     args = p.parse_args()
     args.fn(args)

@@ -38,10 +38,21 @@ def pmap(fn, items: list) -> list:
 
 
 def _post(url, body):
-    """带全局并发闸门的请求；429/5xx 指数退避重试（并发后限流概率上升）。"""
+    """带全局并发闸门的请求；429/5xx 与连接层故障指数退避重试。
+
+    连接超时、连接重置和 429/5xx 是同一类东西：**服务端没有给出结论**。
+    它们必须重试，而不是让调用方当成一个否定答案。
+    """
     for attempt in range(4):
-        with _SEM:
-            resp = requests.post(url, headers=_HEADERS, timeout=600, json=body)
+        try:
+            with _SEM:
+                resp = requests.post(
+                    url, headers=_HEADERS, timeout=600, json=body)
+        except requests.RequestException:
+            if attempt < 3:
+                time.sleep(5 * 2 ** attempt)
+                continue
+            raise
         if resp.status_code == 429 or resp.status_code >= 500:
             if attempt < 3:
                 time.sleep(5 * 2 ** attempt)

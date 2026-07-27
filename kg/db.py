@@ -136,6 +136,10 @@ def connect(path: str = None) -> sqlite3.Connection:
     conn.row_factory = sqlite3.Row
     conn.executescript(SCHEMA)
     _migrate(conn)
+    # 新知识核心采用增量 schema：旧 nodes/edges 暂时保留供显式迁移，
+    # 新代码直接使用 Entity/Claim/Evidence/Decision 模型。
+    from . import schema as core_schema
+    core_schema.ensure(conn)
     return conn
 
 

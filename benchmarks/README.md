@@ -1,0 +1,76 @@
+# Gold Benchmark
+
+The benchmark measures algorithm quality. It must not contain facts generated
+from LLM memory.
+
+## Collection
+
+1. Select examples across the AI coverage taxonomy.
+2. Attach immutable source snapshots and exact excerpts.
+3. Human-review entity identity, granularity, relation, direction, entailment,
+   and final validity.
+4. Record the review rationale.
+5. Include positive examples and hard negatives.
+6. Keep test labels out of extraction and verification prompts.
+
+The first release targets at least 300 reviewed examples covering every relation,
+major AI subfields, multilingual aliases, name ambiguity, wrong types, wrong
+directions, unsupported plausible claims, source conflicts, root taxonomy, and
+high-impact prerequisites.
+
+`gold.schema.json` defines each JSONL record. Entries are only added after
+source-backed annotation; an empty benchmark is more honest than an ungrounded
+one, and a fabricated example is worse than no example.
+
+`gold.jsonl` currently holds 3 negatives, all `part_of` claims the pipeline
+produced and a human rejected. Their full provenance — evidence, entailment
+reviews, and decision history — is archived in `data/archive/`. Rejected claims
+are worth keeping precisely because they are what a policy change can silently
+start accepting again.
+
+Splits are `train`, `validation`, and `test`. Label corrections require a
+documented review event rather than silent replacement.
+
+## Entity types
+
+`entity_types.jsonl` is a separate, entity-level set defined by
+`entity_types.schema.json`. `gold.jsonl` measures whether a claim is right;
+this one measures whether an entity's primary type is right. They cannot share
+a record shape — a type judgment has no subject, relation, or object.
+
+It exists because the primary type is judged once, at extraction time, from a
+priority-ordered rule set (`design/entity-type-v5.md`). Every time that rule set
+changes, rerunning this file measures the regression instead of asking a human
+to relabel from scratch. That is the whole point of the human effort: label
+once, replay forever.
+
+Two kinds of record live here, distinguished by whether `evidence` is empty:
+
+- corpus-backed entities, which carry snapshot excerpts and can serve as gold
+- deliberately hard boundary terms absent from the corpus (BERT, GLUE,
+  Transformer, Attention), which have no excerpts and only measure whether the
+  rules are self-consistent between annotators
+
+`labels.confusable_with` carries most of the value. A type judgment is easy in
+the middle of a category and hard at its edge, so an example that records which
+neighbouring category it was nearly assigned to is worth more than one that
+merely records the right answer.
+
+The first drop holds 38 entries, split 70/15/15 by a fixed seed. They are the
+entities the six-type criteria actually reclassified, plus a random sample drawn
+from the ones it left alone. The other 74 library entities are omitted on
+purpose: their new type follows mechanically from collapsing eleven categories
+into six, so including them would pad the set without testing anything.
+
+`review.model_verdict` records provenance honestly, and none of these entries
+were reviewed one at a time. `bulk_accept_flagged` means two independent judging
+rounds agreed and a human accepted the flagged reclassifications as a group;
+`bulk_accept` means the same for the random sample. That is weaker than
+per-entry review and the field says so, because a benchmark that overstates how
+hard its labels were checked is worse than a smaller honest one. Entries
+promoted to individual review should have this field updated.
+
+Two entities are deliberately absent: `优化` and `推断`. The two judging rounds
+disagreed on both, and their definitions in the corpus — "深度学习所围绕的核心
+主题。" — cannot support any judgment. They belong here once the corpus yields a
+definition worth judging, not before.
