@@ -42,7 +42,7 @@ Evidence：
 """
 
 VALIDATOR_VERSION = "entailment-validator-1"
-ENTAILMENT_PROMPT_VERSION = "entailment-judge-3"
+ENTAILMENT_PROMPT_VERSION = "entailment-judge-4"
 
 
 @dataclass(frozen=True)

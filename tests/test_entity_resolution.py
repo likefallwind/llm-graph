@@ -74,9 +74,10 @@ class EntityResolutionTests(unittest.TestCase):
         hits = store.find_reference_entities(self.conn, "linearreg ression")
 
         self.assertEqual({first.id, second.id}, {item.id for item in hits})
-        self.assertNotIn(
-            store.reference_key("linearregression"),
-            store.unique_identity_types(self.conn))
+        # 同一个 reference_key 下有两个实体，目录必须把它们都留着表示歧义，
+        # 不能塌成一个。
+        self.assertEqual(2, len(store.identity_catalog(self.conn)[
+            store.reference_key("linearregression")]))
 
     def test_proposed_alias_does_not_auto_match(self):
         entity = store.add_entity(self.conn, "监督学习", "solution")

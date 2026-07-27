@@ -328,9 +328,9 @@ entities.normalized_name  UNIQUE                    → 回归问题 / 回归分
 aliases  UNIQUE(entity_id, normalized_name, language) → 「回归」同时挂到两个 entity_id
 ```
 
-读取侧早就为此留了位置。`kg/store.py:557` 的 `identity_catalog` 明写"一个键可能
-仍指向多个实体；调用方只能在结果长度为 1 时确定性认领"，`unique_identity_types`
-（`:580`）用 `len(entities) == 1` 显式排除歧义键。
+读取侧早就为此留了位置。`kg/store.py` 的 `identity_catalog` 明写"一个键可能
+仍指向多个实体；调用方只能在结果长度为 1 时确定性认领"——歧义键在目录里保留全部
+候选，不塌成一个。
 
 缺的是写入侧：`kg/entity_resolution.py` 的消歧器只能输出 `new` 或 `existing`，
 没有第三个分支说"这个名字对应两个东西，用消歧后的名字各建一个，原名做共享

@@ -672,15 +672,6 @@ def identity_catalog(conn) -> dict[str, tuple[models.Entity, ...]]:
     }
 
 
-def unique_identity_types(conn) -> dict[str, str]:
-    """给并行抽取线程使用的只读快照；歧义 identity 不进入快照。"""
-    return {
-        key: entities[0].entity_type
-        for key, entities in identity_catalog(conn).items()
-        if len(entities) == 1
-    }
-
-
 def find_reference_entities(conn, name: str) -> list[models.Entity]:
     """只忽略空白查 active canonical/verified alias；不做任何模糊匹配。"""
     return list(identity_catalog(conn).get(reference_key(name), ()))

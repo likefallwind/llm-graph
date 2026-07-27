@@ -14,8 +14,10 @@ from .ontology import registry
 #    定义过不了下限的实体整条丢弃。
 # 7：关系契约里带上典型端点类型（端点类型不再拒收，只做引导）；端点不得截短成
 #    上位词——「一种人工智能程序」的宾语是「人工智能程序」不是「人工智能」。
+# 8：实体性判据入提示词——「学习」「属性」「形状」这类离开短语就没有确定所指的
+#    通用词不单独抽；definition 必须回答「它是什么」，只说位置和用途的不收。
 # 这些规则会改变同一份语料的抽取结果，所以必须换版本号，已处理来源才会重跑。
-ALGORITHM_VERSION = "grounded-pipeline-7"
+ALGORITHM_VERSION = "grounded-pipeline-8"
 
 
 def read_file(conn, path: str, *, source_slug: str, source_name: str,
@@ -61,22 +63,19 @@ def read_text(conn, text: str, *, source_slug: str, source_name: str,
         storage_ref=storage_ref, metadata=metadata)
     run_id = store.create_run(
         conn, "extraction", ALGORITHM_VERSION,
-        prompt_version="grounded-extract-6",
+        prompt_version="grounded-extract-7",
         config={
             "topic": topic,
             "source_snapshot_id": snapshot.id,
             "relation_registry_version": registry().version,
         })
     try:
-        known_entity_types = store.unique_identity_types(conn)
         if observations_path:
             payload = json.loads(Path(observations_path).read_text(encoding="utf-8"))
-            batch = observations.parse_payload(
-                payload, text, known_entity_types=known_entity_types)
+            batch = observations.parse_payload(payload, text)
         else:
             batch = observations.extract(
-                text, topic, max_entities=max_entities, max_claims=max_claims,
-                known_entity_types=known_entity_types)
+                text, topic, max_entities=max_entities, max_claims=max_claims)
         materialized = claims.materialize(
             conn, batch, source_snapshot_id=snapshot.id, run_id=run_id)
         entailment_lines = []

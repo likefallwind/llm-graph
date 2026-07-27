@@ -23,6 +23,10 @@ EXTRACT_PROMPT = """你是有据抽取器。只允许依据给出的语料，不
    entity_type。不要看名字的字面就定类型：名字里有「函数」不代表它是 concept，
    有「算法」不代表它是 solution。definition 要能让人据以判型——只说「本章要介绍
    的核心主题」这种写法判不出任何东西，宁可不收这个实体。
+0b. definition 要回答**它是什么**，不是它出现在哪、拿它干什么。「用于在每步决定
+   如何调整参数」「线性代数章节涉及的对象」「深度学习所围绕的核心主题」说的都是
+   位置和用途，不是定义——换个东西填进去同样成立的句子就不是定义。正文只说了用途
+   没说是什么时，宁可不收这个实体，也不要拿用途凑一条。
 1. 每个实体和 Claim 都必须附语料中的逐字摘录 evidence。
 2. 每个 Claim 至少一个端点必须出现在本块 entities 中；另一个端点可以引用此前已经
    建立的实体，但名称必须可由规范名或 verified alias 唯一解析。
@@ -36,7 +40,7 @@ EXTRACT_PROMPT = """你是有据抽取器。只允许依据给出的语料，不
 5. prerequisite_of 必须按契约填写 kind 和 strength；scope 仅在语料明确限定课程、章节或学习阶段时填写。
 6. part_of 只表示真实结构部件或正文明确列出的流程阶段。“用于、依赖、参与、帮助构建、产生、输入/输出、属性、子类型”都不是 part_of；三种关系均不成立时不要建边。
 7. 本文本块最多 {max_entities} 个实体、{max_claims} 个 Claim。
-8. 注意不要把一些纯粹概念性的词，如 学习、属性、方法等当做实体抽取，更希望是和具体知识、内容相关的实体。
+8. 只抽在语料里有确定所指的实体。「学习」「属性」「方法」「形状」「过程」这类通用词离开所在短语就指不到确定的东西，不要单独抽；比如语料写的是「激活函数的形状」，没有一个叫「形状」的知识点，就不要建「形状」这个实体。
 
 输出 JSON：
 {{
@@ -159,13 +163,8 @@ def definition_is_informative(name: str, definition: str) -> bool:
                    for pattern in EMPTY_DEFINITION_PATTERNS)
 
 
-def parse_payload(payload: dict, source_text: str, *,
-                  known_entity_types: dict[str, str] | None = None) -> ObservationBatch:
+def parse_payload(payload: dict, source_text: str) -> ObservationBatch:
     reg = registry()
-    known_types = {
-        store.reference_key(name): entity_type
-        for name, entity_type in (known_entity_types or {}).items()
-    }
     entities: list[EntityObservation] = []
     claims: list[ClaimObservation] = []
     targets: list[ReadingTarget] = []
@@ -214,8 +213,9 @@ def parse_payload(payload: dict, source_text: str, *,
             rejected.append(
                 f"claim[{index}] 至少一个端点必须出现在本块有效 entities 中")
             continue
-        subject_type = left.entity_type if left else known_types.get(subject_key)
-        object_type = right.entity_type if right else known_types.get(object_key)
+        # 跨块端点不查库补类型：端点类型已不是硬闸，补出来也无人消费。
+        subject_type = left.entity_type if left else None
+        object_type = right.entity_type if right else None
         qualifiers = (
             raw.get("qualifiers") if isinstance(raw.get("qualifiers"), dict) else {})
         try:
@@ -255,8 +255,7 @@ def parse_payload(payload: dict, source_text: str, *,
 
 
 def extract(source_text: str, topic: str, *, max_entities: int = 20,
-            max_claims: int = 30,
-            known_entity_types: dict[str, str] | None = None) -> ObservationBatch:
+            max_claims: int = 30) -> ObservationBatch:
     """分块限额抽取，再跨块去重合并。
 
     ``max_entities`` 和 ``max_claims`` 是单个文本块的上限，而不是整章
@@ -275,8 +274,7 @@ def extract(source_text: str, topic: str, *, max_entities: int = 20,
         payload = llm.chat_json([{"role": "user", "content": prompt}])
         if not isinstance(payload, dict):
             raise ValueError("抽取器必须返回 JSON object")
-        return parse_payload(
-            payload, chunk, known_entity_types=known_entity_types)
+        return parse_payload(payload, chunk)
 
     batches = llm.pmap(extract_one, chunks)
     entities: dict[str, EntityObservation] = {}

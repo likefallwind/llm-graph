@@ -151,9 +151,7 @@ class RelationV1ContractTests(unittest.TestCase):
             }],
         }
 
-        batch = parse_payload(
-            payload, SOURCE,
-            known_entity_types={"linear regression": "solution"})
+        batch = parse_payload(payload, SOURCE)
 
         self.assertEqual(1, len(batch.claims))
         self.assertFalse(batch.rejected)
@@ -175,12 +173,7 @@ class RelationV1ContractTests(unittest.TestCase):
             }],
         }
 
-        batch = parse_payload(
-            payload, SOURCE,
-            known_entity_types={
-                "线性代数": "concept",
-                "线性回归": "solution",
-            })
+        batch = parse_payload(payload, SOURCE)
 
         self.assertFalse(batch.claims)
         self.assertTrue(any("至少一个端点" in item for item in batch.rejected))
