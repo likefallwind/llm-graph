@@ -110,6 +110,22 @@ entity_types:
       - 预测是问题，属 task
       - 数据集是集合，属 data
 
+# minimum_evidence 的两项是**且**的关系（kg/validators.py 的
+# `high >= required_high and independent >= required_independent`），不是或。
+#
+# independent_* 从 2 降到 1（2026-07-27）。理由不是图发不出去所以放宽，是那个 2
+# 一直在重复计算同一个模型：一条 claim 的证据链是「一处语料原文」加「模型的蕴含
+# 复核」，而 CLAUDE.md 早就写明同一模型的多次判断不是新增独立信源。要求两处语料
+# 原文，等于把模型那一票也折算成一个来源。
+#
+# 实测支撑（三处互相独立）：design/algorithm.md 记录通读 nndl 第 3 章产出 14 条
+# claim、佐证已有 claim 0 条；`pipeline survey` 对 60 条卡住的 claim 只有 30 条
+# 能找到含两端点的段落；这 30 条的近邻候选抽查 7 个，看着能真佐证的 1 个。
+# 教材之间不重复彼此的三元组，跨源佐证是结构性稀疏，不是语料读得不够。
+#
+# 三条核心关系都是 high_impact_review，所以这次下调**不开任何自动发布闸**：
+# claim 只是从 needs_more_evidence 变成 human_review。要真正自动发布，仍需
+# benchmark 校准出分桶 precision。
 relations:
   is_a:
     lifecycle: core
@@ -121,7 +137,7 @@ relations:
     transitive: true
     acyclic: true
     accepted_evidence_types: [explicit_taxonomy, explicit_definition]
-    minimum_evidence: {explicit_high_authority: 1, independent_standard_sources: 2}
+    minimum_evidence: {explicit_high_authority: 1, independent_standard_sources: 1}
     validator_version: entailment-validator-1
     high_impact_review: true
 
@@ -137,7 +153,7 @@ relations:
     # 只有明确的组成表述算数。explicit_function（用于/作用）恰恰是 description
     # 里点名排除的那类语义，不能计入。
     accepted_evidence_types: [explicit_composition]
-    minimum_evidence: {explicit_high_authority: 1, independent_standard_sources: 2}
+    minimum_evidence: {explicit_high_authority: 1, independent_standard_sources: 1}
     validator_version: part-of-validator-1
     high_impact_review: true
 
@@ -156,7 +172,7 @@ relations:
       kind: [conceptual, derivational, curricular]
       strength: [required, recommended]
     accepted_evidence_types: [explicit_prerequisite, explicit_derivation]
-    minimum_evidence: {explicit_high_authority: 1, independent_curriculum_sources: 2}
+    minimum_evidence: {explicit_high_authority: 1, independent_curriculum_sources: 1}
     validator_version: entailment-validator-1
     high_impact_review: true
 
@@ -187,7 +203,7 @@ relations:
     transitive: true
     acyclic: true
     accepted_evidence_types: [explicit_taxonomy, explicit_definition]
-    minimum_evidence: {explicit_high_authority: 1, independent_standard_sources: 2}
+    minimum_evidence: {explicit_high_authority: 1, independent_standard_sources: 1}
     validator_version: entailment-validator-1
     high_impact_review: true
 
@@ -201,7 +217,7 @@ relations:
     transitive: false
     acyclic: false
     accepted_evidence_types: [explicit_comparison]
-    minimum_evidence: {explicit_high_authority: 1, independent_standard_sources: 2}
+    minimum_evidence: {explicit_high_authority: 1, independent_standard_sources: 1}
     validator_version: entailment-validator-1
 
   pedagogical_contrast_with:
@@ -214,7 +230,7 @@ relations:
     transitive: false
     acyclic: false
     accepted_evidence_types: [explicit_comparison]
-    minimum_evidence: {explicit_high_authority: 1, independent_standard_sources: 2}
+    minimum_evidence: {explicit_high_authority: 1, independent_standard_sources: 1}
     validator_version: entailment-validator-1
 
   alternative_to:
@@ -228,7 +244,7 @@ relations:
     acyclic: false
     qualifiers: [scope, condition]
     accepted_evidence_types: [explicit_comparison]
-    minimum_evidence: {explicit_high_authority: 1, independent_standard_sources: 2}
+    minimum_evidence: {explicit_high_authority: 1, independent_standard_sources: 1}
     validator_version: entailment-validator-1
 
   used_for:
@@ -241,7 +257,7 @@ relations:
     transitive: false
     acyclic: false
     accepted_evidence_types: [explicit_function]
-    minimum_evidence: {explicit_high_authority: 1, independent_standard_sources: 2}
+    minimum_evidence: {explicit_high_authority: 1, independent_standard_sources: 1}
     validator_version: entailment-validator-1
 
   solves:
@@ -254,7 +270,7 @@ relations:
     transitive: false
     acyclic: false
     accepted_evidence_types: [explicit_function]
-    minimum_evidence: {explicit_high_authority: 1, independent_standard_sources: 2}
+    minimum_evidence: {explicit_high_authority: 1, independent_standard_sources: 1}
     validator_version: entailment-validator-1
 
   evaluated_by:
@@ -267,7 +283,7 @@ relations:
     transitive: false
     acyclic: false
     accepted_evidence_types: [explicit_function]
-    minimum_evidence: {explicit_high_authority: 1, independent_standard_sources: 2}
+    minimum_evidence: {explicit_high_authority: 1, independent_standard_sources: 1}
     validator_version: entailment-validator-1
 
   trained_on:
@@ -281,7 +297,7 @@ relations:
     acyclic: false
     qualifiers: [variant, time]
     accepted_evidence_types: [explicit_function]
-    minimum_evidence: {explicit_high_authority: 1, independent_standard_sources: 2}
+    minimum_evidence: {explicit_high_authority: 1, independent_standard_sources: 1}
     validator_version: entailment-validator-1
 
   optimizes:
@@ -294,7 +310,7 @@ relations:
     transitive: false
     acyclic: false
     accepted_evidence_types: [explicit_function]
-    minimum_evidence: {explicit_high_authority: 1, independent_standard_sources: 2}
+    minimum_evidence: {explicit_high_authority: 1, independent_standard_sources: 1}
     validator_version: entailment-validator-1
 
   derived_from:
@@ -308,5 +324,5 @@ relations:
     acyclic: true
     qualifiers: [time, variant]
     accepted_evidence_types: [explicit_derivation]
-    minimum_evidence: {explicit_high_authority: 1, independent_standard_sources: 2}
+    minimum_evidence: {explicit_high_authority: 1, independent_standard_sources: 1}
     validator_version: entailment-validator-1

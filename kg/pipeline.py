@@ -12,8 +12,10 @@ from .ontology import registry
 # 5：名称引用只忽略空白；Claim 至少一个端点来自本块，另一个可唯一命中既有身份名。
 # 6：实体主类型换成六类（注册表 v5）；判据随提示词注入；定义先写、类型据定义判；
 #    定义过不了下限的实体整条丢弃。
+# 7：关系契约里带上典型端点类型（端点类型不再拒收，只做引导）；端点不得截短成
+#    上位词——「一种人工智能程序」的宾语是「人工智能程序」不是「人工智能」。
 # 这些规则会改变同一份语料的抽取结果，所以必须换版本号，已处理来源才会重跑。
-ALGORITHM_VERSION = "grounded-pipeline-6"
+ALGORITHM_VERSION = "grounded-pipeline-7"
 
 
 def read_file(conn, path: str, *, source_slug: str, source_name: str,
@@ -59,7 +61,7 @@ def read_text(conn, text: str, *, source_slug: str, source_name: str,
         storage_ref=storage_ref, metadata=metadata)
     run_id = store.create_run(
         conn, "extraction", ALGORITHM_VERSION,
-        prompt_version="grounded-extract-5",
+        prompt_version="grounded-extract-6",
         config={
             "topic": topic,
             "source_snapshot_id": snapshot.id,

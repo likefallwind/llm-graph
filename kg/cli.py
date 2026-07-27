@@ -249,6 +249,21 @@ def cmd_pipeline(args):
         result = pipeline.taxonomy_type_report(conn)
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return
+    if args.action == "review-claim" or args.action == "review-entity":
+        target_type = "claim" if args.action == "review-claim" else "entity"
+        target_id = args.claim if target_type == "claim" else args.entity
+        if not target_id:
+            sys.exit(f"pipeline {args.action} 需要 --{target_type}")
+        if not args.verdict:
+            sys.exit(f"pipeline {args.action} 需要 --verdict approve|reject")
+        try:
+            result = review_queues.record_human_verdict(
+                conn, target_type, target_id, args.verdict,
+                reason=args.reason, reviewer=args.reviewer)
+        except ValueError as exc:
+            sys.exit(str(exc))
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return
     if args.action == "endpoint-types":
         result = pipeline.endpoint_type_report(conn)
         print(json.dumps(result, ensure_ascii=False, indent=2))
@@ -768,7 +783,7 @@ def main():
         choices=[
             "read", "doc", "wiki", "batch", "migrate", "status", "reshadow",
             "survey", "target", "duplicates", "identity", "taxonomy-types",
-            "endpoint-types",
+            "endpoint-types", "review-claim", "review-entity",
             "alias-declarations",
             "merge", "revert-merge", "retype", "revert-retype", "revisions",
             "align-aliases", "review-alignments", "replay-pending",
@@ -819,6 +834,10 @@ def main():
     s.add_argument("--to", help="retype: 新的实体主类型")
     s.add_argument("--definition", help="retype: 新的定义")
     s.add_argument("--revision", type=int, help="revert-retype: 实体修订 id")
+    s.add_argument("--claim", type=int, help="review-claim: claim id")
+    s.add_argument("--verdict", choices=["approve", "reject"],
+                   help="review-claim/review-entity: 人工裁决")
+    s.add_argument("--reviewer", default="human", help="review-*: 裁决人")
     s.set_defaults(fn=cmd_pipeline)
 
     args = p.parse_args()

@@ -352,7 +352,8 @@ class ReshadowTests(unittest.TestCase):
         self.assertEqual(result["examined_claims"], 1)
         self.assertEqual(result["reverified_evidence"], 0)
         self.assertIsNone(result["entailment_run_id"])
-        self.assertEqual(result["outcomes"], {"needs_more_evidence": 1})
+        # 一处高权威语料 + 已判 supports，在门槛 1 下达标；本用例测的是零 LLM。
+        self.assertEqual(result["outcomes"], {"auto_approve": 1})
         self.assertEqual(
             1, self.conn.execute(
                 "SELECT COUNT(*) FROM decisions WHERE target_id=?",

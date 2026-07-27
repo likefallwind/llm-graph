@@ -143,6 +143,61 @@ class EntityRevisionTests(unittest.TestCase):
             "SELECT status FROM entity_type_assertions").fetchone()["status"],
             "conflict")
 
+class HumanVerdictTests(unittest.TestCase):
+    """`human_review` 队列此前只有出口没有入口：判完无处可写。"""
+
+    def setUp(self):
+        self.conn = sqlite3.connect(":memory:")
+        self.conn.row_factory = sqlite3.Row
+        schema.ensure(self.conn)
+        subject = store.add_entity(self.conn, "梯度", "concept", definition="梯度的定义")
+        object_ = store.add_entity(self.conn, "优化", "task", definition="优化的定义")
+        self.claim = store.add_claim(self.conn, subject.id, "part_of", object_.id)
+        self.entity = subject
+
+    def tearDown(self):
+        self.conn.close()
+
+    def test_reject_sets_claim_status(self):
+        result = review_queues.record_human_verdict(
+            self.conn, "claim", self.claim.id, "reject", reason="用于不是组成")
+
+        self.assertEqual("rejected", result["status"])
+        self.assertEqual("rejected", store.get_claim(self.conn, self.claim.id).status)
+
+    def test_approve_publishes_claim(self):
+        result = review_queues.record_human_verdict(
+            self.conn, "claim", self.claim.id, "approve", reason="证据充分")
+
+        self.assertEqual("published", result["status"])
+
+    def test_entity_can_be_rejected(self):
+        review_queues.record_human_verdict(
+            self.conn, "entity", self.entity.id, "reject", reason="不该进图的通用词")
+
+        self.assertEqual("rejected", store.get_entity(self.conn, self.entity.id).status)
+
+    def test_reason_is_required(self):
+        """理由是 gold 负例的判定依据，不能省。"""
+        with self.assertRaises(ValueError):
+            review_queues.record_human_verdict(
+                self.conn, "claim", self.claim.id, "reject", reason="  ")
+
+    def test_verdict_must_be_approve_or_reject(self):
+        with self.assertRaises(ValueError):
+            review_queues.record_human_verdict(
+                self.conn, "claim", self.claim.id, "unsure", reason="拿不准")
+
+    def test_decision_is_recorded_as_human_not_shadow(self):
+        review_queues.record_human_verdict(
+            self.conn, "claim", self.claim.id, "reject", reason="用于不是组成",
+            reviewer="likefallwind")
+
+        row = self.conn.execute(
+            "SELECT decided_by,reason FROM decisions WHERE target_id=?"
+            " ORDER BY id DESC LIMIT 1", (self.claim.id,)).fetchone()
+        self.assertEqual("human", row["decided_by"])
+        self.assertIn("likefallwind", row["reason"])
 
 if __name__ == "__main__":
     unittest.main()

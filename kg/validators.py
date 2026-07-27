@@ -20,12 +20,17 @@ Evidence：
 ---
 
 判断这段 evidence 是否支持该关系的类型和方向，并严格遵守方向规则。
+
+特别检查端点是否被截短：evidence 里说的宾语，和 Claim 写的宾语，是不是同一个
+东西。正文说「专家系统是一种人工智能程序」，支持的是「专家系统 is_a 人工智能
+程序」，**不支持**「专家系统 is_a 人工智能」——一类程序不是一个研究领域的种。
+少了限定词就是另一句话，这种情况判 insufficient。
 输出 JSON：
 {output_schema}
 """
 
 VALIDATOR_VERSION = "entailment-validator-1"
-ENTAILMENT_PROMPT_VERSION = "entailment-judge-2"
+ENTAILMENT_PROMPT_VERSION = "entailment-judge-3"
 
 
 @dataclass(frozen=True)

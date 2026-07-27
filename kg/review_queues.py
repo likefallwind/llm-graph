@@ -39,6 +39,43 @@ def _review_type_with_llm(row: dict) -> dict:
     return payload
 
 
+def record_human_verdict(conn, target_type: str, target_id: int, verdict: str, *,
+                         reason: str, reviewer: str = "human") -> dict:
+    """把人工裁决写回库——`human_review` 队列此前只有出口没有入口。
+
+    `store.decide` 早就能改状态（`decided_by != 'shadow'` 那条分支），但只有
+    `decision.shadow_claim` 在调它，而 shadow 分支按设计不改状态。于是队列
+    产出了待审项，人判完却无处可写。
+
+    拒绝的 claim 不物理删除，只置 `rejected`：`LOOKUP_EXCLUDED_STATUSES` 已经
+    把它排除在检索之外，而留着行才能事后复现"当初为什么拒"。导出成 gold 负例
+    是另一步，见 `scripts/export_human_labels.py`。
+    """
+    from .decision import POLICY_VERSION
+    if verdict not in {"approve", "reject"}:
+        raise ValueError(f"非法裁决: {verdict}（只接受 approve / reject）")
+    if not reason.strip():
+        raise ValueError("人工裁决必须给出理由——它是 gold 负例的判定依据")
+    if target_type == "claim":
+        target = store.get_claim(conn, target_id)
+    elif target_type == "entity":
+        target = store.get_entity(conn, target_id)
+    else:
+        raise ValueError(f"只支持 claim / entity，收到 {target_type}")
+    if target is None:
+        raise ValueError(f"{target_type} 不存在: {target_id}")
+
+    decision = store.decide(
+        conn, target_type, target_id, verdict,
+        decided_by="human", policy_version=POLICY_VERSION,
+        reason=f"{reason.strip()}（reviewer={reviewer}）")
+    after = (store.get_claim(conn, target_id) if target_type == "claim"
+             else store.get_entity(conn, target_id))
+    return {"decision_id": decision.id, "target_type": target_type,
+            "target_id": target_id, "verdict": verdict,
+            "status": after.status}
+
+
 def review_type_conflicts(conn, limit: int = 50) -> list[dict]:
     """当前算法版本下、与当前主类型仍冲突的类型断言。
 

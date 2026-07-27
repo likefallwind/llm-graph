@@ -57,13 +57,18 @@ class ValidatorEvidenceThresholdTests(unittest.TestCase):
     def tearDown(self):
         self.conn.close()
 
-    def test_single_high_authority_source_needs_more_evidence(self):
+    def test_single_high_authority_source_meets_the_threshold(self):
+        """一处语料原文 + 模型蕴含复核 = 门槛要求的证据量。
+
+        门槛曾经要 2 个独立来源组，那等于把模型那一票也折算成一个来源——
+        CLAUDE.md 明确写着同一模型的多次判断不是新增独立信源。
+        """
         claim = _claim(self.conn)
         _support(self.conn, claim, "book-a", "book:a", high=True)
 
         result = validators.evaluate(self.conn, claim.id)
 
-        self.assertEqual(result.outcome, "needs_more_evidence")
+        self.assertEqual(result.outcome, "auto_approve")
         self.assertEqual(result.independent_supports, 1)
         self.assertEqual(result.high_authority_supports, 1)
 
@@ -78,15 +83,24 @@ class ValidatorEvidenceThresholdTests(unittest.TestCase):
         self.assertEqual(result.independent_supports, 2)
         self.assertEqual(result.high_authority_supports, 1)
 
-    def test_two_sources_in_same_independence_group_need_more_evidence(self):
+    def test_same_independence_group_does_not_inflate_the_count(self):
+        """原文与译文是同一个来源组，两条摘录仍然只算一个独立来源。"""
         claim = _claim(self.conn)
         _support(self.conn, claim, "book-a-original", "book:a", high=True)
         _support(self.conn, claim, "book-a-translation", "book:a")
 
         result = validators.evaluate(self.conn, claim.id)
 
-        self.assertEqual(result.outcome, "needs_more_evidence")
         self.assertEqual(result.independent_supports, 1)
+
+    def test_no_qualifying_support_still_needs_more_evidence(self):
+        """门槛降到 1 不等于取消门槛：一条合格的支持证据都没有仍然不够。"""
+        claim = _claim(self.conn)
+
+        result = validators.evaluate(self.conn, claim.id)
+
+        self.assertEqual(result.outcome, "needs_more_evidence")
+        self.assertEqual(result.independent_supports, 0)
 
     def test_independent_sources_without_high_authority_need_more_evidence(self):
         claim = _claim(self.conn)
@@ -150,13 +164,14 @@ class ValidatorEvidenceThresholdTests(unittest.TestCase):
         self.assertEqual(result.outcome, "auto_approve")
 
     def test_non_assertive_evidence_stays_visible_in_reasons(self):
+        """目录序反驳不了一个关系，但它出现过这件事要留在理由里。"""
         claim = _claim(self.conn)
         _support(self.conn, claim, "book-a", "book:a", high=True)
         self._oppose(claim, "book-c", "book:c", evidence_type="toc_order")
 
         result = validators.evaluate(self.conn, claim.id)
 
-        self.assertEqual(result.outcome, "needs_more_evidence")
+        self.assertEqual(result.outcome, "auto_approve")
         self.assertTrue(any("编排而非断言" in r for r in result.reasons))
 
     def test_assertive_opposing_evidence_counts_even_if_it_cannot_establish(self):
