@@ -249,6 +249,10 @@ def cmd_pipeline(args):
         result = pipeline.taxonomy_type_report(conn)
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return
+    if args.action == "endpoint-types":
+        result = pipeline.endpoint_type_report(conn)
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return
     if args.action == "merge":
         if not args.source_entity or not args.target_entity:
             sys.exit("pipeline merge 需要 --source-entity 和 --target-entity")
@@ -764,6 +768,7 @@ def main():
         choices=[
             "read", "doc", "wiki", "batch", "migrate", "status", "reshadow",
             "survey", "target", "duplicates", "identity", "taxonomy-types",
+            "endpoint-types",
             "alias-declarations",
             "merge", "revert-merge", "retype", "revert-retype", "revisions",
             "align-aliases", "review-alignments", "replay-pending",

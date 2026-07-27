@@ -209,6 +209,46 @@ class RelationV1ContractTests(unittest.TestCase):
         self.assertEqual(1, len(batch.claims))
         self.assertFalse(batch.rejected)
 
+class EndpointTypesAreGuidanceNotGateTests(unittest.TestCase):
+    """端点类型不再拒收 claim，只标记为非典型。
+
+    主类型表达实体的规范身份，关系问的是它此处承担的角色。拿身份闸角色会拒掉
+    「正则化 solves 过拟合」这类成立的说法，而且和"主类型不声称表达全部用途"
+    自相矛盾。关系成不成立交给证据和蕴含验证。
+    """
+
+    def test_atypical_endpoint_no_longer_raises(self):
+        # resource 不在 part_of 的典型主语范围里，但不该因此拒收。
+        registry().validate_claim("resource", "part_of", "concept")
+        registry().validate_claim_endpoint_types(
+            "data", "used_for", "task", active_only=False)
+
+    def test_atypical_endpoint_is_reported(self):
+        reasons = registry().atypical_endpoints("resource", "part_of", "concept")
+
+        self.assertEqual(1, len(reasons))
+        self.assertIn("resource", reasons[0])
+
+    def test_typical_endpoint_reports_nothing(self):
+        self.assertEqual(
+            [], registry().atypical_endpoints("solution", "part_of", "concept"))
+
+    def test_unknown_entity_type_still_raises(self):
+        with self.assertRaises(ValueError):
+            registry().validate_claim("不存在的类型", "part_of", "concept")
+
+    def test_experimental_relation_still_blocked_at_extraction(self):
+        with self.assertRaises(ValueError):
+            registry().validate_claim_endpoint_types(
+                "solution", "used_for", "task", active_only=True)
+
+    def test_typical_endpoints_reach_the_extraction_contract(self):
+        """典型端点要进契约给模型看——不进就成了没有消费者的死配置。"""
+        import json
+        contract = json.loads(registry().extraction_contract())
+
+        self.assertIn("typical_subject_types", contract["part_of"])
+        self.assertIn("typical_object_types", contract["part_of"])
 
 if __name__ == "__main__":
     unittest.main()

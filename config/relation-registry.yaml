@@ -3,6 +3,13 @@
 # 规则：这里只放有消费者的字段。没有代码读的字段不要加——死配置会让人以为
 # 某条规则在生效，实际没有。新增关系必须补齐 ontology._validate_definition
 # 要求的全部字段，缺一个就加载失败。
+#
+# ⚠️ typical_subject_types / typical_object_types 是**引导不是硬闸**。它们写进
+# 抽取契约给模型看，端点不合典型只会被 `pipeline endpoint-types` 报告，不会拒收。
+# 原因：主类型表达实体的规范身份，而关系问的是它在这句话里承担什么角色，拿身份
+# 闸角色必然误伤——「正则化 solves 过拟合」「模型 evaluated_by ImageNet」
+# 「语言模型 trained_on 某教材」三句都成立，旧的硬闸三句都拒。关系成不成立由
+# 证据和蕴含验证判定。
 version: 5
 
 # 抽取器允许输出的全部证据类型。提示词里的可选值和强弱判定都从这里生成，
@@ -108,8 +115,8 @@ relations:
     lifecycle: core
     family: taxonomy
     description: Subject is a more specific kind of object.
-    subject_types: [resource, criterion, data, task, solution, concept]
-    object_types: [resource, criterion, data, task, solution, concept]
+    typical_subject_types: [resource, criterion, data, task, solution, concept]
+    typical_object_types: [resource, criterion, data, task, solution, concept]
     symmetric: false
     transitive: true
     acyclic: true
@@ -122,8 +129,8 @@ relations:
     lifecycle: core
     family: composition
     description: Subject is an actual structural constituent or explicitly identified stage of object; usage, dependency, participation, construction, input/output, attributes, and subtype relations are not composition.
-    subject_types: [concept, solution, criterion, data]
-    object_types: [concept, solution, data]
+    typical_subject_types: [concept, solution, criterion, data]
+    typical_object_types: [concept, solution, data]
     symmetric: false
     transitive: contextual
     acyclic: true
@@ -138,8 +145,8 @@ relations:
     lifecycle: core
     family: educational
     description: Subject should be learned before object because of a conceptual dependency, explicit derivation, or curriculum recommendation.
-    subject_types: [concept, solution, criterion]
-    object_types: [concept, solution, criterion, task]
+    typical_subject_types: [concept, solution, criterion]
+    typical_object_types: [concept, solution, criterion, task]
     symmetric: false
     transitive: contextual
     acyclic: true
@@ -153,12 +160,29 @@ relations:
     validator_version: entailment-validator-1
     high_impact_review: true
 
+  # ⚠️ 不可达，且没有转正路径。保留仅为记录这个设计选项，不要当成在生效的规则。
+  #
+  # 它出自 2026-07-23 的 development-plan-v2 关系草案，次日登记为 experimental，
+  # 从未进过抽取路径。原始验收条件的第三条是「distinction from is_a and part_of」，
+  # 而它跟 is_a 的唯一机械区别一直是端点类型限死在 field 上。
+  #
+  # 注册表 v5 把 field 并进 concept 之后，签名只能写成 concept -> concept，是
+  # is_a 签名的真子集；除 description 与 lifecycle 外，两条关系的全部字段
+  # （family / 证据类型 / minimum_evidence / validator / 传递性 / 无环 /
+  # high_impact_review）完全相同。也就是说它现在等于「两端都是 concept 的 is_a」，
+  # 能表达的边 is_a 都能表达，走一样的证据要求和验证器。
+  #
+  # tests/test_relation_contract.py:55 的 test_field_taxonomy_is_absorbed_by_is_a
+  # 已经断言领域分类走 is_a，下一条断言 subfield_of 在抽取边界被拒——既定行为。
+  #
+  # 要复活它，得先有一个不依赖 field 类型的区分判据。语料里如果出现「子领域」
+  # 确实需要单独表达的结构，那时再谈。
   subfield_of:
     lifecycle: experimental
     family: taxonomy
     description: Subject field is conventionally organized under object field.
-    subject_types: [concept]
-    object_types: [concept]
+    typical_subject_types: [concept]
+    typical_object_types: [concept]
     symmetric: false
     transitive: true
     acyclic: true
@@ -171,8 +195,8 @@ relations:
     lifecycle: experimental
     family: educational
     description: Teaching material documents a common confusion.
-    subject_types: [resource, criterion, data, task, solution, concept]
-    object_types: [resource, criterion, data, task, solution, concept]
+    typical_subject_types: [resource, criterion, data, task, solution, concept]
+    typical_object_types: [resource, criterion, data, task, solution, concept]
     symmetric: true
     transitive: false
     acyclic: false
@@ -184,8 +208,8 @@ relations:
     lifecycle: experimental
     family: educational
     description: Teaching material explicitly compares the entities.
-    subject_types: [resource, criterion, data, task, solution, concept]
-    object_types: [resource, criterion, data, task, solution, concept]
+    typical_subject_types: [resource, criterion, data, task, solution, concept]
+    typical_object_types: [resource, criterion, data, task, solution, concept]
     symmetric: true
     transitive: false
     acyclic: false
@@ -197,8 +221,8 @@ relations:
     lifecycle: experimental
     family: functional
     description: Subject and object are explicit alternatives for substantially the same task or objective.
-    subject_types: [solution]
-    object_types: [solution]
+    typical_subject_types: [solution]
+    typical_object_types: [solution]
     symmetric: true
     transitive: false
     acyclic: false
@@ -211,8 +235,8 @@ relations:
     lifecycle: experimental
     family: functional
     description: Subject is used to perform or support object task.
-    subject_types: [concept, solution]
-    object_types: [task]
+    typical_subject_types: [concept, solution]
+    typical_object_types: [task]
     symmetric: false
     transitive: false
     acyclic: false
@@ -224,8 +248,8 @@ relations:
     lifecycle: experimental
     family: functional
     description: Subject is explicitly presented as solving object task.
-    subject_types: [solution]
-    object_types: [task]
+    typical_subject_types: [solution]
+    typical_object_types: [task]
     symmetric: false
     transitive: false
     acyclic: false
@@ -237,8 +261,8 @@ relations:
     lifecycle: experimental
     family: functional
     description: Subject is evaluated using object metric.
-    subject_types: [task, solution]
-    object_types: [criterion]
+    typical_subject_types: [task, solution]
+    typical_object_types: [criterion]
     symmetric: false
     transitive: false
     acyclic: false
@@ -250,8 +274,8 @@ relations:
     lifecycle: experimental
     family: functional
     description: Subject model is trained or fine-tuned on object dataset.
-    subject_types: [solution]
-    object_types: [data]
+    typical_subject_types: [solution]
+    typical_object_types: [data]
     symmetric: false
     transitive: false
     acyclic: false
@@ -264,8 +288,8 @@ relations:
     lifecycle: experimental
     family: functional
     description: Subject method optimizes object loss or objective concept.
-    subject_types: [solution]
-    object_types: [criterion, concept]
+    typical_subject_types: [solution]
+    typical_object_types: [criterion, concept]
     symmetric: false
     transitive: false
     acyclic: false
@@ -277,8 +301,8 @@ relations:
     lifecycle: experimental
     family: historical
     description: Subject is explicitly derived, extended, or adapted from object.
-    subject_types: [concept, solution, criterion]
-    object_types: [concept, solution, criterion]
+    typical_subject_types: [concept, solution, criterion]
+    typical_object_types: [concept, solution, criterion]
     symmetric: false
     transitive: false
     acyclic: true

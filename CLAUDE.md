@@ -100,6 +100,7 @@ venv 在项目根目录；调 LLM 的命令需要 `MINIMAX_API_KEY`。数据库�
 | `survey` / `target` | 定向补证：`survey` 零 LLM 列出卡在门槛下的 claim 及候选段落；`target` 对这些段落抽取。`--limit N` `--passages N` |
 | `identity` | 报告哪些 evidence 摘录里没出现端点身份名——只读体检 |
 | `taxonomy-types` | 报告两端主类型不同的 `is_a`——只读体检，零 LLM |
+| `endpoint-types` | 报告端点类型落在关系典型范围外的 claim——只读体检，零 LLM |
 | `duplicates` / `alias-declarations` | 前者列疑似重复实体；后者零 LLM 扫语料里的别名声明句式 |
 | `merge --source-entity A --target-entity B --reason R` / `revert-merge --merge-event N` | 人工确认后的实体合并与撤销 |
 | `retype --entity N --to T [--definition D] --reason R` / `revert-retype --revision N` / `revisions [--entity N]` | 人工修订主类型与定义，留痕可撤销 |
@@ -140,6 +141,11 @@ rollback / calibrate / check / viz / export / stats / embed`。
   `config/relation-registry.yaml`。代码读它，不复述它——第二份词表会被
   `tests/test_core_isolation.py` 抓到。注册表里也不放没有消费者的字段，死配置
   会让人以为某条规则在生效。
+- **端点类型是引导不是硬闸。** `typical_subject_types` / `typical_object_types`
+  写进抽取契约给模型看，不合典型的由 `pipeline endpoint-types` 报告，不拒收。
+  主类型表达规范身份，关系问的是此处承担的角色，拿身份闸角色会拒掉
+  「正则化 solves 过拟合」这类成立的说法。关系是否成立由证据和蕴含验证判定。
+  唯一的例外是 `is_a` 两端同类型——那条问的正是身份，而且只报告不拒收。
 - **主类型是单值六类，判据从注册表注入提示词。** `resource / criterion / data /
   task / solution / concept`，按优先序判、命中即停；`concept` 是兜底不是备选。
   **判型的输入是定义，不是名字**——抽取时先写 `definition` 再据它判型，定义说不出

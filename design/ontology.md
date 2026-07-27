@@ -34,11 +34,12 @@ cross-cutting disambiguation clauses, live in `config/relation-registry.yaml`
 and reach the model through `Registry.entity_type_contract()`. That file is the
 only copy; prompts generate from it rather than restating it.
 
-The primary type names an entity's canonical category so that resolution,
-conflict detection, and relation constraints have something deterministic to
-work with. It does not claim to capture everything the entity is used for —
-those other facets are the pattern of its neighbouring edges, which is why they
-are not stored as node attributes.
+The primary type names an entity's canonical category so that resolution and
+conflict detection have something deterministic to work with. It does not claim
+to capture everything the entity is used for — those other facets are the
+pattern of its neighbouring edges, which is why they are not stored as node
+attributes, and why the type does not gate which relations an entity may take
+part in.
 
 Type is judged from the entity's definition, never from the spelling of its
 name. An entity whose definition is too thin to judge is dropped rather than
@@ -50,6 +51,26 @@ must not cross types, since a subtype and its supertype occupy the same slot;
 crossings are reported by `kg pipeline taxonomy-types`. And suffix-stripped name
 variants (`回归问题` → `回归`) must not cross types either, since the stripped
 suffixes are exactly the type markers.
+
+**Endpoint types do not gate relations.** A relation's
+`typical_subject_types` / `typical_object_types` are written into the extraction
+contract as guidance and atypical endpoints are reported by
+`kg pipeline endpoint-types`, but nothing is rejected on type grounds. Using
+them as a gate contradicted this ontology's own claim that a primary type does
+not capture everything an entity is used for: the type states identity, a
+relation asks what role the entity plays in this particular sentence, and
+gating role by identity rejects true statements —
+
+```
+正则化 solves 过拟合            过拟合 is concept, not task
+模型 evaluated_by ImageNet      ImageNet is data, not criterion
+语言模型 trained_on 某教材       a textbook is resource, not data
+```
+
+Whether a relation holds is decided by evidence and entailment review. `is_a`
+same-type is the one type-based check that survives, because `is_a` asks about
+identity — the very thing the type states — and because it reports rather than
+rejects.
 
 The migration from the previous eleven-type vocabulary is recorded in
 `design/entity-type-v5.md`.
@@ -83,11 +104,16 @@ It is not facet promotion.
 
 - `is_a`: subject is a more specific kind of object. Both endpoints must have
   the same primary type.
-- `subfield_of`: subject field is conventionally organized under object field.
-  Retiring this is proposed in `design/entity-type-v5.md`: with `field` folded
-  into `concept` its signature is `concept → concept`, indistinguishable from
-  `is_a`, and `tests/test_relation_contract.py` already asserts that field
-  taxonomy travels through `is_a`.
+- `subfield_of`: **unreachable, and with no route to promotion.** It is kept
+  only to record the design option. With `field` folded into `concept` its
+  signature is `concept → concept`, a strict subset of `is_a`'s, and every other
+  field the two relations declare is identical — family, evidence types,
+  minimum evidence, validator, transitivity, acyclicity, review flag. It is now
+  `is_a` restricted to concept endpoints. Its own original acceptance criteria
+  required a distinction from `is_a`, and the endpoint type was the only
+  mechanical distinction it ever had. `tests/test_relation_contract.py` already
+  asserts that field taxonomy travels through `is_a`. Reviving it needs a
+  criterion that does not depend on a `field` type.
 
 Taxonomy is not topical co-occurrence or composition.
 
@@ -117,11 +143,10 @@ a prerequisite.
 - `trained_on`: subject solution is trained or fine-tuned on object data.
 - `optimizes`: subject solution optimizes object criterion or objective concept.
 
-These are the relations the functional slots exist to constrain — `task` is what
-`solves` and `used_for` point at, `data` is what `trained_on` points at,
-`criterion` is what `evaluated_by` and `optimizes` point at. All six are still
-`experimental` and therefore outside the extraction path, so those constraints
-do not bite yet.
+`task` is what `solves` and `used_for` typically point at, `data` what
+`trained_on` points at, `criterion` what `evaluated_by` and `optimizes` point
+at. **Typically, not necessarily.** Endpoint types are guidance, not a gate —
+see below.
 
 ### Historical
 

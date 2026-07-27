@@ -55,3 +55,22 @@ Two kinds of record live here, distinguished by whether `evidence` is empty:
 the middle of a category and hard at its edge, so an example that records which
 neighbouring category it was nearly assigned to is worth more than one that
 merely records the right answer.
+
+The first drop holds 38 entries, split 70/15/15 by a fixed seed. They are the
+entities the six-type criteria actually reclassified, plus a random sample drawn
+from the ones it left alone. The other 74 library entities are omitted on
+purpose: their new type follows mechanically from collapsing eleven categories
+into six, so including them would pad the set without testing anything.
+
+`review.model_verdict` records provenance honestly, and none of these entries
+were reviewed one at a time. `bulk_accept_flagged` means two independent judging
+rounds agreed and a human accepted the flagged reclassifications as a group;
+`bulk_accept` means the same for the random sample. That is weaker than
+per-entry review and the field says so, because a benchmark that overstates how
+hard its labels were checked is worse than a smaller honest one. Entries
+promoted to individual review should have this field updated.
+
+Two entities are deliberately absent: `优化` and `推断`. The two judging rounds
+disagreed on both, and their definitions in the corpus — "深度学习所围绕的核心
+主题。" — cannot support any judgment. They belong here once the corpus yields a
+definition worth judging, not before.

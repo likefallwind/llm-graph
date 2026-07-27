@@ -148,14 +148,14 @@ uncertain 只增不减，后来的既不覆盖也不丢弃先来的。
 
 | 版本号 | 当前值 | 改了以后 |
 |---|---|---|
-| `pipeline.ALGORITHM_VERSION` | `grounded-pipeline-5` | 已处理过的 `(快照, 主题)` 重新变成可读 |
+| `pipeline.ALGORITHM_VERSION` | `grounded-pipeline-6` | 已处理过的 `(快照, 主题)` 重新变成可读 |
 | `validators.VALIDATOR_VERSION` | `entailment-validator-1` | `reshadow --only-stale` 认为旧蕴含判定过期 |
 | `validators.ENTAILMENT_PROMPT_VERSION` | `entailment-judge-2` | 同上 |
 | `decision.POLICY_VERSION` | `claim-policy-4` | 只给裁决打标签，不触发重跑 |
 | `entity_resolution.RESOLVER_VERSION` | `entity-resolver-6` | 消歧事件记录的版本 |
 | `entity_resolution.ALIGNMENT_POLICY_VERSION` | `entity-alignment-policy-3` | 对齐证据记录的版本 |
 | `targeting.ALGORITHM_VERSION` | `claim-targeting-2` | 定向补证的探测记录 |
-| 注册表 `version` | `4` | 每次 `db.connect()` 同步进 `relation_definitions` |
+| 注册表 `version` | `5` | 每次 `db.connect()` 同步进 `relation_definitions` |
 
 **读库时必须先看版本。** 记录带的是产生它时的版本，不是当前版本。一条 claim 可能
 有多代裁决，只看最新一条，并确认它是在当前策略下产生的。
@@ -319,8 +319,10 @@ reference_key(s)  = normalize_name(s) → 删除全部空白
 3. claim 必须至少一个端点出现在本块有效 entities；另一个端点可以来自只读 identity
    快照。两个端点都不在本块则视为偏离本批发现范围
 4. `validate_claim_endpoint_types(..., active_only=True)` 只放行 `lifecycle: core`
-   的关系，并校验所有已知端点类型；qualifiers 按契约校验（含必填）；
-   `evidence_type` 必须在注册表词表里
+   的关系，并校验端点类型本身是合法类型；**不再按关系的典型端点拒收**——主类型
+   表达身份，关系问的是此处的角色，拿身份闸角色会拒掉「正则化 solves 过拟合」
+   这类成立的说法。非典型端点由 `pipeline endpoint-types` 报告。
+   qualifiers 按契约校验（含必填）；`evidence_type` 必须在注册表词表里
 5. `next_reading_targets` 的 query 必须在正文出现，否则不登记
 
 非本块端点暂时无法唯一命中时，claim 仍保留；`materialize` 为它建立 pending

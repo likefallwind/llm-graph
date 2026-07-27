@@ -80,6 +80,16 @@ contracts, confusion tests, a validator, migration analysis, and benchmark
 coverage. Do not add a relation until every field required by
 `kg/ontology.py` is defined.
 
+`subfield_of` is a special case among the ten: it is not merely unpromoted but
+currently unpromotable, and the registry says so in a comment above its entry.
+Its only mechanical difference from `is_a` was that both endpoints had to be
+`field`, and registry v5 folded `field` into `concept`. Every other field the
+two relations declare is now identical, and its signature is a strict subset of
+`is_a`'s, so it is `is_a` restricted to concept endpoints. It stays registered
+to record the design option, not because anything can reach it. Reviving it
+requires a distinguishing criterion that does not rest on a `field` type — the
+same criterion its original 2026-07-23 specification demanded and never got.
+
 ## 4. Designs Not Yet Built
 
 ### 4.1 Coverage Planner

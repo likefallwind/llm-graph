@@ -361,6 +361,42 @@ def taxonomy_type_report(conn, *, limit: int = 200) -> dict:
     }
 
 
+def endpoint_type_report(conn, *, limit: int = 200) -> dict:
+    """端点类型落在注册表典型范围之外的 claim——只读体检，零 LLM。
+
+    端点类型**不是硬闸**：主类型表达实体的规范身份，关系问的是它此处承担的角色，
+    拿身份闸角色会拒掉「正则化 solves 过拟合」这类成立的说法。所以非典型端点在
+    这里报告，进人眼，而不是在 `parse_payload` 里被静默丢进 rejected。
+
+    非典型不等于错。它值得看，是因为两种情况都会落在这里：关系确实用得刁钻，
+    或者某一端的主类型判错了。
+    """
+    rows = conn.execute(
+        "SELECT c.id,c.relation,c.status,"
+        " s.canonical_name sname,s.entity_type stype,"
+        " o.canonical_name oname,o.entity_type otype"
+        " FROM claims c"
+        " JOIN entities s ON s.id=c.subject_id"
+        " JOIN entities o ON o.id=c.object_id ORDER BY c.id").fetchall()
+    items = []
+    for row in rows:
+        reasons = registry().atypical_endpoints(
+            row["stype"], row["relation"], row["otype"])
+        if reasons:
+            items.append({
+                "claim_id": row["id"], "status": row["status"],
+                "edge": f"{row['sname']}({row['stype']})"
+                        f" --{row['relation']}--> {row['oname']}({row['otype']})",
+                "reasons": reasons,
+            })
+    return {
+        "claims": len(rows),
+        "atypical_endpoints": len(items),
+        "next": "非典型不等于错：确认关系用法，或用 pipeline retype 修主类型",
+        "items": items[:limit],
+    }
+
+
 def status(conn) -> dict:
     tables = {
         "sources": "sources",

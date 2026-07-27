@@ -17,7 +17,8 @@ class OntologyError(ValueError):
 
 
 REQUIRED_RELATION_FIELDS = (
-    "lifecycle", "family", "description", "subject_types", "object_types",
+    "lifecycle", "family", "description",
+    "typical_subject_types", "typical_object_types",
     "symmetric", "transitive", "acyclic", "accepted_evidence_types",
     "minimum_evidence", "validator_version",
 )
@@ -59,7 +60,8 @@ class Registry:
             if policy["lifecycle"] not in {"core", "experimental"}:
                 raise OntologyError(
                     f"关系 {name} lifecycle 非法: {policy['lifecycle']}")
-            unknown = (set(policy["subject_types"]) | set(policy["object_types"])) - known
+            unknown = (set(policy["typical_subject_types"])
+                       | set(policy["typical_object_types"])) - known
             if unknown:
                 raise OntologyError(f"关系 {name} 使用未知实体类型: {sorted(unknown)}")
             accepted = set(policy["accepted_evidence_types"])
@@ -171,7 +173,19 @@ class Registry:
     def validate_claim_endpoint_types(
             self, subject_type: str | None, relation: str,
             object_type: str | None, *, active_only: bool = False) -> None:
-        """校验已知端点类型；None 表示端点尚待确定性解析。"""
+        """校验关系存在、可用，以及端点类型本身合法。
+
+        **端点类型不再是硬闸。** 主类型表达的是实体的规范身份，而关系问的是它在
+        这句话里承担什么角色——拿身份去闸角色必然误伤，而且和"主类型不声称表达
+        全部用途"这条自相矛盾。真实反例：
+
+            正则化 solves 过拟合          过拟合是 concept，不是 task
+            模型 evaluated_by ImageNet    ImageNet 是 data，不是 criterion
+            语言模型 trained_on 某教材     教材是 resource，不是 data
+
+        三句都成立，旧规则三句都拒。关系成不成立回到证据和蕴含验证去判；端点
+        是否典型改由 `atypical_endpoints` 报告，进复核队列而不是被静默丢弃。
+        """
         policy = self.relation(relation)
         if active_only and policy["lifecycle"] != "core":
             raise OntologyError(f"关系 {relation} 不在默认抽取的核心关系中")
@@ -179,12 +193,23 @@ class Registry:
             self.validate_entity_type(subject_type)
         if object_type is not None:
             self.validate_entity_type(object_type)
-        if subject_type is not None and subject_type not in policy["subject_types"]:
-            raise OntologyError(
-                f"关系 {relation} 不允许 subject 类型 {subject_type}")
-        if object_type is not None and object_type not in policy["object_types"]:
-            raise OntologyError(
-                f"关系 {relation} 不允许 object 类型 {object_type}")
+
+    def atypical_endpoints(self, subject_type: str | None, relation: str,
+                           object_type: str | None) -> list[str]:
+        """端点类型是否落在注册表列出的典型范围外。只报告，不拒收。"""
+        policy = self.relation(relation)
+        out = []
+        if (subject_type is not None
+                and subject_type not in policy["typical_subject_types"]):
+            out.append(
+                f"subject 类型 {subject_type} 不在 {relation} 的典型范围"
+                f" {policy['typical_subject_types']}")
+        if (object_type is not None
+                and object_type not in policy["typical_object_types"]):
+            out.append(
+                f"object 类型 {object_type} 不在 {relation} 的典型范围"
+                f" {policy['typical_object_types']}")
+        return out
 
     def validate_qualifiers(self, relation: str, qualifiers: dict,
                             *, require_required: bool = False) -> None:
@@ -210,6 +235,10 @@ class Registry:
         contracts = {}
         for name, policy in self.active_relations.items():
             item = {"description": policy["description"]}
+            # 典型端点是**引导**不是限制：写进契约让模型知道这条关系一般连什么，
+            # 但端点类型不合典型不构成拒收理由——见 validate_claim_endpoint_types。
+            item["typical_subject_types"] = policy["typical_subject_types"]
+            item["typical_object_types"] = policy["typical_object_types"]
             if policy.get("qualifiers"):
                 item["qualifiers"] = policy["qualifiers"]
             if policy.get("required_qualifiers"):
