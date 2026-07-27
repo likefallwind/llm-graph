@@ -8,7 +8,19 @@ from . import llm, store
 from .ontology import registry
 
 
-ENTAILMENT_PROMPT = """你是有据 Claim 复核器。只能依据给出的 evidence，不得使用模型记忆。
+ENTAILMENT_PROMPT = """你是有据 Claim 复核器。
+
+verdict 只能依据给出的 evidence 判定，不得用你的领域知识去补足语料没说的东西——
+语料没说就是没说，那是 insufficient，不是 supports。
+
+但你的领域知识有一个用处：**只能用来否决，不能用来支持**。如果 evidence 看着
+支持这条 claim，而你依据领域知识认为它实际上错了（事实不对、方向反了、术语被
+误用、只在特定条件下成立而 claim 没写条件），把 knowledge_objection 置为 true
+并写清理由。这不改变 verdict——verdict 仍然只描述 evidence 说了什么——但会把这条
+claim 送去人工裁决。
+
+这个不对称是有意的：拿模型知识去支持，等于把模型记忆当成知识写进图；拿它去
+否决，最坏也只是多送一条给人看。
 
 Claim：{subject} -{relation}-> {object}
 关系语义：{semantics}
@@ -87,11 +99,16 @@ def _prompt_context(claim, subject, object_) -> dict:
             "组成部分或阶段；仅仅改变构建方式或用途不算。")
         output_schema = (
             '{"verdict":"supports|contradicts|insufficient",'
-            '"composition_explicit":true|false,"reason":"一句话理由"}')
+            '"composition_explicit":true|false,'
+            '"knowledge_objection":true|false,'
+            '"knowledge_objection_reason":"仅在 knowledge_objection 为 true 时填",'
+            '"reason":"一句话理由"}')
     else:
         semantic_guard = "按关系定义判断，不得把相邻概念强行归入该关系。"
         output_schema = (
             '{"verdict":"supports|contradicts|insufficient",'
+            '"knowledge_objection":true|false,'
+            '"knowledge_objection_reason":"仅在 knowledge_objection 为 true 时填",'
             '"reason":"一句话理由"}')
     return {
         "subject": subject.canonical_name, "relation": claim.relation,
@@ -183,6 +200,24 @@ def verify_entailment(conn, claim_id: int, *, force: bool = False,
         conn, [claim_id], force=force, only_stale=only_stale, run_id=run_id)
 
 
+def _knowledge_objection(raw_output: str | None) -> str | None:
+    """取这次蕴含判定里的领域知识否决理由；没有否决返回 None。
+
+    存在 `entailment_reviews.raw_output` 里而不是单开一列：否决不是判定本身的
+    一部分，判定描述的仍然只是 evidence 说了什么。
+    """
+    if not raw_output:
+        return None
+    try:
+        payload = json.loads(raw_output)
+    except (TypeError, ValueError):
+        return None
+    if not isinstance(payload, dict) or not payload.get("knowledge_objection"):
+        return None
+    return (str(payload.get("knowledge_objection_reason", "")).strip()
+            or "模型依据领域知识认为该 claim 不成立，未给出理由")
+
+
 def _would_cycle(conn, claim) -> bool:
     policy = registry().relation(claim.relation)
     if not policy["acyclic"]:
@@ -230,10 +265,11 @@ def evaluate(conn, claim_id: int) -> Validation:
 
     rows = conn.execute(
         "SELECT e.id,e.evidence_type,e.entailment,e.current_entailment_review_id,"
-        " s.independence_group,s.authority_profile"
+        " s.independence_group,s.authority_profile,r.raw_output"
         " FROM evidence e"
         " JOIN source_snapshots ss ON ss.id=e.source_snapshot_id"
         " JOIN sources s ON s.id=ss.source_id"
+        " LEFT JOIN entailment_reviews r ON r.id=e.current_entailment_review_id"
         " WHERE e.claim_id=? AND e.mechanically_valid=1 ORDER BY e.id",
         (claim_id,)).fetchall()
     evidence_ids = tuple(row["id"] for row in rows)
@@ -253,7 +289,11 @@ def evaluate(conn, claim_id: int) -> Validation:
     high = 0
     non_assertive: set[str] = set()
     unaccepted_supports: set[str] = set()
+    knowledge_objections: list[str] = []
     for row in rows:
+        objection = _knowledge_objection(row["raw_output"])
+        if objection is not None:
+            knowledge_objections.append(objection)
         verdict = row["entailment"]
         if verdict not in {"supports", "contradicts"}:
             continue
@@ -284,6 +324,13 @@ def evaluate(conn, claim_id: int) -> Validation:
         reasons.append(
             f"有支持证据的类型不被 {claim.relation} 接受"
             f"（{'、'.join(sorted(unaccepted_supports))}），不计入门槛")
+
+    if knowledge_objections:
+        # 领域知识只能否决不能支持：它不改 verdict，只把 claim 送去人工。
+        # 拿模型知识去支持等于把模型记忆写进图；拿它去否决，最坏是多送一条给人看。
+        reasons.insert(0, f"领域知识否决：{'；'.join(knowledge_objections)}")
+        return Validation(
+            "human_review", tuple(reasons), evidence_ids, 0, 0, reviews)
 
     if _would_cycle(conn, claim):
         return Validation(

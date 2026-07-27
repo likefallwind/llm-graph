@@ -341,6 +341,77 @@ class EntailmentDirectionTests(unittest.TestCase):
         self.assertEqual(updated.entailment, "supports")
         self.assertEqual(updated.metadata["entailment_reason"], "corrected")
 
+class KnowledgeObjectionTests(unittest.TestCase):
+    """领域知识只能否决不能支持。
+
+    拿模型知识去支持，等于把模型记忆当知识写进图，那是核心不变式禁止的；
+    拿它去否决，最坏只是多送一条给人看。这个不对称和证据类型白名单同构——
+    `is_strong_evidence` 也只作用于支持侧。
+    """
+
+    def setUp(self):
+        self.conn = sqlite3.connect(":memory:")
+        self.conn.row_factory = sqlite3.Row
+        schema.ensure(self.conn)
+
+    def tearDown(self):
+        self.conn.close()
+
+    def _reviewed(self, claim, *, objection=None):
+        _support(self.conn, claim, "book-a", "book:a", high=True)
+        evidence_id = self.conn.execute(
+            "SELECT id FROM evidence WHERE claim_id=?", (claim.id,)).fetchone()["id"]
+        payload = {"verdict": "supports", "reason": "正文明确表述"}
+        if objection is not None:
+            payload["knowledge_objection"] = True
+            payload["knowledge_objection_reason"] = objection
+        review = store.add_entailment_review(
+            self.conn, evidence_id, "supports", reason="正文明确表述",
+            raw_output=payload)
+        self.conn.execute(
+            "UPDATE evidence SET current_entailment_review_id=? WHERE id=?",
+            (review.id, evidence_id))
+        self.conn.commit()
+
+    def test_without_objection_the_claim_passes(self):
+        claim = _claim(self.conn)
+        self._reviewed(claim)
+
+        self.assertEqual("auto_approve", validators.evaluate(self.conn, claim.id).outcome)
+
+    def test_objection_sends_the_claim_to_human_review(self):
+        claim = _claim(self.conn)
+        self._reviewed(claim, objection="方向反了，实际是 object 派生自 subject")
+
+        result = validators.evaluate(self.conn, claim.id)
+
+        self.assertEqual("human_review", result.outcome)
+        self.assertTrue(any("领域知识否决" in r for r in result.reasons))
+        self.assertTrue(any("方向反了" in r for r in result.reasons))
+
+    def test_objection_never_turns_insufficient_evidence_into_approval(self):
+        """否决只能减分。没有合格证据时，模型说什么都不该让它通过。"""
+        claim = _claim(self.conn)
+
+        result = validators.evaluate(self.conn, claim.id)
+
+        self.assertEqual("needs_more_evidence", result.outcome)
+
+    def test_malformed_raw_output_is_ignored(self):
+        claim = _claim(self.conn)
+        _support(self.conn, claim, "book-a", "book:a", high=True)
+        evidence_id = self.conn.execute(
+            "SELECT id FROM evidence WHERE claim_id=?", (claim.id,)).fetchone()["id"]
+        review = store.add_entailment_review(
+            self.conn, evidence_id, "supports", reason="x")
+        self.conn.execute(
+            "UPDATE entailment_reviews SET raw_output='不是JSON' WHERE id=?", (review.id,))
+        self.conn.execute(
+            "UPDATE evidence SET current_entailment_review_id=? WHERE id=?",
+            (review.id, evidence_id))
+        self.conn.commit()
+
+        self.assertEqual("auto_approve", validators.evaluate(self.conn, claim.id).outcome)
 
 if __name__ == "__main__":
     unittest.main()

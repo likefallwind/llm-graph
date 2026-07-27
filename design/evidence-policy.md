@@ -97,6 +97,15 @@ LLMs may act as grounded extractor, entity linker, relation classifier,
 entailment judge, adversarial critic, and reading planner. Multiple calls to one
 model are useful checks but are not independent knowledge sources.
 
+The model's own domain knowledge may veto a claim but may never support one. A
+`knowledge_objection` on an entailment review sends the claim to human review
+without changing the verdict, which still reports only what the evidence says.
+Supporting a claim from model knowledge would write model memory into the graph
+as if it were sourced; objecting from it costs at most one extra item in a human
+queue. This is the same asymmetry the evidence-type whitelist already has —
+`is_strong_evidence` gates only the supporting side, because evidence that
+cannot establish a relation can still refute it.
+
 ## Decisions
 
 Possible outcomes:

@@ -156,6 +156,12 @@ rollback / calibrate / check / viz / export / stats / embed`。
   支持和反对**两侧**都不计；关系白名单（`is_strong_evidence`）决定这类断言能不能
   **建立**该关系，**只作用于支持侧**。建立不了不等于反驳不了——一句定义可能建立
   不了 `part_of` 却足以反驳它。
+- **模型的领域知识只能否决，不能支持。** 蕴含判定的 `verdict` 仍然只描述 evidence
+  说了什么，语料没说就是 `insufficient`；但模型可以置 `knowledge_objection`，把
+  一条"证据看着支持、实际上错了"的 claim 送去人工。拿模型知识去支持等于把模型
+  记忆当知识写进图；拿它去否决，最坏只是多送一条给人看。这个不对称和
+  `is_strong_evidence` 同构——白名单也只作用于支持侧。抽取路径不放开，那里放开
+  就是允许编造语料里没有的实体和关系。
 - **一切裁决先 Shadow。** `store.decide` 是唯一会改 entity/claim 状态的地方，
   `decided_by='shadow'` 的分支不改状态。缺证据是 `needs_more_evidence`，不是
   自动拒绝。
