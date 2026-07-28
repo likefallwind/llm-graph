@@ -320,6 +320,37 @@ CREATE TABLE IF NOT EXISTS entity_revisions (
 CREATE INDEX IF NOT EXISTS idx_entity_revisions_entity
     ON entity_revisions(entity_id, status);
 
+-- 一次实体消歧到底物化出了哪些行。
+--
+-- 消歧不再只有"确定同名才落地"一档：高置信度的语境链接会当场把 observation 落成
+-- Entity/Claim/Evidence，而语境判断是可能判错的。判错之后要能准确回答"撤销哪些
+-- 行、重放哪个 observation"，就必须在物化的那一刻记下来——事后从 evidence.metadata
+-- 反推既不完整也不可靠。
+--
+-- 撤销是状态翻转不是删除：错误的判定本身是资料，`revert_materialization` 把
+-- Claim/Alias/Entity 置 rejected、observation 退回 pending，行都留着。
+-- 一条 Claim 的两个端点可能来自两次不同的消歧，所以同一行会被登记多次，每个
+-- 促成它的消歧事件一次。撤销任一端点都应带走这条 Claim——它当初能落地正是因为
+-- 那次判定认领了端点。0 表示这一行不出自任何消歧事件。
+CREATE TABLE IF NOT EXISTS observation_materializations (
+    id                  INTEGER PRIMARY KEY,
+    observation_id      INTEGER NOT NULL REFERENCES observations(id),
+    resolution_event_id INTEGER NOT NULL DEFAULT 0,
+    target_type         TEXT NOT NULL
+                        CHECK(target_type IN ('entity','claim','evidence','alias')),
+    target_id           INTEGER NOT NULL,
+    outcome             TEXT NOT NULL DEFAULT '',
+    status              TEXT NOT NULL DEFAULT 'active'
+                        CHECK(status IN ('active','reverted')),
+    created_at          REAL NOT NULL,
+    reverted_at         REAL,
+    UNIQUE(observation_id, target_type, target_id, resolution_event_id)
+);
+CREATE INDEX IF NOT EXISTS idx_observation_materializations_event
+    ON observation_materializations(resolution_event_id, status);
+CREATE INDEX IF NOT EXISTS idx_observation_materializations_observation
+    ON observation_materializations(observation_id, status);
+
 -- 定向补证探查过的（Claim, 段落）。模型说「这段没有陈述该关系」也是结论，
 -- 记下来避免下一轮重复问同一段。content_hash 变了才值得重问。
 CREATE TABLE IF NOT EXISTS targeting_probes (
@@ -412,3 +443,6 @@ VALUES (7, 'model_queue_reviews', unixepoch());
 
 INSERT OR IGNORE INTO schema_migrations(version, name, applied_at)
 VALUES (12, 'revisable_entity_type_and_definition', unixepoch());
+
+INSERT OR IGNORE INTO schema_migrations(version, name, applied_at)
+VALUES (13, 'revertible_observation_materializations', unixepoch());

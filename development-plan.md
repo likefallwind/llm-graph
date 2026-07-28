@@ -44,7 +44,8 @@ and scheduling do not.
 6. An LLM-generated search target cannot become an entity without source
    evidence.
 7. Missing evidence means pending, not automatically false.
-8. Entity merges and automatic decisions are reversible.
+8. Entity merges, automatic decisions, and observation materializations are
+   reversible.
 9. Relation semantics are enforced through domain, range, direction, symmetry,
    and validation policies.
 10. Every algorithm, model, prompt, and source snapshot used in a decision is
@@ -126,11 +127,18 @@ Nothing reads `reading_tasks`. `pipeline.batch` picks sections by
 
 The LLM currently fills five grounded roles: extractor, entity linker, relation
 classifier, evidence entailment judge, reading planner. The sixth — adversarial
-critic, asked to argue against a claim its own extractor produced — is not
-implemented.
+critic, asked to argue against a claim its own extractor produced — is still not
+implemented **for claims**.
+
+Half of it now exists for identity: `_verify_separation_with_llm` asks a second
+round to *prefer reasons the two names must not be merged*, gating high-risk name
+pairs (shared root with a different head word; a non-category modifier such as
+`softmax-交叉熵损失` vs `交叉熵损失`). Like `is_strong_evidence` and
+`knowledge_objection`, it may only veto, never support.
 
 Multiple calls to the same model are useful checks but are not independent
-knowledge sources.
+knowledge sources. Both rounds are recorded on the resolution event only; neither
+counts toward `entity_alignment_evidence` independence.
 
 ### 4.3 Calibrated Decision Policy
 
@@ -205,8 +213,17 @@ rejected. Provenance archived in `data/archive/bad-claims-20260726.json`.
 
 ### 5.2 Metrics
 
-Entity resolution: candidate recall; same-entity precision and recall;
-automatic merge precision; granularity accuracy.
+Entity resolution: candidate recall; contextual-link precision and recall;
+global-alias precision; automatic merge precision; granularity accuracy; pending
+rate. These are now four distinct measurements, not one — a contextual link, a
+global alias, and a physical merge answer different questions at different
+thresholds (`design/algorithm.md` §3.4).
+
+The labelled seed for these is the library itself: the currently `suspected`
+alignment candidates plus the pairs already auto-verified under
+`name_variant`/`translation_alias`. Judging those by hand is worth more than
+synthesising pairs — they are real contexts. `benchmarks/gold.jsonl` still holds
+only 3 negatives against a target of 300, so no metric here is computable yet.
 
 Claims: relation precision, recall, and F1; direction accuracy; relation-type
 confusion matrix; evidence entailment accuracy; unsupported published claim

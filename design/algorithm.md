@@ -148,12 +148,12 @@ uncertain 只增不减，后来的既不覆盖也不丢弃先来的。
 
 | 版本号 | 当前值 | 改了以后 |
 |---|---|---|
-| `pipeline.ALGORITHM_VERSION` | `grounded-pipeline-6` | 已处理过的 `(快照, 主题)` 重新变成可读 |
+| `pipeline.ALGORITHM_VERSION` | `grounded-pipeline-8` | 已处理过的 `(快照, 主题)` 重新变成可读 |
 | `validators.VALIDATOR_VERSION` | `entailment-validator-1` | `reshadow --only-stale` 认为旧蕴含判定过期 |
 | `validators.ENTAILMENT_PROMPT_VERSION` | `entailment-judge-2` | 同上 |
 | `decision.POLICY_VERSION` | `claim-policy-4` | 只给裁决打标签，不触发重跑 |
-| `entity_resolution.RESOLVER_VERSION` | `entity-resolver-6` | 消歧事件记录的版本 |
-| `entity_resolution.ALIGNMENT_POLICY_VERSION` | `entity-alignment-policy-3` | 对齐证据记录的版本 |
+| `entity_resolution.RESOLVER_VERSION` | `entity-resolver-7` | 消歧事件记录的版本；`replay-pending` 据它决定是否重放 needs_review 项 |
+| `entity_resolution.ALIGNMENT_POLICY_VERSION` | `entity-alignment-policy-4` | 对齐证据记录的版本 |
 | `targeting.ALGORITHM_VERSION` | `claim-targeting-2` | 定向补证的探测记录 |
 | 注册表 `version` | `5` | 每次 `db.connect()` 同步进 `relation_definitions` |
 
@@ -194,13 +194,14 @@ uncertain 只增不减，后来的既不覆盖也不丢弃先来的。
 
 **Decision** — 一次裁决。追加表，永不修改。
 
-## 2.2 三张追加表
+## 2.2 四张追加表
 
 | 表 | 记什么 | 为什么必须追加 |
 |---|---|---|
 | `entailment_reviews` | 每一次蕴含判定，挂上产生它的 run | 换 prompt 重判后，旧裁决仍要能复现 |
 | `targeting_probes` | 每一次定向探测的结果 | 同一段文字不付两次钱 |
 | `merge_events` | 合并搬动了哪些行（`payload`） | 撤销要按它原样回滚 |
+| `observation_materializations` | 一次消歧物化出了哪些 entity/claim/evidence/alias | 语境链接会判错，撤销要知道动哪些行 |
 
 `evidence.current_entailment_review_id` 指向最新一次判定，`evidence.entailment`
 只是它的缓存。`decisions.evidence_review_snapshot` 记下这次裁决基于哪些判定：
@@ -330,23 +331,42 @@ observation，后续实体出现后由 `replay-pending` 捡回。机械解析不
 
 ## 3.4 实体消歧 `resolve`
 
-八步，确定性优先，命中即返回。
+### 三个不同的问题，三套门槛
+
+「名称归一化」不是一个问题，是三个。此前它们共用一套 verified alias 门槛，于是最
+弱的那个问题（这次 mention 指哪）被最强的那个（这个字符串全局指哪）卡住：
+
+| 问题 | 判据 | 落地物 |
+|---|---|---|
+| 这次 mention 指向哪个实体 | 本次语境的证据与定义 | `contextual_same_entity`，Claim 正常落图 |
+| 这个名字能否成为全局别名 | 跨独立来源组的稳定性（§3.5、`mention_stability_report`） | `aliases.status='verified'` |
+| 两个已有实体是否该物理合并 | 人工确认（§3.11） | `merge_events` |
+
+### 判据顺序
+
+确定性优先，命中即返回。
 
 ```
 1. find_canonical_entity(normalize_name(name))       命中 → same_entity
 2. find_verified_alias_entities(...) 恰好 1 个        命中 → same_entity
-3. _candidate_rows：SequenceMatcher 召回 ≤5 个候选     ← 只召回
+3. _candidate_rows：SequenceMatcher 召回 ≤5 个候选，
+   并给每个候选补 ≤3 条原文摘录和 ≤4 条已有关系        ← 只召回
 4. LLM 分类 → {decision, candidate_id, canonical_name, match_type, confidence}
-5. decision=existing 且 conf ≥ 0.80：只允许记录疑似对齐证据
-       direct = _validated_direct_match_type(name, canonical, match_type)
+5. decision=existing 且 conf ≥ 0.80：
+       direct = _validated_direct_match_type(name, canonical, match_type, types)
        safe   = direct ∈ {translation_alias, name_variant} 且 conf ≥ 0.95
        safe → alias 直接 verified，返回 same_entity
-6. 否则 add_alignment_evidence 累计 → 达标才 verified
-       未达标 → suspected_same_entity（claim 端点进 pending 等）
-7. decision=new 且 conf ≥ 0.95 → 建 proposed 实体
-8. decision=new 但 conf < 0.95，或 existing 低于疑似队列门槛 → below_confidence
-9. decision=ambiguous → ambiguous
-10. decision/候选/canonical_name 违反输出契约 → invalid_response
+6. 非 safe 且 conf ≥ 0.95 且 _needs_separation_review → 反向复核（第二次 LLM）
+       should_stay_separate 且 conf ≥ 0.60 → ambiguous，**不记对齐证据**
+       no_stable_difference                → 允许语境链接
+       uncertain / 调用失败                 → 不否决也不放行，落到第 8 步
+7. add_alignment_evidence 累计 → 达标 → same_entity（全局别名转正）
+8. 未达标但 conf ≥ 0.95 → contextual_same_entity：实体认领，别名留 proposed
+9. 未达标且 conf < 0.95 → suspected_same_entity（claim 端点进 pending 等）
+10. decision=new 且 conf ≥ 0.95 → 建 proposed 实体
+11. decision=new 但 conf < 0.95 → below_confidence
+12. decision=ambiguous → ambiguous
+13. decision/候选/canonical_name 违反输出契约 → invalid_response
 ```
 
 第 4 步抛异常（重试后仍失败、返回非 JSON）→ `resolver_error`，**不是 `ambiguous`**。
@@ -363,43 +383,111 @@ observation 本身，因此都不进入 rejected。前两者等待复核；后�
 算比值，取最高分排序取前 5。**这个分数从不直接决定合并**，它只决定给 LLM 看哪几
 个候选。
 
+排完序才补上下文（`_attach_candidate_context`），代价是 K 条而不是全库。补的是这
+个实体在语料里**实际怎么被使用**：只给规范名、类型和一句定义时，模型判的是「这两
+个名字听起来像不像」，那正是相似度已经做过的事。
+
+### 名称同一性的三档判据
+
+```
+第一档 纯形式变化      大小写／全半角／空白／连接标点／修饰性「的」
+第二档 类别后缀包含    一个名字 = 另一个 + 类别词，且剥掉后缀不改主类型
+第三档 同词根异中心词  各剥各的、剥到中间碰头 —— 只能召回，永远不能证明同一
+```
+
+`_identity_forms(s)`：`_compact_name`（NFKC → casefold → 去掉空白和
+`` ` ' " _ - — – · ( ) （ ） ``）后，再加一个删掉全部「的」的变体。「的」是连接
+成分，删它不像删「方法／算法」那样丢掉语义中心词。残留风险是词内含「的」的名字
+（目的、的确），要踩中得同时满足残句恰好是另一个已存在实体的完整名称、且 LLM 已
+独立判定同一。
+
+`_name_variant_roots(s)`：对每个 identity form **反复剥离**后缀直到不动点：
+
+```
+问题 方法 算法 模型 函数 运算 任务 估计 流程 过程 器 法
+problem method algorithm model function task estimation
+```
+
+**词根集合只用于召回和识别高风险名称对，不用于证明同一。**
+
 ### `_validated_direct_match_type` 是充分条件
 
 ```python
-if _name_variant_roots(alias) ∩ _name_variant_roots(canonical):
+if _suffix_containment(alias, canonical):        # 注意是包含，不是相交
+    if 两端类型已知且不同: return None            # 类型闸
     return "name_variant"
 if claimed == "translation_alias" and _has_cjk(alias) != _has_cjk(canonical):
     return "translation_alias"
 return None
 ```
 
-`_name_variant_roots(s)`：先 `_compact_name`（casefold 后去掉空白和
-`` ` ' " _ - — – · ( ) （ ） ``），然后**反复剥离**后缀直到不动点：
+`_suffix_containment` 要求**一方的完整名称出现在另一方的词根集合里**：
 
 ```
-问题 方法 算法 模型 函数 运算 任务 估计
-problem method algorithm model function task estimation
+反向传播算法 / 反向传播      剥掉「算法」正好相等          → 包含 ✓
+机器学习方法 / 机器学习算法  都能剥到「机器学习」，互不包含 → 第三档 ✗
 ```
 
-所以 `分类` 和 `分类问题` 的词根集都含 `分类`，判为 name_variant。
+上一版取的是词根**集合的交集**，于是整个第三档静默地漏进快路：
+`机器学习方法 / 机器学习算法`、`分类模型 / 分类算法`、`生成模型 / 生成方法` 全部
+判为 `name_variant`。共同词根只说明两个名字谈的是同一个领域，不说明它们是同一个
+知识对象。拿库里已自动验证的 8 条验过：改成包含关系后 8 条全部保留，上述反例全部
+挡下（`tests/test_name_identity.py`）。
 
-**但被剥掉的后缀恰好是主类型的标记**：问题／任务→task，方法／算法／模型→
-solution，函数→多半 concept。所以剥后缀会抹掉六类要表达的区别——「回归问题」是
-task 而「回归」是 solution，「概率模型」是 solution 而「概率」是 concept。因此加
-一道类型闸：**两端主类型不同时不给快路资格**，退回累计对齐，别名留在 proposed
-等复核。不做否定结论，因为观察类型是 LLM 给的、可能错。
+**这条规则不发起合并，只否决 LLM 的提议。** 调用方必须已经拿到一条 conf ≥ 0.95 的
+`existing`，这里才有机会把它升成 safe_direct。所以它挡的是模型编出来的理由——库里
+有一条自动验证的 reason 里写的名字根本不存在，规则只按名字判，照样判对了。
 
-判据是「剥掉后缀会不会改变主类型」：不变说明后缀冗余（反向传播算法／反向传播），
-变了说明后缀带类型。拿库里 21 条现有 `name_variant` 别名验过：20 条类型一致原样
-保留，只拦下「交叉熵」→「交叉熵损失」（concept vs criterion）一条，误伤为零。
+**被剥掉的后缀恰好是主类型的标记**：问题／任务→task，方法／算法／模型→solution，
+函数→多半 concept。所以再加一道类型闸：**两端主类型不同时不给快路资格**，退回累计
+对齐，别名留在 proposed 等复核。不做否定结论，因为观察类型是 LLM 给的、可能错。
 
 这道闸只在两端类型都已知时生效。`review_proposed_aliases` 和
 `review_suspected_alignments` 两个队列里，别名只是个名字、没有独立类型，那里无从
-比较，只能靠提示词里的同一条规则。
+比较——所以包含关系本身必须挡得住第三档，否则队列会成为绕开收窄的后门。
 
 **命中是充分条件，不是必要条件。** 命中不了**不能**推出「不是同一个概念」——那种
-情况走 §3.5 的语料声明累计。把充分条件当必要条件用，是这套算法上一版真实犯过的
-错：不符合快路的别名当时没有任何转正通道。
+情况走语境链接或 §3.5 的语料声明累计。把充分条件当必要条件用，是这套算法上一版
+真实犯过的错：不符合快路的别名当时没有任何转正通道。
+
+### 反向复核 `_verify_separation_with_llm`
+
+`_needs_separation_review(alias, canonical)` 为真时，高置信度的 existing 必须再问
+第二遍才允许当场落地。两类为真：
+
+```
+同词根异中心词        机器学习方法 / 机器学习算法，线性分类模型 / 线性分类器
+非类别修饰成分        softmax-交叉熵损失 / 交叉熵损失，欧盟人工智能法案 / 人工智能法案
+```
+
+共同形状是字符上高度相关、语义上可能相差一个知识对象，而正向提问最容易在这里点
+头。第二轮换方向问：「A 和 B 是否存在稳定、可复用、有教学价值的区别？**请优先寻找
+不能合并的理由**。」
+
+**这一轮只能否决，不能支持**——和 `is_strong_evidence`、`knowledge_objection` 的
+不对称同构。`no_stable_difference` 不会让任何判定升级，只是不再拦它；
+`should_stay_separate`（conf ≥ `SEPARATION_OBJECTION_CONFIDENCE` = 0.60）直接把
+结论压成 `ambiguous`，并且**不记对齐证据**——被否决的一轮不是「疑似同一」的佐证。
+
+两轮都是同一个模型，**不构成第二个来源**。两轮结论都只写进
+`entity_resolution_events.reason`，不进 `entity_alignment_evidence` 的独立来源
+计数。调用失败按 `uncertain` 处理：不否决，也不放行。
+
+### 语境链接 `contextual_same_entity`
+
+conf ≥ 0.95、通过（或无需）反向复核、但没达到全局别名门槛时：
+
+```
+本次 observation   → 落到该实体，写 entity evidence
+本次 Claim         → 正常落图（端点不再进 suspected）
+表面名称           → aliases.status 保持 proposed，继续累计
+entity_alignment   → 照旧记一条证据，等跨够独立来源组
+```
+
+这解开的是一个真实的死锁：`牛顿-拉弗森法 is_a 牛顿法`、`感知器 is_a 线性分类模型`
+这类 claim 此前全部卡在端点的 `suspected_same_entity` 上，而那些别名多数是真别名。
+判错的代价是 Shadow 里多一条端点认错的 claim（不发布任何东西），且由 §3.13 可撤销；
+阻塞的代价是图不长。
 
 ### 累计对齐
 
@@ -423,16 +511,43 @@ score ≥ 0.95
 
 没有 `independence_group` 的证据（比如没绑快照的模型判断）**不参与**分组计数。
 
+**这个公式不是「两次 LLM 自报置信度相加」**：同一来源组重复一百次也只算一次，而且
+第三条竞争候选检查已经在了。它算不出来的是分布形状——一个名字在两个实体之间摇摆
+时，任一侧的分数都可能很高。那部分交给 `mention_stability_report`。
+
+### 跨语境稳定性 `mention_stability_report`
+
+只读，零 LLM。全局别名真正该问的是「这个名字在多种真实语境中是否稳定指向同一个
+实体」，数据源就是 `entity_resolution_events` 本身，不需要新表：
+
+```
+context_count             有目标的事件数
+dominant_target(_count/_ratio)
+competing_target_count    这个名字还落到过几个别的实体
+unresolved_count          ambiguous / suspected / below_confidence / reverted
+independent_source_groups 事件所属快照的独立来源组
+resolver_versions         **混代警示**，见 §1.5
+```
+
+规范名本身不进报告（它们平凡地稳定）。排序把有竞争目标的排在最前——那是最该看的
+一档，无论累计分多高。
+
 ### 自动执行门槛与疑似队列门槛
 
 ```
-LLM_NEW_ENTITY_CONFIDENCE = 0.95   自动建 proposed 实体
-LLM_SUSPECT_CONFIDENCE    = 0.80   进入疑似队列
-LLM_AUTO_LINK_CONFIDENCE  = 0.95   自动合并到已有实体
+LLM_NEW_ENTITY_CONFIDENCE       = 0.95   自动建 proposed 实体
+LLM_SUSPECT_CONFIDENCE          = 0.80   进入疑似队列
+LLM_AUTO_LINK_CONFIDENCE        = 0.95   自动落地（全局链接或语境链接）
+SEPARATION_OBJECTION_CONFIDENCE = 0.60   反向复核的否决门槛
+CANDIDATE_EXCERPTS / _RELATIONS = 3 / 4  给 LLM 的候选上下文条数
 ```
 
-`0.80` 只允许把 existing 建议送进疑似证据累计，不会自动落地。新建和直接链接都采用
-统一的 `0.95` 自动执行门槛。低于门槛的建议保留为 `below_confidence`，不是 rejected。
+`0.80` 只允许把 existing 建议送进疑似证据累计，不会自动落地。新建、全局链接和语境
+链接都采用统一的 `0.95` 自动执行门槛。低于门槛的建议保留为 `below_confidence` 或
+`suspected_same_entity`，不是 rejected。
+
+反向复核的否决门槛（0.60）**故意低于**正向门槛：它只能否决，误否决的代价是多送一条
+给人看，误采信的代价是把两个知识对象焊死。
 
 ## 3.5 别名的语料声明通道 `alias_evidence`
 
@@ -470,6 +585,14 @@ Logistic 回归也称为对数几率回归
 
 实体：写 observation → `resolve` → 成功则写 `entity_description` 证据 + 登记
 proposed 别名 → 标 observation resolved。
+
+每写一行就登记一条 `observation_materializations`（§3.13）。留痕必须发生在写入的
+那一刻：`evidence.metadata.resolution` 只记了当时的判定结论，说不出这次判定还连带
+产生了哪条 Claim、哪个别名。
+
+`contextual_same_entity`（§3.4）与 `same_entity` 在这里**走同一条路**——实体已经
+认领，Claim 端点照常解析。只有 `suspected_same_entity` 才进 `suspected` 集合并
+阻塞本批 claim。
 
 claim 的端点解析 `_endpoint_id`，两级：
 
@@ -776,6 +899,39 @@ LLM 调用失败**不记 probe**——返回非法 JSON 不是结论，下一轮
 
 顺序有依赖是因为：别名转正会让更多端点在第 3 步精确命中。
 
+## 3.13 物化留痕与撤销 `observation_materializations`
+
+语境链接（§3.4）会当场把 observation 落成 Entity/Claim/Evidence，而语境判断是可能
+判错的。放开落地就必须同时给出撤销路径，否则等于制造一批无法回收的错误端点。
+
+**写入时登记**，`claims._tracer` 在每个写入点旁边调一次：
+
+```
+(observation_id, resolution_event_id, target_type, target_id)
+target_type ∈ {entity, claim, evidence, alias}
+resolution_event_id = 0 表示这一行不出自任何消歧事件
+```
+
+一条 Claim 会被登记**多次**，每个促成它的端点消歧事件一次——它当初能落地正是因为
+那次判定认领了端点，所以撤销任一端点都该带走它。
+
+`store.revert_materialization(resolution_event_id=… | observation_id=…)`：
+
+```
+claim  → status='rejected'
+alias  → status='rejected'
+entity → 仅当本次判定是 created 才 rejected；语境链接命中的既有实体不动
+evidence → 不动（绑在已 rejected 的目标上，留着才能复现依据哪段原文）
+observation → 退回 pending，等 replay-pending
+追加一条 outcome='reverted' 的 entity_resolution_events
+```
+
+**翻状态而不删行**：判错的语境链接和判对的一样是资料，`benchmarks/gold.jsonl` 的
+负例正是从这里来的。撤销本身也是一次消歧结论，按追加语义留痕。
+
+入口：`pipeline materializations` 只读查看，`pipeline revert-resolution --reason`
+执行撤销（`--reason` 必填，它是 gold 负例的判定依据）。
+
 ---
 
 # 第四部分：复杂度与规模
@@ -808,8 +964,12 @@ LLM 调用是实际的时间成本，不是算法复杂度。M3 一次抽取 1~3
 | `limit` | `observations.split_text` | 12000 | 分块目标长度 |
 | `LLM_NEW_ENTITY_CONFIDENCE` | `entity_resolution` | 0.95 | 自动建 proposed 实体门槛 |
 | `LLM_SUSPECT_CONFIDENCE` | `entity_resolution` | 0.80 | 进疑似证据队列门槛，不落地 |
-| `LLM_AUTO_LINK_CONFIDENCE` | `entity_resolution` | 0.95 | 自动合并门槛 |
+| `LLM_AUTO_LINK_CONFIDENCE` | `entity_resolution` | 0.95 | 自动落地门槛（全局链接与语境链接共用） |
+| `SEPARATION_OBJECTION_CONFIDENCE` | `entity_resolution` | 0.60 | 反向复核的否决门槛；只否决所以低于正向 |
 | `MAX_CANDIDATES` | `entity_resolution` | 5 | 给 LLM 看几个候选 |
+| `CANDIDATE_EXCERPTS` | `entity_resolution` | 3 | 每个候选给几条原文摘录 |
+| `CANDIDATE_RELATIONS` | `entity_resolution` | 4 | 每个候选给几条已有关系 |
+| `NAME_VARIANT_SUFFIXES` | `entity_resolution` | 15 个类别词 | 召回词根与高风险识别；**不证明同一** |
 | `DUPLICATE_SCAN_THRESHOLD` | `entity_resolution` | 0.6 | 重复清扫相似度阈值 |
 | `DECLARATION_CONFIDENCE` | `alias_evidence` | 0.9 | 每条语料声明的置信度 |
 | `MAX_INNER` | `alias_evidence` | 40 | 括号注释内层长度上限 |
@@ -827,7 +987,9 @@ LLM 调用是实际的时间成本，不是算法复杂度。M3 一次抽取 1~3
 - evidence 逐字定位
 - claim 至少一个端点来自本块；另一个只走唯一确定性身份匹配
 - 独立性只来自 `independence_group`
-- 消歧快路只认精确匹配
+- 消歧快路只认精确匹配与后缀**包含**（不是词根相交）
+- 反向复核只能否决，不能支持
+- 语境链接必须留物化痕迹，可撤销
 - 一切裁决先 Shadow
 - 注册表是唯一词表来源
 - `llm.pmap` 的函数不碰 sqlite
@@ -852,9 +1014,11 @@ supports，却整段没提到端点的身份名。`pipeline identity` 报告当�
 里有 18 条如此，其中 16 条仍算强证据，15 条来自抽取路径而非定向补证。这是最大的
 开放数据质量缺口。
 
-**6.4 没有对抗性复核。** LLM 现在担任五个角色：抽取器、实体链接器、关系分类器、
-蕴含判定器、阅读规划器。第六个——对抗性批评者，被要求论证自己抽取器产出的 claim
-是错的——没有实现。
+**6.4 对抗性复核只覆盖消歧，没覆盖 claim。** LLM 担任的角色里现在有半个批评者：
+`_verify_separation_with_llm`（§3.4）被要求「优先寻找不能合并的理由」，但它只管
+高风险名称对的同一性，只能否决不能支持。真正缺的仍是**针对 claim 本身**的对抗性
+复核——被要求论证抽取器产出的这条关系是错的。`knowledge_objection` 是这个方向上的
+另外半步：模型可以标记「证据看着支持、实际上错了」，但那是被动标记，不是主动攻击。
 
 **6.5 没有校准。** `evaluate` 用不上「同一策略桶的历史精度」这个特征，因为
 `benchmarks/gold.jsonl` 只有 3 条负例（目标 300）。在有校准数据之前，任何自动策略

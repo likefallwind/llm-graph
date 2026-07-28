@@ -814,6 +814,135 @@ def resolve_observation(conn, observation_id: int, accepted: bool) -> None:
     conn.commit()
 
 
+MATERIALIZATION_TARGETS = ("entity", "claim", "evidence", "alias")
+
+
+def add_materialization(conn, observation_id: int | None, target_type: str,
+                        target_id: int | None, *, resolution_event_id: int = 0,
+                        outcome: str = "") -> int | None:
+    """记下一次 observation 物化出了哪一行。
+
+    调用点就在写入那一行的旁边，不事后重建：`evidence.metadata` 里的
+    `resolution` 只说了当时的判定，说不出这次判定还连带产生了哪条 Claim。
+    """
+    if target_type not in MATERIALIZATION_TARGETS:
+        raise ValueError(f"非法物化目标: {target_type}")
+    if observation_id is None or target_id is None:
+        return None
+    event_id = resolution_event_id or 0
+    conn.execute(
+        "INSERT OR IGNORE INTO observation_materializations"
+        " (observation_id,resolution_event_id,target_type,target_id,outcome,"
+        "  status,created_at) VALUES (?,?,?,?,?,'active',?)",
+        (observation_id, event_id, target_type, target_id, outcome, time.time()))
+    row = conn.execute(
+        "SELECT id FROM observation_materializations"
+        " WHERE observation_id=? AND target_type=? AND target_id=?"
+        " AND resolution_event_id=?",
+        (observation_id, target_type, target_id, event_id)).fetchone()
+    conn.commit()
+    return row["id"] if row else None
+
+
+def materializations(conn, *, observation_id: int | None = None,
+                     resolution_event_id: int | None = None,
+                     status: str | None = "active") -> list[dict]:
+    conditions, params = [], []
+    if status:
+        conditions.append("m.status=?")
+        params.append(status)
+    if observation_id is not None:
+        conditions.append("m.observation_id=?")
+        params.append(observation_id)
+    if resolution_event_id is not None:
+        conditions.append("m.resolution_event_id=?")
+        params.append(resolution_event_id)
+    where = (" WHERE " + " AND ".join(conditions)) if conditions else ""
+    return [dict(row) for row in conn.execute(
+        "SELECT m.*,e.raw_name,e.outcome resolution_outcome,e.matched_by,"
+        " e.confidence FROM observation_materializations m"
+        " LEFT JOIN entity_resolution_events e ON e.id=m.resolution_event_id"
+        + where + " ORDER BY m.id", params)]
+
+
+def revert_materialization(conn, *, resolution_event_id: int | None = None,
+                           observation_id: int | None = None,
+                           reason: str = "") -> dict:
+    """撤销一次消歧物化出的全部行，并把 observation 退回 pending 等重放。
+
+    翻状态而不删行。判错的语境链接和判对的一样是资料——`benchmarks/gold.jsonl`
+    的负例正是从这里来的，删掉就只剩一句"当初好像连错了"。
+
+    Entity 只在这次物化**新建**它时才置 rejected。语境链接命中的是既有实体，
+    它有自己的来历，不能被一次连错的判定拖下水。
+    """
+    if (resolution_event_id is None) == (observation_id is None):
+        raise ValueError("revert_materialization 需要且只需要一个定位参数")
+    rows = materializations(
+        conn, observation_id=observation_id,
+        resolution_event_id=resolution_event_id)
+    if not rows:
+        raise ValueError("没有可撤销的物化记录（可能已撤销过）")
+    now = time.time()
+    reverted: dict[str, list[int]] = {name: [] for name in MATERIALIZATION_TARGETS}
+    retained_evidence: list[int] = []
+    kept_entities: list[int] = []
+    touched: set[int] = set()
+    for row in rows:
+        target_type, target_id = row["target_type"], row["target_id"]
+        touched.add(row["observation_id"])
+        if target_type == "claim":
+            conn.execute(
+                "UPDATE claims SET status='rejected',updated_at=? WHERE id=?",
+                (now, target_id))
+        elif target_type == "alias":
+            conn.execute("UPDATE aliases SET status='rejected' WHERE id=?",
+                         (target_id,))
+        elif target_type == "entity":
+            if row["resolution_outcome"] != "created":
+                # 既有实体不因一次连错而改状态，它有自己的来历。
+                kept_entities.append(target_id)
+                continue
+            conn.execute(
+                "UPDATE entities SET status='rejected',updated_at=? WHERE id=?",
+                (now, target_id))
+        elif target_type == "evidence":
+            # 不动：它绑在已经置 rejected 的 claim/entity 上，留着才能复现当初
+            # 依据的是哪段原文。
+            retained_evidence.append(target_id)
+            continue
+        reverted[target_type].append(target_id)
+    conn.execute(
+        "UPDATE observation_materializations SET status='reverted',reverted_at=?"
+        " WHERE id IN (%s)" % ",".join("?" * len(rows)),
+        (now, *[row["id"] for row in rows]))
+    note = reason.strip() or "人工撤销消歧物化"
+    for item in sorted(touched):
+        conn.execute("UPDATE observations SET status='pending' WHERE id=?", (item,))
+        observation = conn.execute(
+            "SELECT source_snapshot_id,subject_text FROM observations WHERE id=?",
+            (item,)).fetchone()
+        # 撤销本身也是一次消歧结论，按追加语义留痕。
+        conn.execute(
+            "INSERT INTO entity_resolution_events"
+            " (observation_id,source_snapshot_id,raw_name,deterministic_name,"
+            "  outcome,matched_by,reason,resolver_version,created_at)"
+            " VALUES (?,?,?,?,'reverted','human_revert',?,?,?)",
+            (item, observation["source_snapshot_id"], observation["subject_text"],
+             normalize_name(observation["subject_text"]), note,
+             "human-revert", now))
+    conn.commit()
+    return {
+        "resolution_event_id": resolution_event_id,
+        "observation_ids": sorted(touched),
+        "reverted": {key: value for key, value in reverted.items() if value},
+        # 状态没变的两类分开列，免得把"记录在案"读成"已回滚"。
+        "retained_evidence": sorted(set(retained_evidence)),
+        "kept_entities": sorted(set(kept_entities)),
+        "records": len(rows),
+    }
+
+
 def evidence_for_claim(conn, claim_id: int) -> list[models.Evidence]:
     rows = conn.execute(
         "SELECT * FROM evidence WHERE claim_id=? ORDER BY id", (claim_id,)).fetchall()

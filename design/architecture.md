@@ -42,7 +42,7 @@ Entity 和 Claim 都必须绑定到带版本的来源快照和机械可定位的
 - `observations.py` — 分块抽取 + 机械校验
 - `entity_resolution.py` — 实体消歧
 - `alias_evidence.py` — 零 LLM 别名声明扫描
-- `claims.py` — Observation 落成 Entity/Claim/Evidence
+- `claims.py` — Observation 落成 Entity/Claim/Evidence，并登记物化留痕
 - `validators.py` — 蕴含复核 + 门槛评估
 - `decision.py` — 写 Shadow Decision
 - `targeting.py` — 定向补证
@@ -69,8 +69,8 @@ AST 扫新核心每个模块，import 了旧核心、或 SQL 里出现 `nodes / 
 `store.upsert_source` + `store.add_source_snapshot`（按 content_hash 去重）+
 `store.create_run`。
 
-run 记下 `pipeline.ALGORITHM_VERSION`（当前 `grounded-pipeline-5`）、
-prompt 版本（`grounded-extract-4`）、注册表版本。
+run 记下 `pipeline.ALGORITHM_VERSION`（当前 `grounded-pipeline-8`）、
+prompt 版本（`grounded-extract-7`）、注册表版本。
 
 ### 2. 抽取
 
@@ -112,7 +112,8 @@ sqlite。
 
 每个实体：先写一条 `observations` 行 → `entity_resolution.resolve` → 成功则写
 entity evidence（类型 `entity_description`）+ proposed aliases → 标 observation
-resolved。
+resolved。每写一行同时登记一条 `observation_materializations`（见第五节）——留痕
+必须发生在写入那一刻，事后从 `evidence.metadata` 反推重建不出来。
 
 每个 claim 的端点解析走 `_endpoint_id`，两级：
 
@@ -121,8 +122,9 @@ resolved。
    确定性快路，不做相似度、不调 LLM——这里认领的是已经消歧过的既有实体，不是
    重新做一次消歧
 
-端点正在等疑似对齐裁决时跳过第 2 级：此时认领任何实体都可能抢在裁决之前替它做
-决定。
+端点正在等疑似对齐裁决（`suspected_same_entity`）时跳过第 2 级：此时认领任何实体
+都可能抢在裁决之前替它做决定。**`contextual_same_entity` 不进这个集合**——语境判定
+已经认领了实体，端点照常解析。
 
 两级都落不了地的，observation **保持 pending 不标 rejected**——rejected 是终态，
 没有任何路径会重看它，而后续批次很可能建出这个实体。
@@ -211,36 +213,76 @@ evidence 逐字可定位、关系/qualifiers/证据类型过注册表。
 
 ## 五、实体消歧
 
-`entity_resolution.resolve` (`kg/entity_resolution.py:266`)。确定性优先，八步：
+**「名称归一化」是三个问题，不是一个**，三者门槛不同、落地物不同，不能共用一套
+判据：
+
+| 问题 | 判据 | 落地物 |
+|---|---|---|
+| 这次 mention 指向哪个实体 | 本次语境的证据与定义 | `contextual_same_entity` |
+| 这个名字能否成为**全局**别名 | 跨独立来源组的稳定性 | `aliases.status='verified'` |
+| 两个已有实体是否该**物理合并** | 人工确认 | `merge_events` |
+
+此前它们共用 verified alias 一套门槛，最弱的那个被最强的那个卡住：真别名没转正之
+前，整条 Claim 都落不了地。
+
+`entity_resolution.resolve` (`kg/entity_resolution.py`)。确定性优先：
 
 1. canonical `normalized_name` 精确命中 → 确定，结束
 2. 唯一 verified alias 精确命中 → 确定，结束
-3. `_candidate_rows` 用 `SequenceMatcher` 召回 ≤5 个候选。
-   **相似度只召回，永远不证明同一性**
+3. `_candidate_rows` 用 `SequenceMatcher` 召回 ≤5 个候选，排完序再补每个候选的
+   ≤3 条原文摘录与 ≤4 条已有关系。**相似度只召回，永远不证明同一性**
 4. LLM 分类，返回 `existing|new|ambiguous` + `match_type` + `confidence`
-5. existing 且 conf ≥ `LLM_SUSPECT_CONFIDENCE`(0.80)：只允许记录疑似对齐证据；
-   `_validated_direct_match_type` (`kg/entity_resolution.py:73`) 是**充分条件**
-   ——命中 `translation_alias`/`name_variant` 且 conf ≥
-   `LLM_AUTO_LINK_CONFIDENCE`(0.95) 就自动 verified。
-   **命中不了不代表不同名**，走第 6 步累计
-6. `store.add_alignment_evidence` (`kg/store.py:587`) 累计：
-   `score = 1 - Π(1 - conf_group)`，每个独立来源组只取最高分。需 ≥2 组、
-   score ≥ 0.95、且无竞争候选才升级为 verified
-7. new 且 conf ≥ `LLM_NEW_ENTITY_CONFIDENCE`(0.95) → 建 proposed 实体
-8. new 低于 0.95，或 existing 低于疑似队列门槛 → `below_confidence`，
-   observation 保持 pending
-9. 模型明确拿不准 → `ambiguous`，observation 保持 pending
-10. decision、候选或 canonical_name 违反输出契约 → `invalid_response`，允许重试
+5. existing 且 conf ≥ `LLM_SUSPECT_CONFIDENCE`(0.80)：
+   `_validated_direct_match_type` 是**充分条件**——命中
+   `translation_alias`/`name_variant` 且 conf ≥ `LLM_AUTO_LINK_CONFIDENCE`(0.95)
+   就自动 verified。**命中不了不代表不同名**
+6. 非快路、conf ≥ 0.95 且 `_needs_separation_review` 为真 → **反向复核**
+   （第二次 LLM，只能否决）。判「该分开」且 conf ≥ 0.60 → `ambiguous`，
+   且不记对齐证据
+7. `store.add_alignment_evidence` 累计：`score = 1 - Π(1 - conf_group)`，每个独立
+   来源组只取最高分。需 ≥2 组、score ≥ 0.95、且无竞争候选才升级为 verified
+8. 累计未达标但 conf ≥ 0.95 → **语境链接** `contextual_same_entity`：实体认领、
+   Claim 落图，别名留 proposed 继续累计
+9. 累计未达标且 conf < 0.95 → `suspected_same_entity`，端点进 pending
+10. new 且 conf ≥ `LLM_NEW_ENTITY_CONFIDENCE`(0.95) → 建 proposed 实体
+11. new 低于 0.95 → `below_confidence`；模型拿不准 → `ambiguous`；违反输出契约
+    → `invalid_response`。三者 observation 都保持 pending
 
 所有自动落地采用统一的 0.95 门槛。0.80 只决定一个 existing 建议是否值得进入疑似
-证据累计，不会据此链接实体。置信度不足和真实歧义都不表示 observation 无效，因此
-不能进入 rejected。
+证据累计。置信度不足和真实歧义都不表示 observation 无效，因此不能进入 rejected。
 
-缩写、符号、语义别名、复合名不靠一次模型判断合并。
+**名称同一性分三档**（`tests/test_name_identity.py` 是这三档的可执行定义）：
+
+```
+第一档 纯形式变化      大小写／全半角／空白／标点／修饰性「的」   → 确定性判同名
+第二档 类别后缀包含    一个名字 = 另一个 + 类别词，且不改主类型   → 可走快路
+第三档 同词根异中心词  机器学习方法 / 机器学习算法               → 只召回，必须语境判
+```
+
+第三档的判据是**包含而不是词根相交**。相交只要求两个名字各剥各的、剥到中间碰头，
+共同词根只说明它们谈同一个领域，不说明是同一个知识对象。
+
+**反向复核**（`_verify_separation_with_llm`）对高风险名称对——同词根异中心词，或
+一个名字是另一个加了非类别修饰成分（`softmax-交叉熵损失` / `交叉熵损失`）——换方向
+问一次「请优先寻找不能合并的理由」。**只能否决不能支持**，和
+`is_strong_evidence`、`knowledge_objection` 的不对称同构。两轮同一个模型，
+**不构成第二个来源**，结论只写进消歧事件不进独立来源计数。
+
+缩写、符号、语义别名、复合名不靠一次模型判断转成全局别名。
 
 **第二条转正通道**：`alias_evidence.py` 零 LLM 扫语料里的显式别名声明（括号注释、
 又称句式），每条 `DECLARATION_CONFIDENCE`(0.9)。单个来源组 0.90 < 0.95 不转正，
 两个独立来源组 0.99 ≥ 0.95 转正。这是语料给的证据，不是模型判断。
+
+**第三条观察通道**：`entity_resolution.mention_stability_report` 只读汇总
+`entity_resolution_events`——一个表面名称在多次真实语境里落到了哪些实体、有没有
+竞争目标、跨了几个独立来源组。全局别名该问的是这个，而不是累计分本身。
+
+**物化留痕**：语境链接会当场落地，所以每一行写入都登记
+`observation_materializations`（observation × 消歧事件 × 目标）。判错时
+`store.revert_materialization` 把 Claim/Alias 置 rejected、observation 退回
+pending 等重放；命中的既有实体不动（它有自己的来历），evidence 行不删（留着才能
+复现依据）。入口是 `pipeline materializations` 和 `pipeline revert-resolution`。
 
 **实体合并**是独立机制，不在自动流程里：`store.merge_entities` 由重复清扫报告
 驱动、人工确认后调用。搬动的行 id 全部写进 `merge_events.payload`，
@@ -293,6 +335,10 @@ evidence 逐字可定位、关系/qualifiers/证据类型过注册表。
 4. `review-type-conflicts` — `review_queues.py`。结论只写 `model_queue_reviews`，
    `auto_changed` 恒为 False，实体主类型变更走人工
 
+配套的只读体检（零 LLM，不改数据，跑几次都一样）：`name-stability`（表面名称的
+跨语境稳定性）、`duplicates`、`alias-declarations`、`identity`、`taxonomy-types`、
+`endpoint-types`、`materializations`。它们不是队列，是决定该看哪条队列的依据。
+
 ## 八、版本号 = 重跑开关
 
 五组互相独立的计数器。改哪个决定重跑什么：
@@ -319,7 +365,9 @@ evidence 逐字可定位、关系/qualifiers/证据类型过注册表。
 - evidence 逐字定位（`observations.evidence_in_text`）
 - claim 至少一个端点来自本块；另一端只认唯一 canonical/verified identity
 - 独立性只来自 `sources.independence_group`
-- 消歧快路只认精确匹配，相似度只召回
+- 消歧快路只认精确匹配与类别后缀**包含**（不是词根相交），相似度只召回
+- 反向复核只能否决，不能支持；两轮同模型不构成第二个来源
+- 语境链接必须留 `observation_materializations`，可撤销
 - 一切裁决先 Shadow
 - 注册表是唯一词表来源，代码不复述
 - `llm.pmap` 的 fn 不碰 sqlite
@@ -328,6 +376,9 @@ evidence 逐字可定位、关系/qualifiers/证据类型过注册表。
 
 - `minimum_evidence`：当前 2 个独立组 + 1 条高权威
 - `LLM_AUTO_LINK_CONFIDENCE` 0.95 / `LLM_NEW_ENTITY_CONFIDENCE` 0.95
+- `SEPARATION_OBJECTION_CONFIDENCE` 0.60（反向复核只否决，故意低于正向）
+- `CANDIDATE_EXCERPTS` 3 / `CANDIDATE_RELATIONS` 4
+- `NAME_VARIANT_SUFFIXES` 收哪些类别词
 - 累计对齐的 ≥2 组 + ≥0.95
 - `targeting.WINDOW` 600 / `CONTEXT` 300 / `SNAP_LIMIT` 400
 - `observations.split_text` 的 12000

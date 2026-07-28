@@ -413,6 +413,7 @@ def status(conn) -> dict:
         "migration_issues": "migration_issues",
         "processed_sources": "pipeline_processed",
         "model_queue_reviews": "model_queue_reviews",
+        "materializations": "observation_materializations",
     }
     result = {}
     for key, table in tables.items():
@@ -440,6 +441,15 @@ def status(conn) -> dict:
         "model_reviewed_type_conflicts": conn.execute(
             "SELECT COUNT(DISTINCT item_id) FROM model_queue_reviews"
             " WHERE queue_type='type_conflict'").fetchone()[0],
+        # 消歧事件带着产生它们时的 resolver 版本，别拿旧版本的分布替当前策略背书。
+        "events_by_resolver_version": {
+            row["resolver_version"]: row["n"] for row in conn.execute(
+                "SELECT resolver_version,COUNT(*) n FROM entity_resolution_events"
+                " GROUP BY resolver_version ORDER BY resolver_version")},
+        "events_by_outcome": {
+            row["outcome"]: row["n"] for row in conn.execute(
+                "SELECT outcome,COUNT(*) n FROM entity_resolution_events"
+                " GROUP BY outcome ORDER BY n DESC")},
     }
     result["latest_shadow"] = [
         dict(row) for row in conn.execute(

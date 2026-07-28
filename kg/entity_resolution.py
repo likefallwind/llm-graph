@@ -3,7 +3,8 @@ from __future__ import annotations
 
 import json
 import re
-from dataclasses import dataclass
+import unicodedata
+from dataclasses import dataclass, replace
 from difflib import SequenceMatcher
 from typing import Callable
 
@@ -11,14 +12,23 @@ from . import alias_evidence, llm, store
 from .observations import EntityObservation
 
 
-RESOLVER_VERSION = "entity-resolver-6"
-ALIGNMENT_POLICY_VERSION = "entity-alignment-policy-3"
+# 7：确定性快路收窄到「一个名字是另一个的形式变体或加类别后缀」；同词根异中心词
+#    （机器学习方法／机器学习算法）改走反向复核，高置信度 existing 落成语境链接
+#    而不再阻塞整条 Claim。语义变了，旧事件不能当作本版结论看。
+RESOLVER_VERSION = "entity-resolver-7"
+ALIGNMENT_POLICY_VERSION = "entity-alignment-policy-4"
 LLM_SUSPECT_CONFIDENCE = 0.80
 LLM_AUTO_LINK_CONFIDENCE = 0.95
 # existing 和 new 都只有达到统一的自动执行门槛才允许落地。低于门槛说明系统
 # 暂时不能安全执行，不说明 observation 无效。
 LLM_NEW_ENTITY_CONFIDENCE = LLM_AUTO_LINK_CONFIDENCE
+# 反向复核说「该分开」时的采信门槛。它只能否决，所以门槛可以比正向低——
+# 误否决的代价是多送一条给人看，误采信的代价是把两个知识对象焊死。
+SEPARATION_OBJECTION_CONFIDENCE = 0.60
 MAX_CANDIDATES = 5
+# 每个候选给 LLM 看的代表性原文与代表关系条数。
+CANDIDATE_EXCERPTS = 3
+CANDIDATE_RELATIONS = 4
 # 这些 outcome 都没有否定 observation 本身，不能把 observation 标成 rejected。
 NON_TERMINAL_OUTCOMES = frozenset({
     "suspected_same_entity",
@@ -35,8 +45,11 @@ MATCH_TYPES = {
     "translation_alias", "name_variant", "abbreviation", "symbol",
     "composite", "semantic_alias", "none",
 }
+# 类别标记后缀。剥掉它们只用于两件事：召回候选，以及判断"一个名字是不是另一个
+# 加了类别词"。它们本身不证明同一性——见 `_suffix_containment` 的注释。
 NAME_VARIANT_SUFFIXES = (
     "问题", "方法", "算法", "模型", "函数", "运算", "任务", "估计",
+    "流程", "过程", "器", "法",
     "problem", "method", "algorithm", "model", "function", "task",
     "estimation",
 )
@@ -52,17 +65,40 @@ class Resolution:
     candidate_ids: tuple[int, ...] = ()
     confidence: float | None = None
     selected_candidate_id: int | None = None
+    # 这次判定写下的 entity_resolution_events 行。物化留痕挂在它上面，
+    # 判错之后 `store.revert_materialization` 靠它找回要撤销的行。
+    event_id: int | None = None
+    # 这次判定顺手登记的观察名别名。事件 id 要等 `_record` 才有，所以先带出来，
+    # 由 `_record` 一并挂进留痕——否则撤销时这条别名会留在库里指着错实体。
+    alias_id: int | None = None
 
 
 LLMNormalizer = Callable[[EntityObservation, list[dict]], dict]
+SeparationVerifier = Callable[[EntityObservation, dict], dict]
 
 
 def _compact_name(value: str) -> str:
-    return re.sub(r"[\s`'\"_\-—–·()（）]+", "", value.casefold())
+    """去掉不承载语义的形式差异：全半角、大小写、空白、连接标点。"""
+    folded = unicodedata.normalize("NFKC", value).casefold()
+    return re.sub(r"[\s`'\"_\-—–·()（）]+", "", folded)
 
 
-def _name_variant_roots(value: str) -> set[str]:
-    roots = {_compact_name(value)}
+def _identity_forms(value: str) -> set[str]:
+    """同一个名称的纯形式变体。
+
+    只有一条会改变字符数的规则：修饰性「的」。中文名称里的「的」是连接成分，
+    「通用人工智能的生存风险」和「通用人工智能生存风险」指同一个东西。删它不会
+    像删「方法／算法」那样丢掉一个语义中心词，所以放在第一档而不是第二档。
+
+    残留风险是「的」出现在词内的名字（目的、的确）。要踩中得同时满足：删「的」
+    后的残句恰好是另一个已存在实体的完整名称，且 LLM 已经独立判定这两者同一。
+    """
+    compact = _compact_name(value)
+    return {compact, compact.replace("的", "")} - {""}
+
+
+def _strip_category_suffixes(compact: str) -> set[str]:
+    roots = {compact}
     changed = True
     while changed:
         changed = False
@@ -77,6 +113,64 @@ def _name_variant_roots(value: str) -> set[str]:
     return roots
 
 
+def _name_variant_roots(value: str) -> set[str]:
+    """剥掉类别后缀得到的词根集合。**只用于召回候选和识别高风险名称对。**"""
+    roots: set[str] = set()
+    for form in _identity_forms(value):
+        roots |= _strip_category_suffixes(form)
+    return roots
+
+
+def _suffix_containment(alias: str, canonical: str) -> bool:
+    """一个名字是不是另一个加了类别后缀。
+
+    判据是**包含**，不是词根集合相交。相交只要求两个名字各剥各的、剥到中间某处
+    碰头：「机器学习方法」与「机器学习算法」都能剥到「机器学习」，于是被判成同
+    一个东西。但谁也不是谁的前缀，共同词根只说明它们谈的是同一个领域。
+
+    包含则要求一方的**完整名称**出现在另一方的词根集合里：「反向传播算法」剥掉
+    「算法」正好是「反向传播」。这才是"后缀冗余"的确切形状。
+    """
+    left, right = _identity_forms(alias), _identity_forms(canonical)
+    if left & right:
+        return True
+    return bool(left & _name_variant_roots(canonical)
+                or right & _name_variant_roots(alias))
+
+
+def _is_sibling_head_variant(alias: str, canonical: str) -> bool:
+    """同词根、异类别中心词——「机器学习方法」对「机器学习算法」。
+
+    这是确定性规则永远判不了的一档：两个名字都在谈同一个词根，但各自挂了不同的
+    类别中心词，究竟是同义换词还是两个该分别建点的对象，只有语境说了算。标出来
+    是为了送反向复核，不是为了否定。
+    """
+    if _suffix_containment(alias, canonical):
+        return False
+    return bool(_name_variant_roots(alias) & _name_variant_roots(canonical))
+
+
+def _needs_separation_review(alias: str, canonical: str) -> bool:
+    """这对名称能不能在一轮提问后就当场落地。
+
+    两类不能：
+
+    - 同词根异中心词（机器学习方法／机器学习算法）；
+    - 一个名字是另一个加了**非类别**的修饰成分（softmax-交叉熵损失／交叉熵损失，
+      欧盟人工智能法案／人工智能法案）。剥掉类别后缀是安全的，剥掉限定词不是
+      ——限定词往往正是区别本身。
+
+    两类共有的形状是：字符上高度相关，语义上可能相差一个知识对象。正向提问在这
+    里最容易点头，所以反向再问一次。
+    """
+    if _suffix_containment(alias, canonical):
+        return False
+    if _is_sibling_head_variant(alias, canonical):
+        return True
+    left, right = _compact_name(alias), _compact_name(canonical)
+    return left != right and (left in right or right in left)
+
+
 def _has_cjk(value: str) -> bool:
     return bool(re.search(r"[\u3400-\u9fff]", value))
 
@@ -87,8 +181,12 @@ def _validated_direct_match_type(alias: str, canonical: str,
                                  entity_type: str = "") -> str | None:
     """LLM 只能提议快捷类型；最终资格由确定性字符串规则确认。
 
-    这是**充分条件**：命中即可判定同名。命中不了不代表不同名——那种情况走
-    alias_evidence 的语料声明累计，不要当成否定结论。
+    这条规则**不发起合并**，只否决 LLM 的提议：调用方必须已经拿到一条置信度够高
+    的 `existing`，这里才有机会把它升成 `safe_direct`。所以它挡住的是模型编出来
+    的理由——库里有一条 reason 里写的名字根本不存在，规则照样只按名字判对了。
+
+    这是**充分条件**：命中即可判定同名。命中不了不代表不同名——那种情况走语境
+    链接或 alias_evidence 的语料声明累计，不要当成否定结论。
 
     `NAME_VARIANT_SUFFIXES` 剥掉的恰好是类型标记（问题／任务→task，
     方法／算法／模型→solution，函数→多半 concept），所以后缀剥离会抹掉主类型
@@ -99,7 +197,7 @@ def _validated_direct_match_type(alias: str, canonical: str,
     只在两边类型都已知时才拦。观察类型是 LLM 给的、可能错，所以这里不做否定
     结论，只是取消快路资格：调用方会退回累计对齐，别名留在 proposed 等复核。
     """
-    if _name_variant_roots(alias) & _name_variant_roots(canonical):
+    if _suffix_containment(alias, canonical):
         if observed_type and entity_type and observed_type != entity_type:
             return None
         return "name_variant"
@@ -137,7 +235,45 @@ def _candidate_rows(conn, name: str, limit: int = MAX_CANDIDATES) -> list[dict]:
             })
     ranked = sorted(
         by_entity.values(), key=lambda item: (-item["score"], item["id"]))
-    return ranked[:limit]
+    return _attach_candidate_context(conn, ranked[:limit])
+
+
+def _attach_candidate_context(conn, candidates: list[dict]) -> list[dict]:
+    """给候选补上真实用法：几条原文摘录和几条已有关系。
+
+    只有规范名、类型和一句定义时，模型判的是"这两个名字听起来像不像同一个东西"，
+    那正是字符串相似度已经做过的事。判语境同一性得看这个实体在语料里实际怎么被
+    使用——候选侧不给上下文，语境判断就只剩一侧有语境。
+
+    排完序才查，所以代价是 K 条而不是全库。
+    """
+    if not candidates:
+        return candidates
+    ids = [item["id"] for item in candidates]
+    placeholders = ",".join("?" * len(ids))
+    for item in candidates:
+        item["excerpts"] = []
+        item["relations"] = []
+    by_id = {item["id"]: item for item in candidates}
+    for row in conn.execute(
+            "SELECT entity_id,excerpt FROM evidence"
+            f" WHERE entity_id IN ({placeholders}) ORDER BY id", ids):
+        bucket = by_id[row["entity_id"]]["excerpts"]
+        if len(bucket) < CANDIDATE_EXCERPTS:
+            bucket.append(row["excerpt"][:200])
+    for row in conn.execute(
+            "SELECT c.subject_id,c.relation,c.object_id,"
+            " s.canonical_name sname,o.canonical_name oname FROM claims c"
+            " JOIN entities s ON s.id=c.subject_id"
+            " JOIN entities o ON o.id=c.object_id"
+            f" WHERE c.status!='rejected' AND (c.subject_id IN ({placeholders})"
+            f" OR c.object_id IN ({placeholders})) ORDER BY c.id", (*ids, *ids)):
+        edge = f"{row['sname']} -{row['relation']}-> {row['oname']}"
+        for endpoint in (row["subject_id"], row["object_id"]):
+            item = by_id.get(endpoint)
+            if item is not None and len(item["relations"]) < CANDIDATE_RELATIONS:
+                item["relations"].append(edge)
+    return candidates
 
 
 # 中文短词的 SequenceMatcher 比值偏低（感知机/感知器只有 0.667），阈值按中文调。
@@ -202,6 +338,102 @@ def find_duplicate_candidates(conn, *, threshold: float = DUPLICATE_SCAN_THRESHO
     return pairs[:limit]
 
 
+# 名称在多次语境里落到哪里，就是全局别名该问的问题。
+STABILITY_UNRESOLVED = frozenset({
+    "ambiguous", "below_confidence", "suspected_same_entity",
+    "resolver_error", "invalid_response", "reverted",
+})
+
+
+def mention_stability_report(conn, *, limit: int = 200, min_contexts: int = 2,
+                             current_resolver_only: bool = False) -> dict:
+    """同一个表面名称在多次真实语境中是否稳定指向同一个实体——只读，零 LLM。
+
+    全局别名该问的是这个。累计打分（`store.add_alignment_evidence`）早就是按
+    `independence_group` 折算的，同一来源重复一百次也只算一次；这里补的是它算不
+    出来的那部分：这个名字有没有**竞争目标**，有多少次根本没判下来。一个名字在
+    两个实体之间摇摆，单看任一侧的累计分都可能很高。
+
+    报告混代：事件带着产生它们时的 resolver 版本，`resolver_versions` 把这件事
+    摆在明面上，别拿旧版本的分布替当前策略背书。
+    """
+    sql = (
+        "SELECT ev.deterministic_name,ev.raw_name,ev.outcome,ev.entity_id,"
+        " ev.selected_candidate_id,ev.resolver_version,s.independence_group"
+        " FROM entity_resolution_events ev"
+        " LEFT JOIN source_snapshots ss ON ss.id=ev.source_snapshot_id"
+        " LEFT JOIN sources s ON s.id=ss.source_id")
+    params: tuple = ()
+    if current_resolver_only:
+        sql += " WHERE ev.resolver_version=?"
+        params = (RESOLVER_VERSION,)
+    grouped: dict[str, dict] = {}
+    for row in conn.execute(sql + " ORDER BY ev.id", params):
+        item = grouped.setdefault(row["deterministic_name"], {
+            "name": row["deterministic_name"], "surface_names": set(),
+            "targets": {}, "unresolved": 0, "groups": set(),
+            "resolver_versions": set(),
+        })
+        item["surface_names"].add(row["raw_name"])
+        item["resolver_versions"].add(row["resolver_version"])
+        if row["independence_group"]:
+            item["groups"].add(row["independence_group"])
+        target = row["entity_id"] or row["selected_candidate_id"]
+        if row["outcome"] in STABILITY_UNRESOLVED:
+            item["unresolved"] += 1
+        if target is None:
+            continue
+        item["targets"][target] = item["targets"].get(target, 0) + 1
+
+    names = {row["id"]: row["canonical_name"] for row in conn.execute(
+        "SELECT id,canonical_name FROM entities")}
+    verified = {
+        row["normalized_name"] for row in conn.execute(
+            "SELECT normalized_name FROM aliases WHERE status='verified'")}
+    canonical = {
+        row["normalized_name"] for row in conn.execute(
+            "SELECT normalized_name FROM entities")}
+    items = []
+    for item in grouped.values():
+        contexts = sum(item["targets"].values())
+        if contexts < min_contexts or item["name"] in canonical:
+            continue
+        ranked = sorted(item["targets"].items(), key=lambda kv: (-kv[1], kv[0]))
+        dominant_id, dominant_count = ranked[0]
+        items.append({
+            "name": item["name"],
+            "surface_names": sorted(item["surface_names"]),
+            "context_count": contexts,
+            "dominant_target": names.get(dominant_id, str(dominant_id)),
+            "dominant_target_id": dominant_id,
+            "dominant_target_count": dominant_count,
+            "dominant_target_ratio": round(dominant_count / contexts, 3),
+            "competing_target_count": len(ranked) - 1,
+            "competing_targets": [
+                {"entity": names.get(entity_id, str(entity_id)), "count": count}
+                for entity_id, count in ranked[1:]],
+            "unresolved_count": item["unresolved"],
+            "independent_source_groups": sorted(item["groups"]),
+            "resolver_versions": sorted(item["resolver_versions"]),
+            "alias_status": (
+                "verified" if item["name"] in verified else "proposed"),
+        })
+    items.sort(key=lambda row: (
+        -row["competing_target_count"], -row["context_count"], row["name"]))
+    return {
+        "names": len(items),
+        "with_competing_targets": sum(
+            1 for row in items if row["competing_target_count"]),
+        "stable_but_unverified": sum(
+            1 for row in items
+            if not row["competing_target_count"]
+            and len(row["independent_source_groups"]) >= 2
+            and row["alias_status"] != "verified"),
+        "next": "稳定且跨够独立来源组的可考虑转正；有竞争目标的先看 duplicates",
+        "items": items[:limit],
+    }
+
+
 def _llm_normalize(observation: EntityObservation,
                    candidates: list[dict]) -> dict:
     prompt = f"""你是知识图谱实体名称规范化与对齐器。
@@ -246,10 +478,86 @@ def _llm_normalize(observation: EntityObservation,
     return payload
 
 
+SEPARATION_VERDICTS = {"should_stay_separate", "no_stable_difference", "uncertain"}
+
+
+def _verify_separation_with_llm(observation: EntityObservation,
+                                selected: dict) -> dict:
+    """反向复核：请模型优先找出**不能合并**的理由。
+
+    这不是拿第二次调用充第二个来源——同一个模型问两遍不产生独立性，两轮结论都
+    只记进消歧事件，不进 `entity_alignment_evidence` 的独立来源计数。它提高的是
+    同一次语境判断的可靠性：正向提问天然偏向找相同点，换个方向问一次，能把"听着
+    像同义词"和"真是同一个知识对象"分开。
+
+    方向上的不对称和 `is_strong_evidence`、`knowledge_objection` 同构：这一轮
+    只能否决，不能支持。它说"没有稳定区别"不会让一条判定升级，只是不再拦它。
+    """
+    prompt = f"""你在复核两个名称是否值得在教学知识图谱里分别建点。
+
+名称 A：{observation.name}
+A 的定义（依据当前语料）：{observation.definition}
+A 的原文证据：{observation.evidence}
+
+名称 B（图谱中已有实体）：{selected.get('canonical_name', '')}
+B 的类型：{selected.get('entity_type', '')}
+B 的定义：{selected.get('definition', '')}
+B 的原文用法：{json.dumps(selected.get('excerpts', []), ensure_ascii=False)}
+B 的已有关系：{json.dumps(selected.get('relations', []), ensure_ascii=False)}
+
+这两个名称共享词根但类别中心词不同（例如「方法」对「算法」、「模型」对
+「分类器」、「问题」对「任务」）。这类名称经常是同义换词，也经常是两个确实
+不同的知识对象。
+
+**请优先寻找不能合并的理由。** 依次检查：
+1. 两者的外延是否不同（一个是做法、另一个是这类做法的产物或载体）？
+2. 教学上是否需要分别讲解、分别考察、分别列先修？
+3. 语料中是否在同一处同时使用了这两个说法来指不同的东西？
+4. 合并之后，B 已有的关系是否会有任何一条变得不成立？
+
+只有当你找不到任何稳定、可复用、有教学价值的区别时，才输出
+no_stable_difference。证据不足以判断就输出 uncertain，不要猜。
+
+只输出 JSON：
+{{
+  "verdict": "should_stay_separate|no_stable_difference|uncertain",
+  "confidence": 0.0,
+  "reason": "简短理由；should_stay_separate 时必须说出区别是什么"
+}}"""
+    payload = llm.chat_json([{"role": "user", "content": prompt}])
+    if not isinstance(payload, dict):
+        raise ValueError("反向复核器必须返回 JSON object")
+    return payload
+
+
+def _separation_objection(verifier: SeparationVerifier | None,
+                          observation: EntityObservation,
+                          selected: dict) -> dict:
+    """跑一次反向复核，把结果规整成 verdict/confidence/reason。"""
+    run = verifier or _verify_separation_with_llm
+    try:
+        payload = run(observation, selected)
+    except Exception as exc:
+        # 调用失败不是结论。当作 uncertain：不否决，但也不放行到语境链接。
+        return {"verdict": "uncertain", "confidence": 0.0,
+                "reason": f"反向复核调用失败：{exc}"}
+    verdict = str(payload.get("verdict", "uncertain")).strip()
+    if verdict not in SEPARATION_VERDICTS:
+        verdict = "uncertain"
+    try:
+        confidence = min(1.0, max(0.0, float(payload.get("confidence", 0.0))))
+    except (TypeError, ValueError):
+        confidence = 0.0
+    return {
+        "verdict": verdict, "confidence": confidence,
+        "reason": str(payload.get("reason", "")).strip() or "反向复核未给出理由",
+    }
+
+
 def _record(conn, observation: EntityObservation, result: Resolution, *,
             source_snapshot_id: int | None,
             observation_id: int | None) -> Resolution:
-    store.add_resolution_event(
+    event_id = store.add_resolution_event(
         conn, raw_name=observation.name,
         deterministic_name=store.normalize_name(observation.name),
         llm_normalized_name=result.normalized_name,
@@ -269,15 +577,19 @@ def _record(conn, observation: EntityObservation, result: Resolution, *,
             reason=(
                 f"实体主类型为 {entity.entity_type}，观察类型为 {observation.entity_type}"
                 if conflict else "观察类型与实体主类型一致"))
-    return result
+    store.add_materialization(
+        conn, observation_id, "alias", result.alias_id,
+        resolution_event_id=event_id, outcome=result.outcome)
+    return replace(result, event_id=event_id)
 
 
 def _matched_result(entity, observation: EntityObservation, *, matched_by: str,
                     reason: str, candidate_ids: tuple[int, ...] = (),
-                    confidence: float | None = None) -> Resolution:
+                    confidence: float | None = None,
+                    same_outcome: str = "same_entity") -> Resolution:
     conflict = entity.entity_type != observation.entity_type
     return Resolution(
-        entity.id, "type_conflict" if conflict else "same_entity",
+        entity.id, "type_conflict" if conflict else same_outcome,
         (
             f"{reason}；已有实体类型 {entity.entity_type} 与观察类型"
             f" {observation.entity_type} 冲突，已记录类型断言"
@@ -293,7 +605,8 @@ def _matched_result(entity, observation: EntityObservation, *, matched_by: str,
 def resolve(conn, observation: EntityObservation, *,
             source_snapshot_id: int | None = None,
             observation_id: int | None = None,
-            llm_normalizer: LLMNormalizer | None = None) -> Resolution:
+            llm_normalizer: LLMNormalizer | None = None,
+            llm_separation_verifier: SeparationVerifier | None = None) -> Resolution:
     deterministic_name = store.normalize_name(observation.name)
 
     canonical = store.find_canonical_entity(conn, deterministic_name)
@@ -413,8 +726,41 @@ def resolve(conn, observation: EntityObservation, *,
             and confidence >= LLM_AUTO_LINK_CONFIDENCE)
         if safe_direct:
             match_type = direct_match_type
+
+        # 高风险名称对（同词根异中心词、非类别修饰成分）必须再反向问一次，
+        # 两轮一致才允许当场落地。
+        contextual_allowed = confidence >= LLM_AUTO_LINK_CONFIDENCE
+        if (not safe_direct and contextual_allowed
+                and _needs_separation_review(
+                    observation.name, selected.canonical_name)):
+            objection = _separation_objection(
+                llm_separation_verifier, observation,
+                candidate_by_id.get(selected.id, {
+                    "canonical_name": selected.canonical_name,
+                    "entity_type": selected.entity_type,
+                    "definition": selected.definition,
+                }))
+            reason = (f"{reason}；反向复核 [{objection['verdict']}"
+                      f"/{objection['confidence']:.2f}] {objection['reason']}")
+            if (objection["verdict"] == "should_stay_separate"
+                    and objection["confidence"] >= SEPARATION_OBJECTION_CONFIDENCE):
+                # 反向复核找到了稳定区别。不记对齐证据——被否决的一轮不是
+                # 「这两个名字疑似同一」的佐证。
+                result = Resolution(
+                    None, "ambiguous", reason,
+                    matched_by="separation_objection",
+                    normalized_name=canonical_name or deterministic_name,
+                    candidate_ids=candidate_ids, confidence=confidence,
+                    selected_candidate_id=selected.id)
+                return _record(
+                    conn, observation, result,
+                    source_snapshot_id=source_snapshot_id,
+                    observation_id=observation_id)
+            contextual_allowed = objection["verdict"] == "no_stable_difference"
+
+        alias_id = None
         if deterministic_name != selected.normalized_name:
-            store.add_alias(
+            alias_id = store.add_alias(
                 conn, selected.id, observation.name,
                 source_snapshot_id=source_snapshot_id,
                 status="verified" if safe_direct else "proposed",
@@ -436,9 +782,27 @@ def resolve(conn, observation: EntityObservation, *,
                 else (
                     "llm_canonical_exact"
                     if normalized_hit else "llm_candidate")))
-            result = _matched_result(
+            result = replace(_matched_result(
                 selected, observation, matched_by=matched_by,
-                reason=reason, candidate_ids=candidate_ids, confidence=confidence)
+                reason=reason, candidate_ids=candidate_ids,
+                confidence=confidence), alias_id=alias_id)
+            return _record(
+                conn, observation, result, source_snapshot_id=source_snapshot_id,
+                observation_id=observation_id)
+        if contextual_allowed:
+            # 本次 mention 指向这个实体，**不**等于这个字符串永远指向它。
+            # 两个门槛因此分开：语境链接只要这一次的证据和定义对得上，全局别名
+            # 要这个名字在多个独立来源的语境里稳定地指向同一个实体。别名留在
+            # proposed 继续累计，Claim 不再陪着一起卡住。
+            result = _matched_result(
+                selected, observation, matched_by="llm_contextual",
+                reason=(
+                    f"{reason}；本次语境判定指向既有实体，别名累计分"
+                    f" {alignment['score']:.3f}，独立来源"
+                    f" {alignment['independent_sources']}/2，未达全局别名门槛"),
+                candidate_ids=candidate_ids, confidence=confidence,
+                same_outcome="contextual_same_entity")
+            result = replace(result, alias_id=alias_id)
             return _record(
                 conn, observation, result, source_snapshot_id=source_snapshot_id,
                 observation_id=observation_id)
@@ -451,7 +815,7 @@ def resolve(conn, observation: EntityObservation, *,
             matched_by="llm_suspected",
             normalized_name=canonical_name or deterministic_name,
             candidate_ids=candidate_ids, confidence=confidence,
-            selected_candidate_id=selected.id)
+            selected_candidate_id=selected.id, alias_id=alias_id)
         return _record(
             conn, observation, result, source_snapshot_id=source_snapshot_id,
             observation_id=observation_id)
@@ -478,15 +842,16 @@ def resolve(conn, observation: EntityObservation, *,
                 "below_auto_link_confidence":
                     confidence < LLM_AUTO_LINK_CONFIDENCE,
             })
+        alias_id = None
         if store.normalize_name(observation.name) != entity.normalized_name:
-            store.add_alias(
+            alias_id = store.add_alias(
                 conn, entity.id, observation.name,
                 source_snapshot_id=source_snapshot_id, status="proposed",
                 evidence_excerpt=observation.evidence)
         result = Resolution(
             entity.id, "created", reason, matched_by="llm_new",
             normalized_name=entity.normalized_name, candidate_ids=candidate_ids,
-            confidence=confidence)
+            confidence=confidence, alias_id=alias_id)
         return _record(
             conn, observation, result, source_snapshot_id=source_snapshot_id,
             observation_id=observation_id)

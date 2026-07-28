@@ -16,6 +16,24 @@ class MaterializationResult:
     rejected: tuple[str, ...]
 
 
+def _tracer(conn, observation_id: int, event_id: int | None, outcome: str):
+    """把「这次 observation 物化出了哪一行」记下来的短手。
+
+    留痕必须发生在写入的那一刻。事后从 `evidence.metadata` 反推做不到：那里只有
+    当时的判定结论，没有这次判定连带产生了哪条 Claim、哪个别名。
+    """
+    def trace(target_type: str, target_id: int | None) -> None:
+        store.add_materialization(
+            conn, observation_id, target_type, target_id,
+            resolution_event_id=event_id or 0, outcome=outcome)
+    return trace
+
+
+def _endpoint_events(event_by_entity: dict[int, int], *entity_ids: int) -> list[int]:
+    events = {event_by_entity.get(entity_id, 0) for entity_id in entity_ids}
+    return sorted(events - {0}) or [0]
+
+
 def materialize(conn, batch: ObservationBatch, *, source_snapshot_id: int,
                 run_id: int) -> MaterializationResult:
     resolved: dict[str, int] = {}
@@ -23,6 +41,7 @@ def materialize(conn, batch: ObservationBatch, *, source_snapshot_id: int,
     claim_ids: list[int] = []
     rejected = list(batch.rejected)
     suspected: set[str] = set()
+    event_by_entity: dict[int, int] = {}
 
     for item in batch.entities:
         observation_id = store.add_observation(
@@ -48,17 +67,21 @@ def materialize(conn, batch: ObservationBatch, *, source_snapshot_id: int,
             continue
         resolved[store.reference_key(item.name)] = result.entity_id
         entity_ids.append(result.entity_id)
-        store.add_evidence(
+        event_by_entity.setdefault(result.entity_id, result.event_id or 0)
+        trace = _tracer(conn, observation_id, result.event_id, result.outcome)
+        trace("entity", result.entity_id)
+        evidence = store.add_evidence(
             conn, source_snapshot_id, item.evidence, "entity_description",
             entity_id=result.entity_id, location=item.location,
             mechanically_valid=True, extraction_run_id=run_id,
             metadata={"resolution": result.outcome, "resolution_reason": result.reason})
+        trace("evidence", evidence.id)
         for alias in item.aliases:
             try:
-                store.add_alias(
+                trace("alias", store.add_alias(
                     conn, result.entity_id, alias,
                     source_snapshot_id=source_snapshot_id, status="proposed",
-                    evidence_excerpt=item.evidence)
+                    evidence_excerpt=item.evidence))
             except ValueError as exc:
                 rejected.append(f"实体「{item.name}」别名「{alias}」未登记：{exc}")
         store.resolve_observation(conn, observation_id, True)
@@ -86,7 +109,7 @@ def materialize(conn, batch: ObservationBatch, *, source_snapshot_id: int,
                 conn, subject_id, item.relation, object_id,
                 qualifiers=item.qualifiers, status="proposed",
                 metadata={"created_from": "grounded_observation"})
-            store.add_evidence(
+            evidence = store.add_evidence(
                 conn, source_snapshot_id, item.evidence, item.evidence_type,
                 claim_id=claim.id, location=item.location,
                 mechanically_valid=True, extraction_run_id=run_id)
@@ -94,6 +117,12 @@ def materialize(conn, batch: ObservationBatch, *, source_snapshot_id: int,
             store.resolve_observation(conn, observation_id, False)
             rejected.append(str(exc))
             continue
+        # 两个端点各自的消歧事件都要认领这条 Claim：撤销任一端点的判定都该把它
+        # 带走，因为它当初能落地正是靠那次判定认领了端点。
+        for event_id in _endpoint_events(event_by_entity, subject_id, object_id):
+            trace = _tracer(conn, observation_id, event_id, "claim")
+            trace("claim", claim.id)
+            trace("evidence", evidence.id)
         claim_ids.append(claim.id)
         store.resolve_observation(conn, observation_id, True)
 
@@ -144,6 +173,7 @@ def replay_pending(conn, limit: int = 100) -> dict:
     rejected: list[dict] = []
     still_pending: list[int] = []
     needs_review: list[int] = []
+    event_by_entity: dict[int, int] = {}
 
     for row in (item for item in rows if not item["relation"]):
         latest = conn.execute(
@@ -178,7 +208,10 @@ def replay_pending(conn, limit: int = 100) -> dict:
                 store.resolve_observation(conn, row["id"], False)
                 rejected.append({"observation_id": row["id"], "reason": result.reason})
             continue
-        store.add_evidence(
+        event_by_entity.setdefault(result.entity_id, result.event_id or 0)
+        trace = _tracer(conn, row["id"], result.event_id, result.outcome)
+        trace("entity", result.entity_id)
+        evidence = store.add_evidence(
             conn, row["source_snapshot_id"], row["excerpt"],
             "entity_description", entity_id=result.entity_id,
             location=row["location"], mechanically_valid=True,
@@ -188,12 +221,13 @@ def replay_pending(conn, limit: int = 100) -> dict:
                 "resolution_reason": result.reason,
                 "replayed_observation_id": row["id"],
             })
+        trace("evidence", evidence.id)
         for alias in observation.aliases:
             try:
-                store.add_alias(
+                trace("alias", store.add_alias(
                     conn, result.entity_id, alias,
                     source_snapshot_id=row["source_snapshot_id"],
-                    status="proposed", evidence_excerpt=row["excerpt"])
+                    status="proposed", evidence_excerpt=row["excerpt"]))
             except ValueError:
                 pass
         store.resolve_observation(conn, row["id"], True)
@@ -221,7 +255,7 @@ def replay_pending(conn, limit: int = 100) -> dict:
                     "created_from": "replayed_grounded_observation",
                     "replayed_observation_id": row["id"],
                 })
-            store.add_evidence(
+            evidence = store.add_evidence(
                 conn, row["source_snapshot_id"], row["excerpt"],
                 str(raw.get("evidence_type", "cooccurrence")),
                 claim_id=claim.id, location=row["location"],
@@ -230,6 +264,10 @@ def replay_pending(conn, limit: int = 100) -> dict:
             store.resolve_observation(conn, row["id"], False)
             rejected.append({"observation_id": row["id"], "reason": str(exc)})
             continue
+        for event_id in _endpoint_events(event_by_entity, subject_id, object_id):
+            trace = _tracer(conn, row["id"], event_id, "claim")
+            trace("claim", claim.id)
+            trace("evidence", evidence.id)
         store.resolve_observation(conn, row["id"], True)
         resolved_claims.append(claim.id)
 

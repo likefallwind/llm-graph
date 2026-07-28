@@ -170,7 +170,12 @@ class EntityResolutionTests(unittest.TestCase):
             "SELECT status FROM entity_alignment_candidates").fetchone()
         self.assertEqual("verified", candidate["status"])
 
-    def test_high_confidence_abbreviation_is_not_immediately_verified(self):
+    def test_high_confidence_abbreviation_links_contextually_but_alias_stays_proposed(self):
+        """缩写在本章语境里指得清楚，不代表「CE」这个字符串全局归它。
+
+        本次 mention 落地，全局别名仍要靠跨语境稳定性挣。两个门槛分开正是
+        contextual_same_entity 存在的理由。
+        """
         entity = store.add_entity(self.conn, "交叉熵损失", "criterion")
         snapshot = self.add_snapshot("book-a", "book:a")
 
@@ -186,15 +191,19 @@ class EntityResolutionTests(unittest.TestCase):
                 "reason": "可能的缩写",
             })
 
-        self.assertIsNone(result.entity_id)
-        self.assertEqual("suspected_same_entity", result.outcome)
+        self.assertEqual(entity.id, result.entity_id)
+        self.assertEqual("contextual_same_entity", result.outcome)
         alias = self.conn.execute(
             "SELECT status,alias_type FROM aliases WHERE entity_id=?",
             (entity.id,)).fetchone()
         self.assertEqual("proposed", alias["status"])
         self.assertEqual("abbreviation", alias["alias_type"])
+        candidate = self.conn.execute(
+            "SELECT status FROM entity_alignment_candidates").fetchone()
+        self.assertEqual("suspected", candidate["status"])
 
     def test_semantic_prefix_cannot_masquerade_as_name_variant(self):
+        """限定词不是类别后缀，剥掉它可能换掉一个知识对象，必须先反向复核。"""
         entity = store.add_entity(self.conn, "交叉熵损失", "criterion")
         snapshot = self.add_snapshot("book-a", "book:a")
 
@@ -208,17 +217,23 @@ class EntityResolutionTests(unittest.TestCase):
                 "match_type": "name_variant",
                 "confidence": 0.99,
                 "reason": "模型误认为只是名称变化",
+            },
+            llm_separation_verifier=lambda _observation, _candidate: {
+                "verdict": "should_stay_separate",
+                "confidence": 0.9,
+                "reason": "softmax 前缀限定了求损失的输出层，不是同一个判据",
             })
 
         self.assertIsNone(result.entity_id)
-        self.assertEqual("suspected_same_entity", result.outcome)
+        self.assertEqual("ambiguous", result.outcome)
+        self.assertEqual("separation_objection", result.matched_by)
         alias = self.conn.execute(
             "SELECT status FROM aliases WHERE entity_id=?",
             (entity.id,)).fetchone()
-        self.assertEqual("proposed", alias["status"])
-        candidate = self.conn.execute(
-            "SELECT status FROM entity_alignment_candidates").fetchone()
-        self.assertEqual("suspected", candidate["status"])
+        # 被反向复核否决的一轮不留别名，也不记对齐证据。
+        self.assertIsNone(alias)
+        self.assertIsNone(self.conn.execute(
+            "SELECT status FROM entity_alignment_candidates").fetchone())
 
     def test_chinese_suffix_is_validated_as_name_variant(self):
         entity = store.add_entity(self.conn, "分类问题", "task")
@@ -319,6 +334,11 @@ class EntityResolutionTests(unittest.TestCase):
         self.assertEqual("llm_ambiguous", result.matched_by)
 
     def test_ambiguous_verified_alias_can_be_disambiguated_by_llm(self):
+        """一个字符串同时是两个实体的 verified alias 时，只有语境能选。
+
+        这正是语境链接该干的活：本次 mention 归其中一个，而「SG」这个名字仍然
+        歧义——两个候选互相竞争，谁也拿不到全局别名。
+        """
         first = store.add_entity(self.conn, "梯度方法", "solution")
         second = store.add_entity(self.conn, "统计梯度", "concept")
         store.add_alias(self.conn, first.id, "SG", status="verified")
@@ -334,9 +354,12 @@ class EntityResolutionTests(unittest.TestCase):
                 "reason": f"在 {len(candidates)} 个同名候选中结合上下文选择",
             })
 
-        self.assertIsNone(result.entity_id)
-        self.assertEqual("suspected_same_entity", result.outcome)
-        self.assertEqual(first.id, result.selected_candidate_id)
+        self.assertEqual(first.id, result.entity_id)
+        self.assertEqual("contextual_same_entity", result.outcome)
+        candidate = self.conn.execute(
+            "SELECT status FROM entity_alignment_candidates"
+            " WHERE entity_id=?", (first.id,)).fetchone()
+        self.assertEqual("suspected", candidate["status"])
 
     def test_high_confidence_llm_new_creates_canonical_and_proposed_alias(self):
         result = entity_resolution.resolve(
@@ -941,15 +964,19 @@ class QueueProcessingTests(unittest.TestCase):
 
         self.assertEqual([], review_queues.review_type_conflicts(self.conn))
 
-    def test_suspected_name_variant_review_is_verified_but_model_review_is_not_source(self):
-        entity = store.add_entity(self.conn, "Softmax 函数", "concept")
+    def _suspected(self, canonical: str, observed: str, entity_type="concept"):
+        entity = store.add_entity(self.conn, canonical, entity_type)
         store.add_alias(
-            self.conn, entity.id, "softmax运算",
+            self.conn, entity.id, observed,
             source_snapshot_id=self.snapshot.id, status="proposed")
         store.add_alignment_evidence(
-            self.conn, observed_name="softmax运算", entity_id=entity.id,
+            self.conn, observed_name=observed, entity_id=entity.id,
             confidence=0.88, policy_version="test",
             resolver_version="test", source_snapshot_id=self.snapshot.id)
+        return entity
+
+    def test_suspected_name_variant_review_is_verified_but_model_review_is_not_source(self):
+        self._suspected("反向传播", "反向传播算法", entity_type="solution")
 
         with patch(
                 "kg.entity_resolution._review_alignment_with_llm",
@@ -957,7 +984,7 @@ class QueueProcessingTests(unittest.TestCase):
                     "verdict": "same",
                     "match_type": "name_variant",
                     "confidence": 0.98,
-                    "reason": "仅类别词不同",
+                    "reason": "仅多一个类别词",
                 }):
             result = entity_resolution.review_suspected_alignments(
                 self.conn, limit=10)
@@ -970,6 +997,34 @@ class QueueProcessingTests(unittest.TestCase):
         review = self.conn.execute(
             "SELECT * FROM model_queue_reviews").fetchone()
         self.assertEqual("entity_alignment", review["queue_type"])
+
+    def test_sibling_head_words_are_not_auto_verified_in_the_queue(self):
+        """「softmax运算」对「softmax函数」共享词根但换了中心词，队列里也不放行。
+
+        队列这条路径拿不到观察类型，类型闸在这里是空转的；挡住它的必须是包含关系
+        本身，否则复核队列会成为绕开快路收窄的后门。
+        """
+        self._suspected("Softmax 函数", "softmax运算")
+
+        with patch(
+                "kg.entity_resolution._review_alignment_with_llm",
+                return_value={
+                    "verdict": "same",
+                    "match_type": "name_variant",
+                    "confidence": 0.98,
+                    "reason": "仅类别词不同",
+                }):
+            result = entity_resolution.review_suspected_alignments(
+                self.conn, limit=10)
+
+        self.assertFalse(result[0]["auto_verified"])
+        candidate = self.conn.execute(
+            "SELECT * FROM entity_alignment_candidates").fetchone()
+        self.assertEqual("suspected", candidate["status"])
+        # 模型说了话就要留痕，哪怕结论没被采信。
+        review = self.conn.execute(
+            "SELECT * FROM model_queue_reviews").fetchone()
+        self.assertEqual("same", review["verdict"])
 
     def test_pending_observations_replay_idempotently_after_alias_verification(self):
         category = store.add_entity(self.conn, "分类问题", "task")
@@ -1032,6 +1087,363 @@ class QueueProcessingTests(unittest.TestCase):
         review = self.conn.execute(
             "SELECT * FROM model_queue_reviews").fetchone()
         self.assertEqual("type_conflict", review["queue_type"])
+
+
+class ContextualLinkTests(unittest.TestCase):
+    """局部链接与全局别名是两个门槛，不能互相阻塞。
+
+    「本次 mention 指向实体 X」比「这个字符串永远指向 X」弱得多。此前两者共用
+    verified alias 一套门槛，结果一条尚未转正的别名会把整条 Claim 一起卡住。
+    """
+
+    def setUp(self):
+        self.conn = sqlite3.connect(":memory:")
+        self.conn.row_factory = sqlite3.Row
+        schema.ensure(self.conn)
+        source_id = store.upsert_source(
+            self.conn, "book-a", "book-a", "textbook",
+            independence_group="book:a")
+        self.snapshot = store.add_source_snapshot(
+            self.conn, source_id, "v1", content="牛顿法材料")
+        self.run_id = store.create_run(self.conn, "test", "test-version")
+        self.newton = store.add_entity(self.conn, "牛顿法", "solution")
+        store.add_entity(self.conn, "二阶优化", "solution")
+
+    def tearDown(self):
+        self.conn.close()
+
+    def _batch(self):
+        return ObservationBatch(
+            entities=(
+                observation("牛顿-拉弗森法", "solution"),
+                observation("二阶优化", "solution"),
+            ),
+            claims=(ClaimObservation(
+                subject="二阶优化", relation="is_a", object="牛顿-拉弗森法",
+                qualifiers={}, evidence_type="explicit_taxonomy",
+                evidence="牛顿-拉弗森法是一种二阶优化。", location="§1", raw={}),),
+            next_reading_targets=(), rejected=())
+
+    def _materialize(self, confidence=0.97):
+        with patch(
+                "kg.entity_resolution._llm_normalize",
+                return_value={
+                    "decision": "existing",
+                    "candidate_id": self.newton.id,
+                    "canonical_name": "牛顿法",
+                    "match_type": "translation_alias",
+                    "confidence": confidence,
+                    "reason": "原文括号注明二者同一",
+                }):
+            return claims.materialize(
+                self.conn, self._batch(), source_snapshot_id=self.snapshot.id,
+                run_id=self.run_id)
+
+    def test_contextual_link_lands_the_claim_but_not_the_global_alias(self):
+        result = self._materialize()
+
+        self.assertEqual(1, len(result.claim_ids))
+        self.assertIn(self.newton.id, result.entity_ids)
+        alias = self.conn.execute(
+            "SELECT status FROM aliases WHERE entity_id=?",
+            (self.newton.id,)).fetchone()
+        self.assertEqual("proposed", alias["status"])
+        candidate = self.conn.execute(
+            "SELECT status FROM entity_alignment_candidates").fetchone()
+        self.assertEqual("suspected", candidate["status"])
+
+    def test_below_auto_link_confidence_still_blocks(self):
+        """降低的是全局别名的门槛，不是自动执行的门槛。"""
+        result = self._materialize(confidence=0.85)
+
+        self.assertEqual((), result.claim_ids)
+        self.assertNotIn(self.newton.id, result.entity_ids)
+
+    def test_materialization_trail_covers_entity_claim_and_evidence(self):
+        result = self._materialize()
+        event = self.conn.execute(
+            "SELECT id FROM entity_resolution_events"
+            " WHERE outcome='contextual_same_entity'").fetchone()
+
+        trail = store.materializations(
+            self.conn, resolution_event_id=event["id"])
+
+        by_type = {}
+        for row in trail:
+            by_type.setdefault(row["target_type"], []).append(row["target_id"])
+        self.assertEqual([self.newton.id], by_type["entity"])
+        self.assertEqual(list(result.claim_ids), by_type["claim"])
+        # 实体证据和 Claim 证据都要挂在这次判定下，撤销时才知道动哪些行。
+        self.assertEqual(2, len(by_type["evidence"]))
+
+    def test_revert_rejects_the_claim_and_reopens_the_observation(self):
+        result = self._materialize()
+        event = self.conn.execute(
+            "SELECT id FROM entity_resolution_events"
+            " WHERE outcome='contextual_same_entity'").fetchone()
+
+        reverted = store.revert_materialization(
+            self.conn, resolution_event_id=event["id"],
+            reason="牛顿-拉弗森法与牛顿法在本书里是两节")
+
+        self.assertEqual(list(result.claim_ids), reverted["reverted"]["claim"])
+        # 证据行留着，实体没被拖下水——两者都要能从返回值里看出来。
+        self.assertEqual(2, len(reverted["retained_evidence"]))
+        self.assertEqual([self.newton.id], reverted["kept_entities"])
+        self.assertEqual(
+            "rejected",
+            store.get_claim(self.conn, result.claim_ids[0]).status)
+        # 命中的是既有实体，它有自己的来历，不跟着一次连错被拒。
+        self.assertEqual(
+            "proposed", store.get_entity(self.conn, self.newton.id).status)
+        pending = {
+            row["subject_text"] for row in self.conn.execute(
+                "SELECT subject_text FROM observations WHERE status='pending'")}
+        self.assertIn("牛顿-拉弗森法", pending)
+        self.assertEqual("rejected", self.conn.execute(
+            "SELECT status FROM aliases WHERE entity_id=?",
+            (self.newton.id,)).fetchone()["status"])
+
+    def test_revert_is_not_repeatable_and_leaves_a_trail(self):
+        self._materialize()
+        event = self.conn.execute(
+            "SELECT id FROM entity_resolution_events"
+            " WHERE outcome='contextual_same_entity'").fetchone()
+        store.revert_materialization(
+            self.conn, resolution_event_id=event["id"], reason="判错了")
+
+        with self.assertRaisesRegex(ValueError, "没有可撤销的物化记录"):
+            store.revert_materialization(
+                self.conn, resolution_event_id=event["id"], reason="再来一次")
+        self.assertTrue(self.conn.execute(
+            "SELECT 1 FROM entity_resolution_events"
+            " WHERE outcome='reverted'").fetchone())
+
+    def test_created_entity_is_rejected_on_revert(self):
+        """新建的实体没有别的来历，撤销时跟着走。"""
+        batch = ObservationBatch(
+            entities=(observation("拟牛顿法", "solution"),),
+            claims=(), next_reading_targets=(), rejected=())
+        with patch(
+                "kg.entity_resolution._llm_normalize",
+                return_value={
+                    "decision": "new", "canonical_name": "拟牛顿法",
+                    "confidence": 0.97, "reason": "语料新概念",
+                }):
+            result = claims.materialize(
+                self.conn, batch, source_snapshot_id=self.snapshot.id,
+                run_id=self.run_id)
+
+        event = self.conn.execute(
+            "SELECT id FROM entity_resolution_events"
+            " WHERE outcome='created'").fetchone()
+        store.revert_materialization(
+            self.conn, resolution_event_id=event["id"], reason="不是独立概念")
+
+        self.assertEqual(
+            "rejected", store.get_entity(self.conn, result.entity_ids[0]).status)
+
+
+class SeparationReviewTests(unittest.TestCase):
+    """高风险名称对的反向复核：只能否决，不能支持。
+
+    正向提问天然偏向找相同点，同词根异中心词正好是它最容易点头的地方。反向再问
+    一次「优先寻找不能合并的理由」，两轮一致才允许当场落地。两轮都是同一个模型，
+    所以只记进消歧事件，不进独立来源计数。
+    """
+
+    def setUp(self):
+        self.conn = sqlite3.connect(":memory:")
+        self.conn.row_factory = sqlite3.Row
+        schema.ensure(self.conn)
+        self.entity = store.add_entity(self.conn, "机器学习算法", "solution")
+        source_id = store.upsert_source(
+            self.conn, "book-a", "book-a", "textbook",
+            independence_group="book:a")
+        self.snapshot = store.add_source_snapshot(
+            self.conn, source_id, "v1", content="机器学习材料")
+
+    def tearDown(self):
+        self.conn.close()
+
+    def _resolve(self, separation, name="机器学习方法"):
+        self.calls = []
+
+        def verifier(observation, candidate):
+            self.calls.append((observation.name, candidate["canonical_name"]))
+            return separation
+
+        return entity_resolution.resolve(
+            self.conn, observation(name, "solution"),
+            source_snapshot_id=self.snapshot.id,
+            llm_normalizer=lambda _observation, _candidates: {
+                "decision": "existing",
+                "candidate_id": self.entity.id,
+                "canonical_name": "机器学习算法",
+                "match_type": "name_variant",
+                "confidence": 0.98,
+                "reason": "模型认为只是换了个类别词",
+            },
+            llm_separation_verifier=verifier)
+
+    def test_objection_blocks_the_link_and_records_no_alignment_evidence(self):
+        result = self._resolve({
+            "verdict": "should_stay_separate", "confidence": 0.85,
+            "reason": "教材分两节讲：一节讲方法论，一节讲具体算法",
+        })
+
+        self.assertIsNone(result.entity_id)
+        self.assertEqual("ambiguous", result.outcome)
+        self.assertIn("反向复核", result.reason)
+        self.assertIsNone(self.conn.execute(
+            "SELECT 1 FROM entity_alignment_candidates").fetchone())
+
+    def test_agreement_allows_the_contextual_link(self):
+        result = self._resolve({
+            "verdict": "no_stable_difference", "confidence": 0.9,
+            "reason": "本书两处混用，没有可复用的区别",
+        })
+
+        self.assertEqual(self.entity.id, result.entity_id)
+        self.assertEqual("contextual_same_entity", result.outcome)
+        # 全局别名照旧要挣，反向复核只是没有拦它。
+        self.assertEqual("proposed", self.conn.execute(
+            "SELECT status FROM aliases").fetchone()["status"])
+
+    def test_uncertain_falls_back_to_suspected_not_to_a_link(self):
+        """两轮不一致就不算一致。uncertain 不否决，但也不放行。"""
+        result = self._resolve({
+            "verdict": "uncertain", "confidence": 0.4, "reason": "语料不足"})
+
+        self.assertIsNone(result.entity_id)
+        self.assertEqual("suspected_same_entity", result.outcome)
+
+    def test_low_confidence_objection_is_not_binding(self):
+        result = self._resolve({
+            "verdict": "should_stay_separate", "confidence": 0.3,
+            "reason": "说不太准"})
+
+        self.assertEqual("suspected_same_entity", result.outcome)
+
+    def test_verifier_failure_is_not_a_conclusion(self):
+        def failing(_observation, _candidate):
+            raise RuntimeError("连接被重置")
+
+        result = entity_resolution.resolve(
+            self.conn, observation("机器学习方法", "solution"),
+            source_snapshot_id=self.snapshot.id,
+            llm_normalizer=lambda _observation, _candidates: {
+                "decision": "existing", "candidate_id": self.entity.id,
+                "canonical_name": "机器学习算法", "match_type": "name_variant",
+                "confidence": 0.98, "reason": "换了个类别词",
+            },
+            llm_separation_verifier=failing)
+
+        self.assertEqual("suspected_same_entity", result.outcome)
+        self.assertIn("反向复核调用失败", result.reason)
+
+    def test_plain_containment_never_pays_for_a_second_call(self):
+        """第二档已经由确定性规则确认，再问一次是白花 1~3 分钟。"""
+        store.add_entity(self.conn, "反向传播", "solution")
+
+        def fail_if_called(_observation, _candidate):
+            self.fail("确定性快路命中时不应调用反向复核")
+
+        result = entity_resolution.resolve(
+            self.conn, observation("反向传播算法", "solution"),
+            source_snapshot_id=self.snapshot.id,
+            llm_normalizer=lambda _observation, candidates: {
+                "decision": "existing",
+                "candidate_id": next(
+                    item["id"] for item in candidates
+                    if item["canonical_name"] == "反向传播"),
+                "canonical_name": "反向传播", "match_type": "name_variant",
+                "confidence": 0.98, "reason": "仅多一个类别词",
+            },
+            llm_separation_verifier=fail_if_called)
+
+        self.assertEqual("same_entity", result.outcome)
+
+    def test_candidates_carry_real_usage_not_just_definitions(self):
+        """候选侧不给上下文，语境判断就只剩一侧有语境。"""
+        other = store.add_entity(self.conn, "梯度下降", "solution")
+        store.add_evidence(
+            self.conn, self.snapshot.id, "机器学习算法通过数据拟合参数。",
+            "definition", entity_id=self.entity.id, mechanically_valid=True)
+        store.add_claim(self.conn, other.id, "used_for", self.entity.id)
+        seen = {}
+
+        entity_resolution.resolve(
+            self.conn, observation("机器学习流程", "solution"),
+            source_snapshot_id=self.snapshot.id,
+            llm_normalizer=lambda _observation, candidates: seen.update(
+                {item["canonical_name"]: item for item in candidates})
+            or {"decision": "ambiguous", "confidence": 0.1, "reason": "看看候选"})
+
+        candidate = seen["机器学习算法"]
+        self.assertEqual(
+            ["机器学习算法通过数据拟合参数。"], candidate["excerpts"])
+        self.assertEqual(
+            ["梯度下降 -used_for-> 机器学习算法"], candidate["relations"])
+
+
+class MentionStabilityTests(unittest.TestCase):
+    def setUp(self):
+        self.conn = sqlite3.connect(":memory:")
+        self.conn.row_factory = sqlite3.Row
+        schema.ensure(self.conn)
+        self.first = store.add_entity(self.conn, "梯度下降", "solution")
+        self.second = store.add_entity(self.conn, "梯度上升", "solution")
+
+    def tearDown(self):
+        self.conn.close()
+
+    def _event(self, name, entity_id, group, outcome="contextual_same_entity"):
+        source_id = store.upsert_source(
+            self.conn, f"src-{group}", group, "textbook",
+            independence_group=group)
+        snapshot = store.add_source_snapshot(
+            self.conn, source_id, group, content=f"{group} 正文 {name}")
+        store.add_resolution_event(
+            self.conn, raw_name=name,
+            deterministic_name=store.normalize_name(name),
+            entity_id=entity_id, outcome=outcome, matched_by="llm_contextual",
+            resolver_version=entity_resolution.RESOLVER_VERSION,
+            source_snapshot_id=snapshot.id)
+
+    def test_stable_name_across_independent_groups_is_surfaced(self):
+        self._event("梯度下降法", self.first.id, "book:a")
+        self._event("梯度下降法", self.first.id, "book:b")
+
+        report = entity_resolution.mention_stability_report(self.conn)
+
+        item = report["items"][0]
+        self.assertEqual("梯度下降法", item["name"])
+        self.assertEqual(1.0, item["dominant_target_ratio"])
+        self.assertEqual(0, item["competing_target_count"])
+        self.assertEqual(["book:a", "book:b"], item["independent_source_groups"])
+        self.assertEqual(1, report["stable_but_unverified"])
+
+    def test_competing_targets_are_ranked_first(self):
+        """一个名字在两个实体之间摇摆，任一侧的累计分再高也不该转正。"""
+        self._event("梯度法", self.first.id, "book:a")
+        self._event("梯度法", self.second.id, "book:b")
+        self._event("梯度下降法", self.first.id, "book:a")
+        self._event("梯度下降法", self.first.id, "book:b")
+
+        report = entity_resolution.mention_stability_report(self.conn)
+
+        self.assertEqual("梯度法", report["items"][0]["name"])
+        self.assertEqual(1, report["items"][0]["competing_target_count"])
+        self.assertEqual(1, report["with_competing_targets"])
+        self.assertEqual(1, report["stable_but_unverified"])
+
+    def test_canonical_names_are_not_reported(self):
+        self._event("梯度下降", self.first.id, "book:a")
+        self._event("梯度下降", self.first.id, "book:b")
+
+        self.assertEqual([], entity_resolution.mention_stability_report(
+            self.conn)["items"])
 
 
 if __name__ == "__main__":

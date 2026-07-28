@@ -236,6 +236,36 @@ def cmd_pipeline(args):
             verify_llm=not args.no_verify_llm)
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return
+    if args.action == "name-stability":
+        result = entity_resolution.mention_stability_report(
+            conn, limit=args.limit or 200,
+            current_resolver_only=args.current_resolver_only)
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return
+    if args.action == "materializations":
+        if not args.observation and not args.resolution_event:
+            sys.exit("pipeline materializations 需要 --observation 或 --resolution-event")
+        result = store.materializations(
+            conn, observation_id=args.observation,
+            resolution_event_id=args.resolution_event, status=None)
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return
+    if args.action == "revert-resolution":
+        if bool(args.observation) == bool(args.resolution_event):
+            sys.exit(
+                "pipeline revert-resolution 需要 --resolution-event 或 --observation"
+                "（二选一）")
+        if not args.reason:
+            sys.exit("pipeline revert-resolution 需要 --reason——它是 gold 负例的判定依据")
+        try:
+            result = store.revert_materialization(
+                conn, resolution_event_id=args.resolution_event,
+                observation_id=args.observation, reason=args.reason)
+        except ValueError as exc:
+            sys.exit(str(exc))
+        result["next"] = "observation 已退回 pending；改完 resolver 后跑 replay-pending"
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return
     if args.action == "alias-declarations":
         from . import alias_evidence
         result = alias_evidence.scan(conn, limit=args.limit)
@@ -784,7 +814,8 @@ def main():
             "read", "doc", "wiki", "batch", "migrate", "status", "reshadow",
             "survey", "target", "duplicates", "identity", "taxonomy-types",
             "endpoint-types", "review-claim", "review-entity",
-            "alias-declarations",
+            "alias-declarations", "name-stability",
+            "materializations", "revert-resolution",
             "merge", "revert-merge", "retype", "revert-retype", "revisions",
             "align-aliases", "review-alignments", "replay-pending",
             "review-type-conflicts",
@@ -822,19 +853,28 @@ def main():
                    help="reshadow: 重判全部证据的蕴含（走 LLM）")
     s.add_argument("--only-stale", action="store_true",
                    help="reshadow: 只重判判定版本落后于当前 validator/prompt 的证据")
-    s.add_argument("--limit", type=int,
-                   help="reshadow/survey/target: claim 数上限；duplicates: 报告条数")
+    s.add_argument(
+        "--limit", type=int,
+        help="reshadow/survey/target: claim 数上限；"
+             "duplicates/name-stability: 报告条数")
     s.add_argument("--passages", type=int, default=2,
                    help="survey/target: 每条 claim 最多探查的候选段落数")
     s.add_argument("--source-entity", type=int, help="merge: 被并入的实体 id")
     s.add_argument("--target-entity", type=int, help="merge: 保留的实体 id")
-    s.add_argument("--reason", default="", help="merge/retype: 操作理由；retype 必填")
+    s.add_argument("--reason", default="",
+                   help="merge/retype/revert-resolution: 操作理由；后两者必填")
     s.add_argument("--merge-event", type=int, help="revert-merge: 合并事件 id")
     s.add_argument("--entity", type=int, help="retype/revisions: 实体 id")
     s.add_argument("--to", help="retype: 新的实体主类型")
     s.add_argument("--definition", help="retype: 新的定义")
     s.add_argument("--revision", type=int, help="revert-retype: 实体修订 id")
     s.add_argument("--claim", type=int, help="review-claim: claim id")
+    s.add_argument("--observation", type=int,
+                   help="materializations/revert-resolution: observation id")
+    s.add_argument("--resolution-event", type=int,
+                   help="materializations/revert-resolution: 实体消歧事件 id")
+    s.add_argument("--current-resolver-only", action="store_true",
+                   help="name-stability: 只统计当前 resolver 版本产生的事件")
     s.add_argument("--verdict", choices=["approve", "reject"],
                    help="review-claim/review-entity: 人工裁决")
     s.add_argument("--reviewer", default="human", help="review-*: 裁决人")

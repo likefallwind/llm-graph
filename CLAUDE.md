@@ -99,6 +99,9 @@ venv 在项目根目录；调 LLM 的命令需要 `MINIMAX_API_KEY`。数据库�
 | `reshadow` | 按当前策略重判全部 claim，只写 Shadow decision。默认零 LLM；`--force-entailment` 重判全部证据，`--only-stale` 只重判版本落后的 |
 | `survey` / `target` | 定向补证：`survey` 零 LLM 列出卡在门槛下的 claim 及候选段落；`target` 对这些段落抽取。`--limit N` `--passages N` |
 | `identity` | 报告哪些 evidence 摘录里没出现端点身份名——只读体检 |
+| `name-stability` | 表面名称在多次语境里落到哪些实体、有没有竞争目标、跨几个独立来源组——只读，零 LLM；`--current-resolver-only` 只看当前版本 |
+| `materializations --observation N` / `--resolution-event N` | 一次消歧物化出了哪些 entity/claim/evidence/alias——只读 |
+| `revert-resolution --resolution-event N --reason R` | 撤销一次消歧物化：Claim/Alias 置 rejected，observation 退回 pending 等重放。`--reason` 必填 |
 | `taxonomy-types` | 报告两端主类型不同的 `is_a`——只读体检，零 LLM |
 | `endpoint-types` | 报告端点类型落在关系典型范围外的 claim——只读体检，零 LLM |
 | `duplicates` / `alias-declarations` | 前者列疑似重复实体；后者零 LLM 扫语料里的别名声明句式 |
@@ -169,7 +172,28 @@ rollback / calibrate / check / viz / export / stats / embed`。
   （`merge_events.payload`），模型队列结论只留痕不改主类型
   （`model_queue_reviews.auto_changed` 恒为 False）。
 - **实体消歧快路是确定性的。** 字符串相似度只做候选召回，永远不证明同一性。
-  `_validated_direct_match_type` 是充分条件，命中不了不代表不同名。
+  `_validated_direct_match_type` 是充分条件，命中不了不代表不同名。它也**不发起
+  合并**，只否决 LLM 已经给出的高置信度 `existing`。
+- **名称同一性分三档，别把第三档当第一档用。** 纯形式变化（大小写、全半角、空白、
+  标点、修饰性「的」）确定性判同名；类别后缀**包含**（反向传播算法／反向传播，
+  且不改主类型）可走快路；同词根异中心词（机器学习方法／机器学习算法）只能召回，
+  必须语境判。判据是包含不是词根相交——相交只要求两个名字各剥各的、剥到中间碰头，
+  那只说明它们谈同一个领域。`tests/test_name_identity.py` 是这三档的可执行定义，
+  加后缀词表前先跑它。
+- **消歧的三个问题门槛不同，不能互相阻塞。** 「这次 mention 指哪」（语境证据即可，
+  落 `contextual_same_entity`，Claim 正常落图）、「这个字符串能否成为全局别名」
+  （要跨独立来源组稳定，落 `aliases.verified`）、「两个实体是否物理合并」（人工
+  确认，落 `merge_events`）是三件事。共用一套门槛的后果是真别名没转正之前整条
+  Claim 都落不了地。
+- **反向复核只能否决，不能支持。** 高风险名称对（同词根异中心词、非类别修饰成分）
+  在高置信度落地前要换方向问一次「请优先寻找不能合并的理由」。两轮同一个模型，
+  **不构成第二个来源**，结论只写消歧事件，不进 `entity_alignment_evidence` 的独立
+  来源计数。这个不对称和 `is_strong_evidence`、`knowledge_objection` 同构。
+- **落地必须留痕且可撤销。** 语境链接会当场把 observation 落成
+  Entity/Claim/Evidence，所以每一行写入都要登记 `observation_materializations`，
+  就在写入点旁边——事后从 `evidence.metadata` 反推重建不出来。撤销是翻状态不是删行
+  （`store.revert_materialization`）：判错的判定和判对的一样是资料，gold 负例正是
+  从这里来的。
 - **抽取限额是每个文本块的**，不做全章截断。
 - **重复处理防护**：每个 `(source_snapshot, coverage_topic, algorithm_version)`
   只处理一次；改算法要动对应的版本号才会重跑。
